@@ -31,9 +31,16 @@ import os
 from typing import Any
 
 from google.adk.agents import LlmAgent, LoopAgent, ParallelAgent, SequentialAgent
+from google.adk.models import Gemini
+from google.genai.types import HttpRetryOptions
 
 from codas_agents import prompts
-from codas_agents.callbacks import after_tool_logger, before_model_logger, before_tool_guardrail
+from codas_agents.callbacks import (
+    after_tool_logger,
+    before_model_logger,
+    before_tool_guardrail,
+    report_grounding_audit,
+)
 from codas_agents.tools import (
     check_convergence,
     preview_columns,
@@ -46,7 +53,19 @@ from codas_core.settings import load_local_env
 
 load_local_env()
 
-MODEL = os.getenv("CODAS_GEMINI_MODEL", "gemini-3.5-flash")
+# Per-call resilience: every model call retries a transient backend error (overload / rate limit /
+# internal) with exponential backoff + jitter, so a Gemini 503 spike no longer aborts a multi-agent
+# run. This is cheaper and stronger than retrying the whole pipeline — only the failing call repeats,
+# not the agents that already succeeded. The service boundary keeps a last-resort retry on top.
+_MODEL_NAME = os.getenv("CODAS_GEMINI_MODEL", "gemini-3.5-flash")
+_MODEL_RETRY = HttpRetryOptions(
+    attempts=int(os.getenv("CODAS_MODEL_RETRY_ATTEMPTS", "5")),
+    initial_delay=1.0,
+    max_delay=30.0,
+    exp_base=2.0,
+    http_status_codes=[408, 429, 500, 502, 503, 504],
+)
+MODEL = Gemini(model=_MODEL_NAME, retry_options=_MODEL_RETRY)
 # The orchestrator's loop runs at most this many deepening rounds; the GapChecker usually stops it
 # earlier via escalate once deeper search saturates. Bounded so a live run stays within the timeout.
 MAX_DISCOVERY_ROUNDS = int(os.getenv("CODAS_MAX_DISCOVERY_ROUNDS", "3"))
@@ -59,11 +78,13 @@ def _agent(
     *,
     tools: list | None = None,
     output_key: str | None = None,
+    after_agent: Any = None,
 ) -> LlmAgent:
     """Construct an LlmAgent with the shared logging/guardrail callbacks.
 
     ``output_key`` publishes the agent's response into shared memory so later agents (including the
-    other branch of a ParallelAgent) can read it; ``tools`` wires the deterministic tool guardrail.
+    other branch of a ParallelAgent) can read it; ``tools`` wires the deterministic tool guardrail;
+    ``after_agent`` runs a post-agent callback (used to grounding-audit the final report).
     """
     kwargs: dict[str, Any] = dict(
         name=name,
@@ -80,6 +101,8 @@ def _agent(
         )
     if output_key:
         kwargs["output_key"] = output_key
+    if after_agent:
+        kwargs["after_agent_callback"] = after_agent
     return LlmAgent(**kwargs)
 
 
@@ -185,6 +208,7 @@ report_agent = _agent(
     "Drafts a publication-style summary from the Fact Sheet and invites human feedback.",
     prompts.REPORT,
     output_key="report",
+    after_agent=report_grounding_audit,  # runtime grounding guardrail: logs/warns on unverified figures
 )
 reporting = SequentialAgent(
     name="reporting",

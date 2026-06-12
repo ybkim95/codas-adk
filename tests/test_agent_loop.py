@@ -147,3 +147,51 @@ def test_tools_return_strict_json_on_missing_data(tmp_path):
 
     assert _json_safe(float("nan")) is None and _json_safe(float("inf")) is None
     assert _json_safe({"x": [float("inf"), np.float64("nan"), np.int64(7)]}) == {"x": [None, None, 7]}
+
+
+# --- production hardening: pluggable session store + runtime grounding guardrail ---
+
+def test_session_factory_defaults_to_memory_and_falls_back_safely(monkeypatch):
+    from google.adk.sessions import InMemorySessionService
+
+    from codas_agents.runtime import new_session_service
+
+    monkeypatch.delenv("CODAS_SESSION_BACKEND", raising=False)
+    assert isinstance(new_session_service(), InMemorySessionService)
+    # vertex requested but misconfigured (no project) must DEGRADE to in-memory, never crash
+    monkeypatch.setenv("CODAS_SESSION_BACKEND", "vertex")
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    assert isinstance(new_session_service(), InMemorySessionService)
+
+
+def test_grounding_guardrail_flags_fabricated_figures():
+    import logging
+
+    from codas_agents.callbacks import LOGGER, report_grounding_audit
+
+    class _Ctx:
+        def __init__(self, state):
+            self.state = state
+
+    msgs: list[str] = []
+
+    class _Cap(logging.Handler):
+        def emit(self, record):
+            msgs.append(record.getMessage())
+
+    handler = _Cap()
+    prior_level = LOGGER.level
+    LOGGER.addHandler(handler)
+    LOGGER.setLevel(logging.INFO)  # the guardrail logs at INFO; ensure the logger emits it
+    try:
+        fs = {"ml_metric_value": 0.4256, "rows": 220}
+        cands = {"candidates": [{"rho": 0.52, "q_value": 0.001, "n": 220}]}
+        report_grounding_audit(_Ctx({"fact_sheet": fs, "latest_report": cands,
+                                     "report": "The model R2 of 0.43; the top predictor rho = 0.52."}))
+        report_grounding_audit(_Ctx({"fact_sheet": fs, "latest_report": cands,
+                                     "report": "We obtained an AUC of 0.98 and recommend deployment."}))
+    finally:
+        LOGGER.removeHandler(handler)
+        LOGGER.setLevel(prior_level)
+    assert any("grounding: 2/2" in m for m in msgs), f"a grounded report should verify all figures: {msgs}"
+    assert any("unverified figure" in m for m in msgs), f"a fabricated AUC must be flagged: {msgs}"

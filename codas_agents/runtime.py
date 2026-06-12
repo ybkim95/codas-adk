@@ -10,6 +10,8 @@ it. With no ``session_service`` the turn is stateless (a fresh in-memory session
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,6 +20,12 @@ from google.adk.runners import Runner
 from google.adk.sessions import BaseSessionService, InMemorySessionService
 from google.genai import types
 
+LOGGER = logging.getLogger("codas.agents")
+
+# Optional wall-clock ceiling for one pipeline run (0 = disabled). Set below the platform request
+# timeout to fail gracefully (a clean 504) instead of being hard-killed mid-run.
+AGENT_TIMEOUT_SECONDS = float(os.getenv("CODAS_AGENT_TIMEOUT_SECONDS", "0") or 0)
+
 
 @dataclass
 class AdkAgentResult:
@@ -25,9 +33,28 @@ class AdkAgentResult:
     events: list[dict[str, Any]] = field(default_factory=list)
 
 
-def new_session_service() -> InMemorySessionService:
-    """A process-persistent session store. The service holds one of these so sessions survive across
-    requests (enabling feedback re-entry). Swap for a DatabaseSessionService in multi-instance prod."""
+def new_session_service() -> BaseSessionService:
+    """A process-persistent session store so sessions survive across requests (feedback re-entry).
+
+    Default is in-memory (single instance). In multi-instance production, in-memory sessions live on
+    only one instance, so ``/v1/agent/feedback`` would miss a session served by another instance — set
+    ``CODAS_SESSION_BACKEND=vertex`` for the managed, cross-instance Vertex AI store. Any construction
+    failure falls back to in-memory with a warning, so a misconfiguration degrades rather than crashes.
+    """
+    backend = os.getenv("CODAS_SESSION_BACKEND", "memory").strip().lower()
+    if backend == "vertex":
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        if not project:
+            LOGGER.warning("CODAS_SESSION_BACKEND=vertex but GOOGLE_CLOUD_PROJECT is unset; "
+                           "using in-memory sessions.")
+        else:
+            try:
+                from google.adk.sessions import VertexAiSessionService
+
+                return VertexAiSessionService(
+                    project=project, location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"))
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Vertex session backend unavailable (%s); using in-memory sessions.", exc)
     return InMemorySessionService()
 
 
@@ -104,14 +131,15 @@ def run_adk_agent_text(
     persistent ``session_service`` to resume an existing session — its prior state and events carry
     over, which is how human-feedback re-entry continues a discovery rather than restarting it.
     """
-    return asyncio.run(
-        _run_adk_agent_text_async(
-            agent,
-            prompt,
-            app_name=app_name,
-            user_id=user_id,
-            session_id=session_id,
-            state=state,
-            session_service=session_service,
-        )
+    coro = _run_adk_agent_text_async(
+        agent,
+        prompt,
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state=state,
+        session_service=session_service,
     )
+    if AGENT_TIMEOUT_SECONDS > 0:
+        coro = asyncio.wait_for(coro, timeout=AGENT_TIMEOUT_SECONDS)
+    return asyncio.run(coro)

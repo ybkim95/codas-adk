@@ -41,6 +41,22 @@ _MIN_RESAMPLES = int(os.getenv("CODAS_AGENT_MIN_RESAMPLES", "100"))
 # it. (In multi-instance production, back this with object storage and a TTL instead of local disk.)
 _AGENT_UPLOAD_DIR = Path(__file__).resolve().parents[1] / ".codas_runs" / "agent_uploads"
 _AGENT_APP_NAME = "codas"
+# Bound disk: agent upload CSVs are kept for feedback re-entry, then pruned past this TTL so a
+# long-running instance does not accumulate them without limit.
+_UPLOAD_TTL_SECONDS = int(os.getenv("CODAS_AGENT_UPLOAD_TTL_HOURS", "24")) * 3600
+
+
+def _prune_old_uploads() -> None:
+    """Best-effort removal of agent upload CSVs older than the TTL (keeps disk bounded)."""
+    if not _AGENT_UPLOAD_DIR.exists():
+        return
+    cutoff = time.time() - _UPLOAD_TTL_SECONDS
+    for path in _AGENT_UPLOAD_DIR.glob("*.csv"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 app = FastAPI(
     title="CoDaS",
@@ -221,6 +237,7 @@ def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
 
     text = _decode_csv_text(payload)
     _AGENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _prune_old_uploads()
     # Each attempt is a fully fresh session + upload, so an internal retry never resumes partial state.
     last_exc: Exception | None = None
     for attempt in range(_AGENT_RETRIES + 1):
@@ -238,6 +255,9 @@ def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
                 session_service=_agent_sessions(),
             )
             return {"status": "completed", "session_id": session_id, "text": result.text, "events": result.events}
+        except TimeoutError as exc:
+            csv_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=504, detail="Discovery exceeded its time budget; try a smaller dataset or fewer rounds.") from exc
         except Exception as exc:  # noqa: BLE001
             csv_path.unlink(missing_ok=True)
             if not _is_transient_llm_error(exc):

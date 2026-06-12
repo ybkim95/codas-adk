@@ -109,3 +109,19 @@ def test_agent_non_transient_error_is_not_swallowed(monkeypatch):
     quiet = TestClient(app, raise_server_exceptions=False)
     r = quiet.post("/v1/agent", headers=HEADERS, json={"csv": CSV, "query": "x"})
     assert r.status_code == 500  # a real bug must NOT be masked as a friendly 503
+
+
+def test_old_uploads_are_pruned(tmp_path, monkeypatch):
+    """Disk stays bounded: upload CSVs past the TTL are removed, recent ones kept."""
+    import os
+    import time as _time
+
+    import codas_service.app as appmod
+    monkeypatch.setattr(appmod, "_AGENT_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(appmod, "_UPLOAD_TTL_SECONDS", 100)
+    old = tmp_path / "old.csv"; old.write_text("x")
+    recent = tmp_path / "recent.csv"; recent.write_text("x")
+    past = _time.time() - 500
+    os.utime(old, (past, past))
+    appmod._prune_old_uploads()
+    assert not old.exists() and recent.exists()
