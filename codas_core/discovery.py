@@ -324,6 +324,48 @@ def _normalize_target(df: pd.DataFrame, target_column: str, warnings: list[str])
     )
 
 
+_COLLINEAR_THRESHOLD = 0.90  # |inter-feature rho| above this => same signal (e.g. PPG vs ECG HRV)
+
+
+def _demote_collinear(candidates: list[Candidate], frame: pd.DataFrame) -> list[str]:
+    """Demote near-duplicate passing candidates to 'collinear_redundant' (mutates verdict).
+
+    Among the validated/conditional candidates, if two features are near-duplicates of each other
+    (|inter-feature rho| > _COLLINEAR_THRESHOLD) they measure the same construct; the weaker one (by
+    |rho_target|) is redundant. Reporting both would inflate the effective hit count. Returns warnings.
+    """
+    passing = [c for c in candidates if c.verdict in {"validated", "conditional"}]
+    if len(passing) < 2:
+        return []
+    feats = [c.feature for c in passing if c.feature in frame.columns]
+    demoted: set[str] = set()
+    pairs: list[tuple[str, str]] = []
+    for i, fi in enumerate(feats):
+        for j, fj in enumerate(feats):
+            if j <= i or fi in demoted or fj in demoted:
+                continue
+            try:
+                r = float(frame[[fi, fj]].dropna().corr().iloc[0, 1])
+            except Exception:
+                r = 0.0
+            if np.isfinite(r) and abs(r) > _COLLINEAR_THRESHOLD:
+                rho_i = abs(next(c.rho for c in passing if c.feature == fi))
+                rho_j = abs(next(c.rho for c in passing if c.feature == fj))
+                demoted.add(fj if rho_i >= rho_j else fi)
+                pairs.append((fi, fj))
+    if not demoted:
+        return []
+    for candidate in candidates:
+        if candidate.feature in demoted:
+            candidate.verdict = "collinear_redundant"
+    return [
+        f"Near-duplicate features detected among validated candidates (|inter-feature ρ| > "
+        f"{_COLLINEAR_THRESHOLD}): {', '.join(str(p) for p in pairs)}. The stronger feature in each "
+        f"pair is retained; the weaker is demoted to 'collinear_redundant' to avoid double-counting a "
+        f"single signal."
+    ]
+
+
 def _input_quality_warnings(df: pd.DataFrame, target_column: str) -> list[str]:
     """Methodological caveats about the INPUT itself (read-only; returns the warnings to append).
 
@@ -361,6 +403,106 @@ def _input_quality_warnings(df: pd.DataFrame, target_column: str) -> list[str]:
                 f"the {minority * 100:.1f}% base rate before interpreting predictive performance."
             )
     return out
+
+
+def _effect_size_warnings(candidates: list[Candidate]) -> list[str]:
+    """Flag passing candidates with a small effect (|rho| < 0.20, < 4% variance explained):
+    statistical significance at large n does not imply practical importance."""
+    notes = [
+        f"'{c.feature}' (ρ={c.rho:.2f}, ~{round(float(c.rho) ** 2 * 100, 1)}% variance explained)"
+        for c in candidates
+        if c.verdict in {"validated", "conditional"} and np.isfinite(c.rho) and abs(c.rho) < 0.20
+    ]
+    if not notes:
+        return []
+    return [
+        f"Small effect size: {'; '.join(notes)}. Statistical significance at large n does not imply "
+        "practical importance — review effect magnitudes before acting on findings with |ρ| < 0.20."
+    ]
+
+
+def _combined_feature_attribution(candidates: list[Candidate], analysis) -> list[str]:
+    """Attribute a two-component engineered feature (a/b or a×b) to the component carrying the signal
+    when the other is ~null, so synthesis does not credit the null component. Mutates candidate.evidence.
+    `analysis` is the AnalysisFrame from build_analysis_frame.
+    """
+    notes: list[str] = []
+    for candidate in candidates:
+        if candidate.verdict not in {"validated", "conditional"}:
+            continue
+        components = analysis.feature_components.get(candidate.feature)
+        if not components or len(components) != 2:
+            continue
+        if not (("_over_" in candidate.feature) or ("_x_" in candidate.feature)):
+            continue
+        rhos: dict[str, float] = {}
+        for component in components:
+            if component in analysis.frame.columns and analysis.target_column in analysis.frame.columns:
+                r, _, _ = safe_spearman(analysis.frame[component], analysis.frame[analysis.target_column])
+                rhos[component] = abs(r) if np.isfinite(r) else 0.0
+        if len(rhos) != 2:
+            continue
+        (strong, strong_rho), (weak, weak_rho) = sorted(rhos.items(), key=lambda kv: kv[1], reverse=True)
+        # Signal carried by ONE component: the strong one has a real effect, the weak one is ~null and
+        # substantially weaker (so the combo is essentially a rescaling of the strong component).
+        if strong_rho >= 0.25 and weak_rho < 0.15 and weak_rho < 0.5 * strong_rho:
+            candidate.evidence = (str(candidate.evidence or "").rstrip() + " " + (
+                f"ATTRIBUTION: this combined feature's association is carried by '{strong}' "
+                f"(|ρ|={strong_rho:.2f}); the other component '{weak}' does NOT independently associate "
+                f"with the target (|ρ|={weak_rho:.2f}). Attribute the finding to '{strong}' alone — do "
+                f"NOT report '{weak}' as a contributing predictor.")).strip()
+            notes.append(f"'{candidate.feature}' → driven by '{strong}', not '{weak}'")
+    if not notes:
+        return []
+    return [
+        "COMBINED-FEATURE ATTRIBUTION: " + "; ".join(notes[:6]) + ". These ratio/interaction features "
+        "validated, but their signal comes from ONE component; the other component is null and must not "
+        "be reported as an independent predictor."
+    ]
+
+
+def _construct_circularity_advisory(candidates: list[Candidate], analysis, request: "DiscoveryRequest") -> list[str]:
+    """Advisory for a diagnostic (low-cardinality) target: a passing feature that is a caller-declared
+    concurrent test, OR that separates the classes near-perfectly (|rho| >= 0.80, below the exact-copy
+    hard gate), is likely (near-)concurrent with or downstream of the outcome, so its association is
+    circular. Detection is value-based + caller-declared (NOT name-based). Mutates candidate.evidence.
+    """
+    observed = analysis.frame[analysis.target_column].dropna() if analysis.target_column in analysis.frame else pd.Series(dtype=float)
+    if not (2 <= int(observed.nunique()) <= 10):
+        return []
+    declared = {str(c).strip().lower() for c in (request.concurrent_test_columns or []) if str(c).strip()}
+    circular: list[tuple[Candidate, str]] = []
+    for candidate in candidates:
+        if candidate.verdict not in {"validated", "conditional"}:
+            continue
+        name = str(candidate.feature or "")
+        if name.strip().lower() in declared:
+            kind = "declared CONCURRENT diagnostic test of the same condition"
+        elif np.isfinite(candidate.rho) and abs(candidate.rho) >= 0.80:
+            kind = (f"separates the classes near-perfectly (|ρ|={abs(candidate.rho):.2f}, ~AUC≳0.93) — "
+                    "far stronger than a typical upstream factor, consistent with a concurrent test / "
+                    "post-outcome measurement")
+        else:
+            continue
+        circular.append((candidate, kind))
+        candidate.evidence = (str(candidate.evidence or "").rstrip() + (
+            f" CONSTRUCT-CIRCULARITY ADVISORY: '{name}' {kind} for the low-cardinality target "
+            f"'{request.target_column}' — it is (near-)concurrent with or downstream of the outcome, so a "
+            "strong association is circular and does not establish an independent, predictive, or causal "
+            "predictor. Confirm the measurement timeline; exclude outcome-derived / co-measured variables.")).strip()
+    if not circular:
+        return []
+    listed = "; ".join(
+        f"'{c.feature}' (ρ={c.rho:.2f}; {kind})" if np.isfinite(c.rho) else f"'{c.feature}' ({kind})"
+        for c, kind in circular[:6]
+    )
+    return [
+        f"Possible CONSTRUCT-CIRCULARITY / POST-OUTCOME leakage for the low-cardinality target "
+        f"'{request.target_column}': {listed}. These features passed the validation battery, but a "
+        "(near-)concurrent or downstream feature's association is circular — it does NOT demonstrate an "
+        "independent, predictive, or causal predictor. CoDaS does not auto-exclude them: confirm the "
+        "measurement timeline and exclude outcome-derived / co-measured variables for a genuine claim."
+    ]
 
 
 def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryReport:
@@ -571,32 +713,6 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
                     f"temporal autocorrelation) and confirm with mixed-effects + external data."
                 )
 
-    # Prognostic-target POST-OUTCOME leakage warning. For a prognostic target (recurrence / survival /
-    # progression / mortality), a strongly-associated feature whose NAME implies a post-treatment or
-    # follow-up assessment (e.g. 'response_to_therapy', 'follow_up_*', 'remission', 'vital_status') is
-    # very likely recorded AFTER the prediction time -> temporal leakage for an early/prognostic model.
-    # CoDaS cannot know the measurement timeline from values alone, so this is an ADVISORY flag (not an
-    # auto-reject): surface it so the researcher confirms timing. Gated on a prognostic-looking target so
-    # cross-sectional/diagnostic outcomes (where a 'response' feature can be a legitimate baseline) are
-    # untouched. (Found on the thyroid-recurrence benchmark: 'response_ord' (post-therapy response, rho
-    # 0.82 with recurrence) was validated with no timing caveat.)
-    _tgt_low = str(request.target_column or "").lower()
-    _is_prognostic = any(k in _tgt_low for k in ("recurr", "surviv", "progress", "relaps", "mortal",
-                                                 "death", "readmiss", "prognos", "time_to", "tte", "_event"))
-    if _is_prognostic:
-        _post_tokens = ("response", "follow_up", "followup", "post_op", "postop", "post_treat",
-                        "posttreat", "remission", "recovery", "vital_status", "outcome", "discharge")
-        _flagged = [f"{c.feature} (ρ={c.rho:.2f})" for c in ranked[: max(request.top_k, 10)]
-                    if abs(c.rho or 0) >= 0.3 and any(tok in str(c.feature or "").lower() for tok in _post_tokens)]
-        if _flagged:
-            warnings.append(
-                f"Possible POST-OUTCOME leakage for a prognostic target ('{request.target_column}'): "
-                f"{', '.join(_flagged[:5])} have names suggesting a post-treatment / follow-up assessment. "
-                f"If recorded AFTER the prediction time, including them is temporal leakage for an early/"
-                f"prognostic model. Confirm the measurement timeline; exclude post-baseline variables for a "
-                f"genuine early-detection claim."
-            )
-
     screened_count = len(ranked)
     validation_pool = [
         candidate for candidate in ranked if candidate.q_value <= request.fdr_alpha
@@ -686,162 +802,13 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
         candidates.extend(hard_gate_failures[:3])
         warnings.append("High-risk hard-gate failures were retained in the public audit trail for reviewer inspection.")
 
-    # Inter-feature collinearity dedup: among the final validated/conditional candidates, if two
-    # features are near-duplicates of each other (|inter-feature ρ| > 0.95 in the analysis frame)
-    # they are measuring the same construct and the weaker one is redundant — reporting both as
-    # independent predictors inflates the effective hit count. Demote the weaker (lower |ρ_target|)
-    # to "collinear_redundant" and surface a warning so the reviewer sees one clear predictor.
-    # Only applies to the shortlist candidates (not hard-gate-failures kept for audit transparency).
-    _COLLINEAR_THRESHOLD = 0.90  # lowered from 0.95: r≥0.90 means same signal (e.g. PPG vs ECG HRV)
-    _passing_cols = [c for c in candidates if c.verdict in {"validated", "conditional"}]
-    _demoted = set()
-    if len(_passing_cols) >= 2:
-        _feats = [c.feature for c in _passing_cols if c.feature in analysis.frame.columns]
-        _collinear_pairs: list[tuple[str, str]] = []
-        for _i, _fi in enumerate(_feats):
-            for _j, _fj in enumerate(_feats):
-                if _j <= _i or _fi in _demoted or _fj in _demoted:
-                    continue
-                try:
-                    _r = float(analysis.frame[[_fi, _fj]].dropna().corr().iloc[0, 1])
-                except Exception:
-                    _r = 0.0
-                if np.isfinite(_r) and abs(_r) > _COLLINEAR_THRESHOLD:
-                    _rho_i = abs(next(c.rho for c in _passing_cols if c.feature == _fi))
-                    _rho_j = abs(next(c.rho for c in _passing_cols if c.feature == _fj))
-                    _weaker = _fj if _rho_i >= _rho_j else _fi
-                    _demoted.add(_weaker)
-                    _collinear_pairs.append((_fi, _fj))
-        if _demoted:
-            for _cand in candidates:
-                if _cand.feature in _demoted:
-                    _cand.verdict = "collinear_redundant"
-            warnings.append(
-                f"Near-duplicate features detected among validated candidates (|inter-feature ρ| > "
-                f"{_COLLINEAR_THRESHOLD}): {', '.join(str(p) for p in _collinear_pairs)}. The stronger "
-                f"feature in each pair is retained; the weaker is demoted to 'collinear_redundant' "
-                f"to avoid double-counting a single biological signal."
-            )
+    warnings.extend(_demote_collinear(candidates, analysis.frame))
 
-    # Effect-size calibration: statistically significant at large n does NOT imply practically
-    # actionable. A validated candidate with |ρ| < 0.20 (small effect by Cohen's convention)
-    # explains < 4% of variance. Surface the variance-explained figure so a reviewer can judge
-    # practical significance before acting on the finding.
-    _small_effect_notes = []
-    for _c in candidates:
-        if _c.verdict in {"validated", "conditional"} and np.isfinite(_c.rho) and abs(_c.rho) < 0.20:
-            _pct = round(float(_c.rho) ** 2 * 100, 1)
-            _small_effect_notes.append(f"'{_c.feature}' (ρ={_c.rho:.2f}, ~{_pct}% variance explained)")
-    if _small_effect_notes:
-        warnings.append(
-            f"Small effect size: {'; '.join(_small_effect_notes)}. Statistical significance at "
-            f"large n does not imply practical importance — review effect magnitudes "
-            f"before acting on findings with |ρ| < 0.20."
-        )
+    warnings.extend(_effect_size_warnings(candidates))
 
-    # --- S20 FIX: combined-feature (ratio / interaction) attribution ---
-    # A two-component engineered feature (a/b or a×b) can validate purely because ONE component
-    # carries the signal while the other is null. Reporting it as a joint a/b predictor spuriously
-    # implicates the null component. When that pattern is detected, attribute the finding to the real
-    # component and annotate the candidate so synthesis does not credit the null one.
-    _attribution_notes: list[str] = []
-    for _c in candidates:
-        if _c.verdict not in {"validated", "conditional"}:
-            continue
-        _comps = analysis.feature_components.get(_c.feature)
-        if not _comps or len(_comps) != 2:
-            continue
-        if not (("_over_" in _c.feature) or ("_x_" in _c.feature)):
-            continue
-        _comp_rhos: dict[str, float] = {}
-        for _comp in _comps:
-            if _comp in analysis.frame.columns and analysis.target_column in analysis.frame.columns:
-                _r, _, _ = safe_spearman(analysis.frame[_comp], analysis.frame[analysis.target_column])
-                _comp_rhos[_comp] = abs(_r) if np.isfinite(_r) else 0.0
-        if len(_comp_rhos) != 2:
-            continue
-        (_strong, _strong_rho), (_weak, _weak_rho) = sorted(_comp_rhos.items(), key=lambda kv: kv[1], reverse=True)
-        # Signal carried by ONE component: the strong one has a real effect, the weak one is ~null
-        # and substantially weaker (so the combo is essentially a rescaling of the strong component).
-        if _strong_rho >= 0.25 and _weak_rho < 0.15 and _weak_rho < 0.5 * _strong_rho:
-            _note = (
-                f"ATTRIBUTION: this combined feature's association is carried by '{_strong}' "
-                f"(|ρ|={_strong_rho:.2f}); the other component '{_weak}' does NOT independently "
-                f"associate with the target (|ρ|={_weak_rho:.2f}). Attribute the finding to "
-                f"'{_strong}' alone — do NOT report '{_weak}' as a contributing predictor."
-            )
-            _c.evidence = (str(_c.evidence or "").rstrip() + " " + _note).strip()
-            _attribution_notes.append(f"'{_c.feature}' → driven by '{_strong}', not '{_weak}'")
-    if _attribution_notes:
-        warnings.append(
-            "COMBINED-FEATURE ATTRIBUTION: " + "; ".join(_attribution_notes[:6]) + ". "
-            "These ratio/interaction features validated, but their signal comes from ONE component; "
-            "the other component is null and must not be reported as an independent predictor."
-        )
+    warnings.extend(_combined_feature_attribution(candidates, analysis))
 
-    # Construct-circularity / post-diagnosis advisory (diagnostic target). The cross-sectional
-    # construct hard-gate only trips on a NEAR-deterministic copy of the outcome (AUC>=0.99 /
-    # class-purity>=0.97), so a strong-but-imperfect PRIOR DIAGNOSIS (Dx_*) or a CONCURRENT
-    # diagnostic test of the same condition (a second assay scored on the same visit) slips
-    # through and is reported as a "validated" predictor. Such a feature is (near-)concurrent
-    # with or downstream of the diagnosis, so its association is circular — it does NOT show an
-    # independent, predictive, or causal predictor (this is hard-fail #2: construct-circularity /
-    # post-diagnosis leakage). CoDaS cannot know the measurement timeline from values alone and a
-    # name-derived diagnosis column is occasionally an intended predictor, so this is an ADVISORY
-    # (not auto-exclusion): surface it and annotate the candidate's note so synthesis flags it.
-    # Gated on a binary / low-cardinality categorical (diagnostic) target; the name match is
-    # conservative (word-boundary, time/age/count-qualified 'diagnosis' covariates are NOT flagged)
-    # to avoid demoting legitimate predictors. (Found on cervical_cancer/Biopsy: Schiller,
-    # Hinselmann, Citology (concurrent tests) and Dx/Dx_Cancer/Dx_HPV (prior diagnoses) validated.)
-    _tgt_obs = analysis.frame[analysis.target_column].dropna() if analysis.target_column in analysis.frame else pd.Series(dtype=float)
-    _diagnostic_target = 2 <= int(_tgt_obs.nunique()) <= 10
-    if _diagnostic_target:
-        _declared_cotests = {str(c).strip().lower() for c in (request.concurrent_test_columns or []) if str(c).strip()}
-        _circular: list[tuple[Candidate, str]] = []
-        for _c in candidates:
-            if _c.verdict not in {"validated", "conditional"}:
-                continue
-            _name = str(_c.feature or "")
-            if _name.strip().lower() in _declared_cotests:
-                _kind = "declared CONCURRENT diagnostic test of the same condition"
-            elif np.isfinite(_c.rho) and abs(_c.rho) >= 0.80:
-                # Value-based circularity probe (complements the name/declared checks, which miss an
-                # obscurely-named concurrent assay e.g. 'panel_score_v2'): a single feature that
-                # separates a DIAGNOSTIC outcome near-perfectly (|ρ|>=0.80, ~AUC>=0.93) — yet below the
-                # AUC>=0.99 exact-copy hard-gate — is far more consistent with a concurrent diagnostic
-                # test / post-diagnosis measurement of the same condition than with an independent
-                # upstream risk factor (genuine single-feature predictors of a disease almost never
-                # reach |ρ|>=0.80; calibrated to fire on 0/30+ real-benchmark markers). ADVISORY only.
-                _kind = (f"separates the diagnostic classes near-perfectly (|ρ|={abs(_c.rho):.2f}, "
-                         f"~AUC≳0.93) — far stronger than a typical upstream risk factor, consistent "
-                         f"with a concurrent diagnostic test / post-diagnosis measurement")
-            else:
-                continue
-            _circular.append((_c, _kind))
-            # Reflect the caveat in the candidate's own note so the synthesis surfaces it per-feature.
-            _c.evidence = (
-                str(_c.evidence or "").rstrip()
-                + f" CONSTRUCT-CIRCULARITY ADVISORY: '{_name}' {_kind} for the diagnostic target "
-                  f"'{request.target_column}' — it is (near-)concurrent with or downstream of the "
-                  f"diagnosis, so a strong association is circular (post-diagnosis leakage) and does not "
-                  f"establish an independent, predictive, or causal predictor. Confirm the measurement "
-                  f"timeline; exclude diagnosis-derived / co-diagnostic variables for a genuine predictor claim."
-            ).strip()
-        if _circular:
-            _listed = "; ".join(
-                f"'{_c.feature}' (ρ={_c.rho:.2f}; {_kind})"
-                if np.isfinite(_c.rho) else f"'{_c.feature}' ({_kind})"
-                for _c, _kind in _circular[:6]
-            )
-            warnings.append(
-                f"Possible CONSTRUCT-CIRCULARITY / POST-DIAGNOSIS leakage for the diagnostic target "
-                f"'{request.target_column}': {_listed}. These features were promoted by the validation "
-                f"battery, but a prior-diagnosis or concurrent diagnostic-test feature is (near-)concurrent "
-                f"with or downstream of the outcome, so its association is circular — it does NOT demonstrate "
-                f"an independent, predictive, or causal predictor. CoDaS does NOT auto-exclude them (a "
-                f"diagnosis-named column is occasionally an intended predictor): confirm the measurement "
-                f"timeline and exclude diagnosis-derived / co-diagnostic variables for a genuine predictor claim."
-            )
+    warnings.extend(_construct_circularity_advisory(candidates, analysis, request))
 
     # NOTE: no NAME-based temporal/future-leakage advisory. The engine does not infer a measurement
     # timeline from column names. A caller who knows a feature is measured post-outcome or in a future
