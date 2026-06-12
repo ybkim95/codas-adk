@@ -1,4 +1,4 @@
-"""CoDaS quickstart: deterministic biomarker discovery on the sample dataset.
+"""CoDaS quickstart: deterministic association discovery on the sample dataset.
 
 Engine-only, no Gemini key required:
 
@@ -7,7 +7,11 @@ Engine-only, no Gemini key required:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+# Run from a checkout without installing: put the repo root on the import path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from codas_core.discovery import DiscoveryRequest, run_discovery_from_csv
 
