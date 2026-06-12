@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -505,59 +504,23 @@ def _construct_circularity_advisory(candidates: list[Candidate], analysis, reque
     ]
 
 
-def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryReport:
-    warnings: list[str] = []
-    # Robustness: accept any DataFrame. Make column names unique and coerce a non-numeric target
-    # before anything reads the frame, so malformed inputs give a clear result, never a crash.
-    df = _dedupe_columns(df, warnings)
-    df = _normalize_target(df, request.target_column, warnings)
-    # +/-inf is never a valid measurement and would poison variance/correlation/scaling; treat it as
-    # missing. Guarded so it is a no-op (no copy) on clean data.
-    _numeric = df.select_dtypes(include="number")
-    if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
-        df = df.replace([np.inf, -np.inf], np.nan)
-    LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
-    warnings.extend(_input_quality_warnings(df, request.target_column))
-    profile = profile_dataframe(
-        df,
-        target_column=request.target_column,
-        participant_id_column=request.participant_id_column,
-        time_column=request.time_column,
-    )
-    # NOTE: the engine performs NO name-based proxy/subscale exclusion. Construct overlap and
-    # item->total leakage are caught STATISTICALLY downstream (construct-validity / near-determinism
-    # hard gates operate on the actual target's values, not on column names). A caller who already
-    # knows certain columns are proxies can still pass them in request.excluded_columns.
+@dataclass
+class _ScreenResult:
+    analysis: Any
+    validation_pool: list[Candidate]
+    screened_count: int
+    cluster_screen_info: dict[str, Any]
+    audit_log: list[str]
 
-    # Roles come ONLY from the caller. profile_dataframe
-    # is used ONLY for its structural facts; it never infers a role from column names.
-    effective_participant = request.participant_id_column
-    effective_time = request.time_column
+
+def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant: str | None,
+            effective_time: str | None) -> tuple["_ScreenResult", list[str]]:
+    """Screening phase: subsample very large data, build the analysis frame, apply the
+    pseudo-replication guards (autocorrelation / cluster design-effect / within-subject), rank
+    candidates (Spearman + Benjamini-Hochberg FDR), and select the validation pool. Returns the
+    result and the warnings it produced. Raises InsufficientDataError on unusable input."""
+    warnings: list[str] = []
     _auto_participant = False
-    # NOTE: the accurate repeated-measures warning is emitted AFTER build_analysis_frame, once we
-    # know whether the frame was actually aggregated to one row per participant (target constant
-    # within subject) or retained at row level (target varies within subject -> cluster-corrected
-    # screening). Emitting an unconditional "aggregated ... not inflated" claim here was FALSE for
-    # within-subject-varying targets (e.g. longitudinal UPDRS): the rows stayed un-aggregated and
-    # screening ran at the inflated row count while the warning claimed otherwise.
-    if (not effective_participant) and request.target_column in df.columns:
-        # No participant id found. Warn if the rows still look like un-keyed repeated measures
-        # (a string/categorical column clusters many rows) so the reviewer can set it.
-        _n = int(len(df))
-        for _c in df.columns:
-            if _c == request.target_column:
-                continue
-            _s = df[_c]
-            if not pd.api.types.is_object_dtype(_s):
-                continue
-            _k = int(_s.nunique(dropna=True))
-            if 2 < _k < _n / 3 and (_n / max(_k, 1)) >= 3:
-                warnings.append(
-                    f"Rows may be repeated measures: column '{_c}' has {_k} distinct values across "
-                    f"{_n:,} rows (~{_n / _k:.0f} rows each). If '{_c}' identifies participants/subjects, "
-                    f"set it as the participant id so per-row significance is not inflated (pseudo-replication)."
-                )
-                break
     # Cap the rows used for screening/validation/model on very large datasets so the
     # synchronous discovery finishes within the interactive request timeout (Cloud Run
     # hard-kills the streaming request at its timeout, which otherwise leaves the UI stuck
@@ -740,6 +703,70 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
             "Consider: larger sample size, stronger signal, or a targeted a priori hypothesis."
         )
     validation_pool = validation_pool[: max(request.top_k, request.top_k * 2)]
+    return _ScreenResult(analysis=analysis, validation_pool=validation_pool,
+                         screened_count=screened_count, cluster_screen_info=cluster_screen_info,
+                         audit_log=audit_log), warnings
+
+
+def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryReport:
+    warnings: list[str] = []
+    # Robustness: accept any DataFrame. Make column names unique and coerce a non-numeric target
+    # before anything reads the frame, so malformed inputs give a clear result, never a crash.
+    df = _dedupe_columns(df, warnings)
+    df = _normalize_target(df, request.target_column, warnings)
+    # +/-inf is never a valid measurement and would poison variance/correlation/scaling; treat it as
+    # missing. Guarded so it is a no-op (no copy) on clean data.
+    _numeric = df.select_dtypes(include="number")
+    if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
+        df = df.replace([np.inf, -np.inf], np.nan)
+    LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
+    warnings.extend(_input_quality_warnings(df, request.target_column))
+    profile = profile_dataframe(
+        df,
+        target_column=request.target_column,
+        participant_id_column=request.participant_id_column,
+        time_column=request.time_column,
+    )
+    # NOTE: the engine performs NO name-based proxy/subscale exclusion. Construct overlap and
+    # item->total leakage are caught STATISTICALLY downstream (construct-validity / near-determinism
+    # hard gates operate on the actual target's values, not on column names). A caller who already
+    # knows certain columns are proxies can still pass them in request.excluded_columns.
+
+    # Roles come ONLY from the caller. profile_dataframe
+    # is used ONLY for its structural facts; it never infers a role from column names.
+    effective_participant = request.participant_id_column
+    effective_time = request.time_column
+    # NOTE: the accurate repeated-measures warning is emitted AFTER build_analysis_frame, once we
+    # know whether the frame was actually aggregated to one row per participant (target constant
+    # within subject) or retained at row level (target varies within subject -> cluster-corrected
+    # screening). Emitting an unconditional "aggregated ... not inflated" claim here was FALSE for
+    # within-subject-varying targets (e.g. longitudinal UPDRS): the rows stayed un-aggregated and
+    # screening ran at the inflated row count while the warning claimed otherwise.
+    if (not effective_participant) and request.target_column in df.columns:
+        # No participant id found. Warn if the rows still look like un-keyed repeated measures
+        # (a string/categorical column clusters many rows) so the reviewer can set it.
+        _n = int(len(df))
+        for _c in df.columns:
+            if _c == request.target_column:
+                continue
+            _s = df[_c]
+            if not pd.api.types.is_object_dtype(_s):
+                continue
+            _k = int(_s.nunique(dropna=True))
+            if 2 < _k < _n / 3 and (_n / max(_k, 1)) >= 3:
+                warnings.append(
+                    f"Rows may be repeated measures: column '{_c}' has {_k} distinct values across "
+                    f"{_n:,} rows (~{_n / _k:.0f} rows each). If '{_c}' identifies participants/subjects, "
+                    f"set it as the participant id so per-row significance is not inflated (pseudo-replication)."
+                )
+                break
+    screen, _screen_warnings = _screen(df, request, effective_participant, effective_time)
+    warnings.extend(_screen_warnings)
+    analysis = screen.analysis
+    validation_pool = screen.validation_pool
+    screened_count = screen.screened_count
+    cluster_screen_info = screen.cluster_screen_info
+    audit_log = screen.audit_log
 
     # Bound validation work so the run always finishes within the interactive request
     # timeout, regardless of dataset size: (1) scale resamples inversely with row count
