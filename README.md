@@ -76,7 +76,9 @@ API-key auth via `X-CoDaS-Agent-Key` (`CODAS_AGENT_API_KEYS`, comma-separated); 
 - **`codas_service/`** — the FastAPI surface exposing both layers.
 
 ```bash
-pip install ".[all,dev]" && python -m pytest -q     # 47 tests, incl. the six-phase graph + loop tools
+pip install ".[all,dev]" && python -m pytest -q     # 65 tests: engine, six-phase graph, loop tools, robustness
+python scripts/robustness_audit.py                   # scored audit: no-crash, determinism, stats, service, scale
+python scripts/agent_robustness.py                   # live audit: orchestration, grounding integrity, prompt-injection
 ```
 
 ## About
