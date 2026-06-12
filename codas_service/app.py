@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,18 @@ def _agent_sessions():
     return _AGENT_SESSIONS
 
 
+# One internal retry for a transient model-backend error (a 503/429/500 spike), so a temporary Gemini
+# overload does not surface to the caller as a 500. Configurable; backoff is linear and short.
+_AGENT_RETRIES = int(os.getenv("CODAS_AGENT_RETRIES", "1"))
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """True for a retryable model-backend hiccup (overload / rate limit / internal), not a real bug."""
+    blob = f"{type(exc).__name__} {exc}"
+    return any(s in blob for s in ("ServerError", "503", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+                                   "429", "500 INTERNAL", "high demand"))
+
+
 @router.post("/agent")
 def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
     """Run the google-adk Orchestrator (six-phase pipeline) over the dataset using Gemini.
@@ -208,20 +221,31 @@ def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
 
     text = _decode_csv_text(payload)
     _AGENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    session_id = uuid.uuid4().hex
-    csv_path = _AGENT_UPLOAD_DIR / f"{session_id}.csv"
-    csv_path.write_text(text, encoding="utf-8")
-    prompt = f"Dataset CSV path: {csv_path}\n\nTask: {payload.query}"
-    result = run_adk_agent_text(
-        root_agent,
-        prompt,
-        app_name=_AGENT_APP_NAME,
-        user_id="service",
-        session_id=session_id,
-        state={"csv_path": str(csv_path)},  # shared memory: the dataset every round/agent reads
-        session_service=_agent_sessions(),
-    )
-    return {"status": "completed", "session_id": session_id, "text": result.text, "events": result.events}
+    # Each attempt is a fully fresh session + upload, so an internal retry never resumes partial state.
+    last_exc: Exception | None = None
+    for attempt in range(_AGENT_RETRIES + 1):
+        session_id = uuid.uuid4().hex
+        csv_path = _AGENT_UPLOAD_DIR / f"{session_id}.csv"
+        csv_path.write_text(text, encoding="utf-8")
+        try:
+            result = run_adk_agent_text(
+                root_agent,
+                f"Task: {payload.query}",  # the dataset is in shared memory (state['csv_path'])
+                app_name=_AGENT_APP_NAME,
+                user_id="service",
+                session_id=session_id,
+                state={"csv_path": str(csv_path)},
+                session_service=_agent_sessions(),
+            )
+            return {"status": "completed", "session_id": session_id, "text": result.text, "events": result.events}
+        except Exception as exc:  # noqa: BLE001
+            csv_path.unlink(missing_ok=True)
+            if not _is_transient_llm_error(exc):
+                raise
+            last_exc = exc
+            if attempt < _AGENT_RETRIES:
+                time.sleep(2 * (attempt + 1))
+    raise HTTPException(status_code=503, detail=f"Model backend temporarily unavailable; retry shortly. ({last_exc})")
 
 
 @router.post("/agent/feedback")
@@ -245,14 +269,21 @@ def agent_feedback(payload: AgentFeedbackPayload, request: Request) -> dict[str,
         "Reviewer feedback on the discovery so far. Incorporate it, and if it calls for more evidence "
         f"run further discovery rounds before revising the report.\n\nFeedback: {payload.feedback}"
     )
-    result = run_adk_agent_text(
-        root_agent,
-        prompt,
-        app_name=_AGENT_APP_NAME,
-        user_id="service",
-        session_id=payload.session_id,  # resume in place: prior memory carries over
-        session_service=_agent_sessions(),
-    )
+    try:
+        result = run_adk_agent_text(
+            root_agent,
+            prompt,
+            app_name=_AGENT_APP_NAME,
+            user_id="service",
+            session_id=payload.session_id,  # resume in place: prior memory carries over
+            session_service=_agent_sessions(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # No auto-retry here (the session is mid-mutation); surface a transient backend hiccup as a
+        # retryable 503 rather than a 500 so the reviewer can resend the same feedback.
+        if _is_transient_llm_error(exc):
+            raise HTTPException(status_code=503, detail=f"Model backend temporarily unavailable; retry shortly. ({exc})") from exc
+        raise
     return {"status": "completed", "session_id": payload.session_id, "text": result.text, "events": result.events}
 
 

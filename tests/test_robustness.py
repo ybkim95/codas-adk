@@ -110,3 +110,56 @@ def test_same_input_and_seed_is_reproducible():
                 tuple((c.feature, round(float(c.rho), 8), c.verdict) for c in rep.candidates))
 
     assert fingerprint() == fingerprint()
+
+
+# --- deeper, adversarial guards (a fast subset of scripts/robustness_audit.py's D-series) ---
+
+def test_fdr_calibration_under_multiple_testing():
+    """Many features on pure noise must not flood the report with false 'validated' predictors."""
+    fp = 0
+    K = 10
+    for s in range(K):
+        rng = np.random.default_rng(7000 + s)
+        df = pd.DataFrame({f"f{i}": rng.normal(size=150) for i in range(20)} | {"y": rng.normal(size=150)})
+        if sum(c.verdict == "validated" for c in _run(df, "y", top_k=8, rs=120).candidates) > 0:
+            fp += 1
+    assert fp <= 2, f"false-positive rate too high under multiple testing: {fp}/{K}"
+
+
+def test_concurrent_discoveries_are_isolated_and_thread_safe():
+    from concurrent.futures import ThreadPoolExecutor
+
+    def job(seed):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(size=160)
+        df = pd.DataFrame({"x": x, "n": rng.normal(size=160), "y": (0.2 * (seed % 4 + 1)) * x + rng.normal(size=160)})
+        rep = _run(df, "y", top_k=5, rs=100)
+        return rep.fact_sheet.get("rows")
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        rows = list(ex.map(job, range(12)))
+    assert all(r == 160 for r in rows), "a concurrent run saw the wrong row count (state bleed)"
+
+
+def test_nonstandard_delimiters_and_encodings_parse(tmp_path):
+    from codas_core.data import read_csv_dataset
+
+    semi = tmp_path / "semi.csv"
+    semi.write_text("a;b;y\n" + "\n".join(f"{i};{i * 2};{i * 0.5}" for i in range(30)))
+    assert read_csv_dataset(semi).shape == (30, 3)
+
+    bom = tmp_path / "bom.csv"
+    bom.write_text("﻿a,b,y\n" + "\n".join(f"{i},{i * 2},{i}" for i in range(30)), encoding="utf-8")
+    assert read_csv_dataset(bom).shape[1] == 3
+
+
+def test_row_index_leakage_is_caught():
+    rng = np.random.default_rng(1)
+    n = 200
+    idx = np.arange(n, dtype=float)
+    df = pd.DataFrame({"row_id": idx, "x": rng.normal(size=n), "y": idx + rng.normal(size=n) * 5})
+    rep = _run(df, "y", top_k=5)
+    rid = next((c for c in rep.candidates if c.feature == "row_id"), None)
+    caught = rid is None or rid.verdict != "validated" or any(
+        t.hard_gate and t.applicable and not t.passed for t in rid.tests)
+    assert caught, "a row-index feature that trivially tracks a row-ordered target must be caught"
