@@ -146,18 +146,38 @@ codas_core/      deterministic engine (data, statistics, validation, discovery, 
 codas_agents/    google-adk harness — tools (agent.py), prompts (prompts.py), session (runtime.py), guardrails (callbacks.py)
 codas_service/   thin FastAPI service (app, API-key auth)
 examples/        sample dataset + quickstart.py
-tests/           engine determinism, multi-domain generalization, and service tests
+scripts/         benchmark_datasets.py (real cross-domain robustness benchmark)
+tests/           determinism, generalization, edge cases, real datasets, agent harness, service
 ```
 
-## Tests
+## Tests and robustness
 
 ```bash
-pip install ".[all,dev]" && python -m pytest -q
+pip install ".[all,dev]" && python -m pytest -q        # 38 tests
 ```
 
-The suite includes `test_generalization.py`, which proves the engine runs on
-datasets from unrelated domains (housing, abstract synthetic) with arbitrary
-column names — no special-casing, no hardcoded features.
+The suite covers:
+
+- **`test_generalization.py`** — the engine runs on unrelated domains (housing,
+  abstract synthetic) with arbitrary column names; no special-casing.
+- **`test_edge_cases.py`** — degenerate and adversarial inputs (empty, single-row,
+  constant/all-NaN, duplicate column names, non-numeric targets, inf, p≫n, unicode,
+  perfect leakage). The contract: never crash — either a valid report or a clear
+  `InsufficientDataError`.
+- **`test_real_datasets.py`** — real clinical datasets (sklearn breast-cancer,
+  diabetes), offline.
+- **`test_agent_harness.py`** — the tool-calling path sandbox, the ADK tools, and
+  engine logging.
+
+For a broader real-data check across domains, run the network benchmark (cached in
+`.cache/`, skips offline):
+
+```bash
+python scripts/benchmark_datasets.py
+```
+
+It exercises the engine on real public datasets — breast-cancer, diabetes, pima,
+penguins, auto-mpg, and a `;`-delimited wine file — and fails if any input crashes.
 
 ## Scientific scope and honesty
 
