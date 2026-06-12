@@ -21,3 +21,4 @@ tmp_*
 
 # OS
 .DS_Store
+.cache/

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -32,6 +33,11 @@ from .models import Candidate, DiscoveryReport
 from .reporting import build_fact_sheet, build_markdown_report
 from .statistics import autocorr_effective_n, benjamini_hochberg, cluster_effective_n, correlation_pvalue, intraclass_correlation, lag1_autocorr, safe_spearman, signed_direction, within_subject_two_stage
 from .validation import ValidationConfig, validate_candidate
+
+# Library logger: silent unless the host app configures handlers. Logs phase progress at INFO so a
+# caller can trace and debug a run (engine-only; the agent layer logs separately in callbacks.py).
+LOGGER = logging.getLogger("codas.engine")
+LOGGER.addHandler(logging.NullHandler())
 
 
 @dataclass
@@ -256,8 +262,80 @@ def _subsample_for_screening(df: pd.DataFrame, target_column: str, max_rows: int
     return df.iloc[sel].reset_index(drop=True)
 
 
+def _dedupe_columns(df: pd.DataFrame, warnings: list[str]) -> pd.DataFrame:
+    """Make column names unique so ``df[col]`` never returns a DataFrame.
+
+    Duplicate column names make ``df[name]`` return a DataFrame instead of a Series, which crashes
+    every downstream numeric op with a cryptic TypeError. The first occurrence keeps the original
+    name; later duplicates get a ``.1`` / ``.2`` suffix.
+    """
+    if not pd.Index(df.columns).duplicated().any():
+        return df
+    seen: dict[Any, int] = {}
+    renamed: list[Any] = []
+    for column in df.columns:
+        if column in seen:
+            seen[column] += 1
+            renamed.append(f"{column}.{seen[column]}")
+        else:
+            seen[column] = 0
+            renamed.append(column)
+    out = df.copy()
+    out.columns = renamed
+    warnings.append(
+        "Duplicate column names were detected and made unique (suffixes .1/.2). Verify the source "
+        "export — duplicate columns usually indicate a malformed file."
+    )
+    return out
+
+
+def _normalize_target(df: pd.DataFrame, target_column: str, warnings: list[str]) -> pd.DataFrame:
+    """Coerce a non-numeric target so discovery can run, or raise a clear boundary error.
+
+    * numeric target -> unchanged.
+    * mostly-numeric text (e.g. ``"1.0"``, ``"2"``) -> coerced to numbers.
+    * exactly two distinct non-numeric values -> encoded to 0/1 (binary classification).
+    * any other non-numeric target (3+ text categories, free text) -> InsufficientDataError, because
+      correlating arbitrary category codes of a nominal label would be meaningless.
+    """
+    if target_column not in df.columns:
+        return df  # downstream raises the explicit "not present" error
+    series = df[target_column]
+    if pd.api.types.is_numeric_dtype(series):
+        return df
+    coerced = pd.to_numeric(series, errors="coerce")
+    if coerced.notna().mean() >= 0.8:
+        out = df.copy()
+        out[target_column] = coerced
+        return out
+    uniques = list(pd.unique(series.dropna()))
+    if len(uniques) == 2:
+        out = df.copy()
+        out[target_column] = series.map({uniques[0]: 0.0, uniques[1]: 1.0}).astype(float)
+        warnings.append(
+            f"Target '{target_column}' was non-numeric with two classes ({uniques[0]!r}, "
+            f"{uniques[1]!r}); encoded to 0/1 for binary classification."
+        )
+        return out
+    raise InsufficientDataError(
+        f"Target '{target_column}' is non-numeric with {len(uniques)} distinct values. Provide a "
+        "numeric outcome or a binary (two-class) categorical target; correlating arbitrary codes of "
+        "a multi-class text label is not meaningful."
+    )
+
+
 def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryReport:
     warnings: list[str] = []
+    # Robustness: accept any DataFrame. Make column names unique and coerce a non-numeric target
+    # before anything reads the frame, so malformed inputs give a clear result, never a crash.
+    df = _dedupe_columns(df, warnings)
+    df = _normalize_target(df, request.target_column, warnings)
+    # +/-inf is never a valid measurement and would poison variance/correlation/scaling; treat it as
+    # missing. Guarded so it is a no-op (no copy) on clean data.
+    _numeric = df.select_dtypes(include="number")
+    if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
+        df = df.replace([np.inf, -np.inf], np.nan)
+    LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
     # Heavy OUTCOME missingness is silently biasing: only rows with an observed target are
     # analyzed, so if the outcome is missing-not-at-random (e.g. high-stress states under-reported
     # in EMA, sicker patients lost to follow-up) the association reflects the reporting subgroup,
@@ -780,6 +858,12 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
         for candidate in candidates
         if candidate.verdict in {"validated", "conditional"}
     ][:10]
+    if not model_features and candidates:
+        # Nothing passed the validation battery (e.g. every strong feature was flagged as a possible
+        # restated-outcome / leakage). Still report a predictive-performance number from the top
+        # screened candidates so the report is never blank; the per-candidate verdicts carry the
+        # caveats. No-op when validated/conditional features exist, so the common path is unchanged.
+        model_features = [candidate.feature for candidate in candidates][:10]
     ml_metrics = _ml_benchmark(
         analysis.frame, analysis.target_column, model_features, request.random_state,
         participant_id_column=analysis.participant_id_column,
@@ -914,6 +998,12 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
         f"Audited {len(validation_pool)} candidate variants with the CoDaS internal validation battery.",
         "Generated Fact Sheet before report assembly.",
     ])
+    LOGGER.info(
+        "discovery done: target=%r screened=%d candidates=%d validated=%d metric=%s=%s",
+        request.target_column, screened_count, len(candidates),
+        sum(1 for c in candidates if c.verdict == "validated"),
+        fact_sheet.get("ml_metric_name"), fact_sheet.get("ml_metric_value"),
+    )
     return DiscoveryReport(
         profile=profile,
         candidates=candidates,
