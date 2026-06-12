@@ -8,7 +8,7 @@ reported number is computed by deterministic Python that the model cannot bypass
 The engine is **domain-agnostic** — it makes no assumption about column names or problem domain,
 and contains no hardcoded features or dataset-specific rules. You name the target; it does the stats.
 
-## Run it in 60 seconds
+## Quick Run
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
