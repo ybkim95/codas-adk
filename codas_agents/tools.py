@@ -18,6 +18,7 @@ The tools fall into two groups:
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -25,8 +26,31 @@ from typing import Any
 import pandas as pd
 from google.adk.tools import ToolContext
 
-from codas_core.data import profile_dataframe, read_csv_dataset
+from codas_core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas_core.discovery import DiscoveryRequest, run_discovery_from_csv
+
+
+def _json_safe(obj: Any) -> Any:
+    """Make a tool result strictly JSON-serializable for the ADK -> Gemini boundary.
+
+    Real datasets carry missing values, so profiles and previews contain NaN — and NaN/Infinity are
+    not valid JSON, so the model API rejects the tool response with a 400. Recursively map non-finite
+    floats to None and numpy scalars / exotic types (Timestamps, etc.) to natives or strings.
+    """
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    if isinstance(obj, float):  # includes numpy.float64 (a float subclass)
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if hasattr(obj, "item"):  # numpy scalar -> python native, then re-check finiteness
+        try:
+            return _json_safe(obj.item())
+        except Exception:
+            return str(obj)
+    return str(obj)
 
 # Per-round deepening schedule for the discovery loop. The GapChecker (``check_convergence``) decides,
 # per the paper, "whether to pursue deeper feature engineering or move to validation"; concretely each
@@ -66,7 +90,7 @@ def profile_dataset(csv_path: str = "", target_column: str = "", tool_context: T
     if path is None:
         return {"error": "No dataset path in memory; seed state['csv_path'] or pass csv_path."}
     df = read_csv_dataset(path)
-    return profile_dataframe(df, target_column=(target_column or None)).to_dict()
+    return _json_safe(profile_dataframe(df, target_column=(target_column or None)).to_dict())
 
 
 def preview_columns(csv_path: str = "", limit: int = 20, tool_context: ToolContext = None) -> dict[str, Any]:
@@ -78,11 +102,11 @@ def preview_columns(csv_path: str = "", limit: int = 20, tool_context: ToolConte
     if path is None:
         return {"error": "No dataset path in memory; seed state['csv_path'] or pass csv_path."}
     df = pd.read_csv(path, nrows=max(1, min(limit, 200)))
-    return {
+    return _json_safe({
         "columns": list(df.columns),
         "dtypes": {column: str(dtype) for column, dtype in df.dtypes.items()},
         "preview_rows": df.head(3).to_dict(orient="records"),
-    }
+    })
 
 
 def run_discovery(
@@ -108,7 +132,7 @@ def run_discovery(
         top_k=top_k,
         validation_resamples=int(os.getenv("CODAS_VALIDATION_RESAMPLES", "1000")),
     )
-    return run_discovery_from_csv(Path(csv_path).expanduser().resolve(), request).to_dict()
+    return _json_safe(run_discovery_from_csv(Path(csv_path).expanduser().resolve(), request).to_dict())
 
 
 # --- stateful tools (shared session memory) ----------------------------------------------------
@@ -142,7 +166,11 @@ def set_target(
 def _round_summary(round_index: int, ratio_features: int, top_k: int, report: dict[str, Any]) -> dict[str, Any]:
     fact_sheet = report.get("fact_sheet", {})
     passing = [
-        {"feature": c["feature"], "rho": round(float(c["rho"]), 4), "verdict": c["verdict"]}
+        {
+            "feature": c.get("feature"),
+            "rho": round(float(c["rho"]), 4) if isinstance(c.get("rho"), (int, float)) else None,
+            "verdict": c.get("verdict"),
+        }
         for c in report.get("candidates", [])
         if c.get("verdict") in {"validated", "conditional"}
     ]
@@ -192,7 +220,14 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
         max_ratio_features=ratio_features,
         validation_resamples=_ROUND_RESAMPLES,
     )
-    report = run_discovery_from_csv(path, request).to_dict()
+    # A bad target/role choice makes the engine raise rather than crash the loop; return a recoverable
+    # error so the agent can revise the design and retry.
+    try:
+        report = _json_safe(run_discovery_from_csv(path, request).to_dict())
+    except InsufficientDataError as exc:
+        return {"error": f"Discovery could not run for target '{target}': {exc}", "round": round_index}
+    except Exception as exc:  # noqa: BLE001 - surface any engine failure to the agent, never abort the run
+        return {"error": f"Discovery failed for target '{target}': {type(exc).__name__}: {exc}", "round": round_index}
 
     summary = _round_summary(round_index, ratio_features, top_k, report)
     tool_context.state["rounds"] = rounds + [summary]

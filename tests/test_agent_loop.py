@@ -130,3 +130,20 @@ def test_gapcheck_without_any_round_does_not_escalate():
     ctx = _Ctx({})
     verdict = check_convergence(ctx)
     assert verdict["converged"] is False and ctx.actions.escalate is False
+
+
+# --- JSON-safety of tool results (real data has missing values; NaN/inf are not valid JSON) ---
+
+def test_tools_return_strict_json_on_missing_data(tmp_path):
+    import json
+
+    from codas_agents.tools import _json_safe, preview_columns, profile_dataset
+
+    path = tmp_path / "missing.csv"
+    # NaN and inf are exactly what broke the ADK -> Gemini tool-response payload on real datasets.
+    pd.DataFrame({"a": [1.0, np.nan, 3.0], "b": [np.inf, 2.0, np.nan], "t": [0, 1, 0]}).to_csv(path, index=False)
+    for out in (preview_columns(str(path)), profile_dataset(str(path))):
+        json.dumps(out, allow_nan=False)  # raises ValueError if any NaN/inf survived
+
+    assert _json_safe(float("nan")) is None and _json_safe(float("inf")) is None
+    assert _json_safe({"x": [float("inf"), np.float64("nan"), np.int64(7)]}) == {"x": [None, None, 7]}
