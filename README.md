@@ -48,17 +48,43 @@ export GOOGLE_API_KEY=...                             # then /v1/agent runs the 
 
 ## Architecture
 
+The agent layer is a faithful build of the CoDaS paper: an **Orchestrator** coordinates six phases,
+with all agents sharing one memory (`session.state`), one Fact Sheet, and one deterministic tool set.
+
 ```
-codas_service/   thin FastAPI surface (API-key auth, stateless)   /v1/discover /v1/profile /v1/agent
+root_agent  (SequentialAgent — the Orchestrator)
+├─ A. Data understanding   scout → set_target(memory);  hypotheses          (SequentialAgent)
+├─ B&C. Discovery loop     LoopAgent — iterates until the GapChecker escalates
+│     search ─ run_discovery_round (deepens each round)
+│     dual_track           statistical_interpreter ∥ ml_interpreter         (ParallelAgent)
+│     critic ⇄ defender    adversarial validation
+│     gapcheck ─ check_convergence → escalate ends the loop
+└─ D/E/F. Reporting        mechanism → novelty → strategy → artifacts → report (SequentialAgent)
+```
+
+```
+codas_service/   thin FastAPI surface (API-key auth)   /v1/discover /v1/profile /v1/agent(+/feedback)
       │ deterministic                              │ google-adk + Gemini
-codas_core/      the engine (no LLM, no network)   codas_agents/   LlmAgent ×11 + SequentialAgent
+codas_core/      the engine (no LLM, no network)   codas_agents/   Orchestrator: Sequential→Loop→Parallel
   numpy/pandas/scipy/scikit-learn only             tool-grounded; the LLM cannot invent numbers
 ```
 
 - **`codas_core/`** — deterministic engine; depends only on numpy/pandas/scipy/scikit-learn.
-- **`codas_agents/`** — google-adk harness: tools (`agent.py`), prompts (`prompts.py`), session
-  (`runtime.py`), guardrails+logging (`callbacks.py`). Gemini is reached via `codas_core/gemini.py`.
+- **`codas_agents/`** — google-adk harness: agent graph (`agent.py`), deterministic tools
+  (`tools.py`), prompts (`prompts.py`), session/memory (`runtime.py`), guardrails+logging
+  (`callbacks.py`). Gemini is reached via `codas_core/gemini.py`.
 - **`codas_service/`** — FastAPI app exposing both layers over HTTPS.
+
+**Iterative loop & shared memory.** `run_discovery_round` widens the engineered-feature budget each
+round and appends a compact result to `state['rounds']`; the parallel statistical/ML interpreters and
+the critic/defender read it; the **GapChecker** (`check_convergence`) compares the last two rounds and
+sets `actions.escalate` to stop the loop once deeper search stops paying off (no new validated
+candidate and no model-metric gain), or `max_iterations` caps it. Each agent publishes its output to
+shared memory via `output_key`, so the whole run is one auditable state object.
+
+**Optional human feedback.** `/v1/agent` returns a `session_id`; `POST /v1/agent/feedback` resumes the
+SAME session — prior rounds and Fact Sheet intact — so a reviewer can steer one more iteration instead
+of restarting (the paper's post-discovery human-in-the-loop).
 
 ## HTTP API
 
@@ -67,7 +93,8 @@ codas_core/      the engine (no LLM, no network)   codas_agents/   LlmAgent ×11
 | GET | `/healthz` | none | Liveness |
 | POST | `/v1/profile` | key | Schema / missingness / numeric columns |
 | POST | `/v1/discover` | key | Deterministic discovery for an explicit `target_column` |
-| POST | `/v1/agent` | key | google-adk + Gemini pipeline (LLM picks the target/roles) |
+| POST | `/v1/agent` | key | google-adk + Gemini six-phase pipeline (LLM picks target/roles); returns a `session_id` |
+| POST | `/v1/agent/feedback` | key | Resume a session with reviewer feedback for an optional next iteration |
 
 Auth: `X-CoDaS-Agent-Key: <key>` (`CODAS_AGENT_API_KEYS`, comma-separated for rotation); unset ⇒
 localhost-only. CORS is explicit-origin, credential-free. See `.env.example` for configuration.
@@ -81,11 +108,11 @@ localhost-only. CORS is explicit-origin, credential-free. See `.env.example` for
 ## Tests
 
 ```bash
-pip install ".[all,dev]" && python -m pytest -q     # 38 tests; CI runs them on py3.10–3.12
+pip install ".[all,dev]" && python -m pytest -q     # 47 tests; CI runs them on py3.10–3.12
 ```
 
 Coverage: determinism, cross-domain generalization, adversarial edge cases (never crash), real
-clinical datasets, and the agent harness. `python scripts/benchmark_datasets.py` runs the engine on
+clinical datasets, the agent harness, and the six-phase agent graph + loop/GapChecker tools. `python scripts/benchmark_datasets.py` runs the engine on
 real public datasets (breast-cancer, diabetes, penguins, wine, …) and fails on any crash.
 
 ## Scope

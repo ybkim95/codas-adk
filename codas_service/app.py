@@ -5,9 +5,11 @@ Two layers are exposed:
 * ``/v1/discover`` | ``/v1/profile`` — the deterministic engine (``codas_core``). Stateless, fast,
   reproducible; identical numbers for identical input. No LLM required. The caller specifies the
   target column explicitly: the engine makes NO assumption about column names or problem domain.
-* ``/v1/agent`` — the google-adk SequentialAgent (``codas_agents``) orchestrating the same
-  deterministic tools over Gemini. Here the LLM chooses the target/roles from the schema and the
-  task description. Requires a Gemini API key; degrades to 503 without one.
+* ``/v1/agent`` (+ ``/v1/agent/feedback``) — the google-adk Orchestrator (``codas_agents``) running
+  the paper's six-phase pipeline over the same deterministic tools with Gemini. Here the LLM chooses
+  the target/roles from the schema and the task, iterates a deepening search loop, and writes the
+  report; ``/v1/agent/feedback`` resumes the SAME session so a reviewer can steer an optional next
+  iteration. Requires a Gemini API key; degrades to 503 without one.
 
 Auth is server-to-server API key (see ``codas_service.auth``). There is no browser/Firebase auth and
 no local dataset registry: callers hand the data over inline, keeping the service stateless.
@@ -34,7 +36,10 @@ from codas_service.auth import require_api_key
 _MAX_INLINE_CSV_BYTES = int(os.getenv("CODAS_AGENT_MAX_INLINE_CSV_MB", "50")) * 1024 * 1024
 _MIN_RESAMPLES = int(os.getenv("CODAS_AGENT_MIN_RESAMPLES", "100"))
 # ADK tools are guardrailed to read only under these roots; write inline CSV here for /v1/agent.
+# The file is keyed by session id and kept for the session's lifetime so a feedback turn can re-read
+# it. (In multi-instance production, back this with object storage and a TTL instead of local disk.)
 _AGENT_UPLOAD_DIR = Path(__file__).resolve().parents[1] / ".codas_runs" / "agent_uploads"
+_AGENT_APP_NAME = "codas"
 
 app = FastAPI(
     title="CoDaS",
@@ -82,6 +87,11 @@ class DiscoverPayload(_InlineData):
 class AgentPayload(_InlineData):
     query: str = Field(description="Natural-language task for the ADK agent pipeline.")
     model: str | None = Field(default=None, description="Gemini model id; defaults to CODAS_GEMINI_MODEL.")
+
+
+class AgentFeedbackPayload(BaseModel):
+    session_id: str = Field(description="The session_id returned by /v1/agent, to resume in place.")
+    feedback: str = Field(description="Reviewer feedback to steer the next discovery iteration.")
 
 
 def _decode_csv_text(data: _InlineData) -> str:
@@ -164,38 +174,86 @@ def discover(payload: DiscoverPayload, request: Request) -> dict[str, Any]:
     return {"status": "completed", "report": report}
 
 
+# Process-persistent session store, so a /v1/agent/feedback turn can resume the SAME session (with
+# all prior rounds and memory) instead of restarting the discovery from scratch.
+_AGENT_SESSIONS = None
+
+
+def _agent_sessions():
+    global _AGENT_SESSIONS
+    if _AGENT_SESSIONS is None:
+        from codas_agents.runtime import new_session_service
+
+        _AGENT_SESSIONS = new_session_service()
+    return _AGENT_SESSIONS
+
+
 @router.post("/agent")
 def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
-    """Run the google-adk SequentialAgent over the dataset using Gemini.
+    """Run the google-adk Orchestrator (six-phase pipeline) over the dataset using Gemini.
 
-    The agent plans, profiles, chooses the target/roles, runs the deterministic discovery tool, and
-    narrates the result. All numbers still come from the deterministic engine; the LLM only
-    orchestrates and explains. Requires a Gemini API key; returns 503 if unconfigured.
+    The agents plan, profile, choose the target/roles, iterate a deepening discovery loop with
+    parallel statistical/ML interpretation and adversarial validation, then write a report. All
+    numbers still come from the deterministic engine; the LLMs orchestrate, interpret, and explain.
+    The dataset path is seeded into shared memory and the session is persisted, so the returned
+    ``session_id`` can be handed to ``/v1/agent/feedback`` to steer an optional next iteration.
+    Requires a Gemini API key; returns 503 if unconfigured.
     """
     require_api_key(request)
     if not gemini.configured():
         raise HTTPException(status_code=503, detail="Gemini is not configured; set GOOGLE_API_KEY to use /v1/agent.")
 
-    # Lazy import so the engine endpoints work even if google-adk is not installed.
-    from codas_agents.agent import root_agent
+    from codas_agents.agent import root_agent  # lazy: engine endpoints work without google-adk installed
     from codas_agents.runtime import run_adk_agent_text
 
     text = _decode_csv_text(payload)
     _AGENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = _AGENT_UPLOAD_DIR / f"{uuid.uuid4().hex}.csv"
+    session_id = uuid.uuid4().hex
+    csv_path = _AGENT_UPLOAD_DIR / f"{session_id}.csv"
     csv_path.write_text(text, encoding="utf-8")
-    try:
-        prompt = f"Dataset CSV path: {csv_path}\n\nTask: {payload.query}"
-        result = run_adk_agent_text(
-            root_agent,
-            prompt,
-            app_name="codas",
-            user_id="service",
-            session_id=uuid.uuid4().hex,
-        )
-    finally:
-        csv_path.unlink(missing_ok=True)
-    return {"status": "completed", "text": result.text, "events": result.events}
+    prompt = f"Dataset CSV path: {csv_path}\n\nTask: {payload.query}"
+    result = run_adk_agent_text(
+        root_agent,
+        prompt,
+        app_name=_AGENT_APP_NAME,
+        user_id="service",
+        session_id=session_id,
+        state={"csv_path": str(csv_path)},  # shared memory: the dataset every round/agent reads
+        session_service=_agent_sessions(),
+    )
+    return {"status": "completed", "session_id": session_id, "text": result.text, "events": result.events}
+
+
+@router.post("/agent/feedback")
+def agent_feedback(payload: AgentFeedbackPayload, request: Request) -> dict[str, Any]:
+    """Resume a finished discovery with reviewer feedback (the paper's optional human-in-the-loop).
+
+    Re-enters the SAME session — its target/roles, prior rounds, and Fact Sheet are intact in shared
+    memory — so the orchestrator incorporates the feedback and runs further deepening rounds (the loop
+    continues from the existing round count) rather than starting over. Returns the updated report.
+    """
+    require_api_key(request)
+    if not gemini.configured():
+        raise HTTPException(status_code=503, detail="Gemini is not configured; set GOOGLE_API_KEY to use /v1/agent.")
+    if not (_AGENT_UPLOAD_DIR / f"{payload.session_id}.csv").exists():
+        raise HTTPException(status_code=404, detail="Unknown or expired session_id; start a new /v1/agent run.")
+
+    from codas_agents.agent import root_agent
+    from codas_agents.runtime import run_adk_agent_text
+
+    prompt = (
+        "Reviewer feedback on the discovery so far. Incorporate it, and if it calls for more evidence "
+        f"run further discovery rounds before revising the report.\n\nFeedback: {payload.feedback}"
+    )
+    result = run_adk_agent_text(
+        root_agent,
+        prompt,
+        app_name=_AGENT_APP_NAME,
+        user_id="service",
+        session_id=payload.session_id,  # resume in place: prior memory carries over
+        session_service=_agent_sessions(),
+    )
+    return {"status": "completed", "session_id": payload.session_id, "text": result.text, "events": result.events}
 
 
 app.include_router(router)
