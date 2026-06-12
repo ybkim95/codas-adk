@@ -1,13 +1,13 @@
 # CoDaS — AI Co-Data-Scientist
 
-Give CoDaS **any tabular CSV and a research goal in plain language**. A team of
+Give CoDaS a tabular CSV and a research goal in plain language. A team of
 [google-adk](https://google.github.io/adk-docs/) + Gemini agents profiles the data, frames
-hypotheses, runs an iterative deepening search, validates it adversarially, and returns a
-rigorously grounded, auditable set of candidate predictors of your target.
+hypotheses, runs an iterative deepening search, validates it adversarially, and returns a grounded,
+auditable set of candidate predictors of your target.
 
-The agents plan, interpret, debate, and decide when to stop. Every **number** in the report is
-computed by deterministic Python the model cannot bypass or invent — and the engine is
-domain-agnostic: no hardcoded features or column names, so it works on any CSV.
+The agents plan, interpret, debate, and decide when to stop. Every number in the report is computed
+by the deterministic engine, not the model. The engine assumes no schema, feature names, or problem
+domain.
 
 ## How it works
 
@@ -16,7 +16,7 @@ Its heart is an **iterative discovery loop** that deepens the search each round 
 judges that going further no longer pays off.
 
 ```
-   any CSV  +  a research goal in plain language
+   a CSV  +  a research goal in plain language
         │
         ▼
    ORCHESTRATOR  ·  shared memory  ·  deterministic tools
@@ -32,7 +32,7 @@ judges that going further no longer pays off.
    └─ Phase D/E/F   mechanism → novelty → strategy → grounded report
         │
         ▼
-   an auditable report   ⟲   optional: human feedback steers one more iteration
+   an auditable report   ⟲   optional human feedback for another iteration
 ```
 
 Built on **google-adk**: each phase is a `SequentialAgent`, the discovery loop is a `LoopAgent`
@@ -43,22 +43,20 @@ a single auditable object.
 - **Grounded** — the deterministic engine (Spearman + FDR screening, a validation battery, and
   statistical leakage guards) is the only source of numbers; the LLM never invents a statistic.
 - **Domain-agnostic** — no hardcoded features, columns, or domain rules; you name the target.
-- **Iterative** — the search deepens until returns diminish, and a reviewer can steer one more pass.
+- **Iterative** — the search deepens until returns diminish, and a reviewer can request another pass.
 
 ## Quick start
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install ".[all]"
-
-# 1 — deterministic engine only, no API key needed
-python examples/quickstart.py
-
-# 2 — the full six-phase agent pipeline (prints the live phase flow, then the report)
 export GOOGLE_API_KEY=...
-python examples/run_agent.py
 
-# 3 — or run it as a service
+# run the pipeline on the bundled sample, or on your own CSV + question
+python examples/run_agent.py
+python examples/run_agent.py path/to/data.csv "which features predict <target>?"
+
+# or run it as a service
 uvicorn codas_service.app:app --port 8000
 ```
 
@@ -66,7 +64,7 @@ uvicorn codas_service.app:app --port 8000
 |---|---|---|
 | POST | `/v1/discover` | Deterministic discovery for an explicit `target_column` |
 | POST | `/v1/agent` | The agent pipeline picks the target/roles; returns a `session_id` |
-| POST | `/v1/agent/feedback` | Resume that session with feedback for one more iteration |
+| POST | `/v1/agent/feedback` | Resume that session with feedback for another iteration |
 
 API-key auth via `X-CoDaS-Agent-Key` (`CODAS_AGENT_API_KEYS`, comma-separated); see `.env.example`.
 
@@ -80,3 +78,10 @@ API-key auth via `X-CoDaS-Agent-Key` (`CODAS_AGENT_API_KEYS`, comma-separated); 
 ```bash
 pip install ".[all,dev]" && python -m pytest -q     # 47 tests, incl. the six-phase graph + loop tools
 ```
+
+## About
+
+CoDaS implements the architecture described in the CoDaS paper
+(arXiv:[2604.14615](https://arxiv.org/pdf/2604.14615)). A companion project packages the
+deterministic engine as a reusable agent skill:
+[codas-science-skills](https://github.com/ybkim95/codas-science-skills).

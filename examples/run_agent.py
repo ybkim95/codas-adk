@@ -1,14 +1,15 @@
-"""CoDaS agent pipeline: the full six-phase Orchestrator on the sample dataset.
+"""CoDaS agent pipeline: the full six-phase Orchestrator.
 
-Runs the google-adk + Gemini agents end to end and prints the phase/agent flow as it happens, then
-the grounded final report. Needs a Gemini key:
+The two inputs are a CSV and a research goal in plain language. Runs the google-adk + Gemini agents
+end to end and prints the phase/agent flow as it happens, then the grounded final report:
 
     export GOOGLE_API_KEY=...
-    python examples/run_agent.py
+    python examples/run_agent.py                                  # bundled sample + a default goal
+    python examples/run_agent.py path/to/data.csv "which features predict <target>?"
 
-The dataset path is seeded into shared memory (session.state['csv_path']); the agents profile it,
-choose the target and roles, iterate the deepening discovery loop, and write the report. Every
-number in that report is computed by the deterministic engine, not the model.
+The CSV path is seeded into shared memory (session.state['csv_path']) and the goal is the user
+message; the agents profile the data, choose the target and roles, iterate the deepening discovery
+loop, and write the report. Every number in that report is computed by the deterministic engine.
 """
 
 from __future__ import annotations
@@ -32,7 +33,17 @@ from google.genai import types
 from codas_agents.agent import root_agent
 
 SAMPLE = Path(__file__).resolve().parent / "sample_dataset.csv"
-GOAL = "Discover which features predict depression_score; choose the target and roles yourself, iterate, and write a short report."
+DEFAULT_GOAL = (
+    "Discover and validate the strongest predictors in this dataset. Choose the most appropriate "
+    "target column and roles yourself, iterate, and write a short report."
+)
+
+
+def _parse_args() -> tuple[Path, str]:
+    """Inputs: a CSV path and a research goal (both optional; default to the bundled sample)."""
+    csv = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else SAMPLE
+    goal = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_GOAL
+    return csv, goal
 
 
 def _line(author: str, parts) -> str | None:
@@ -52,14 +63,15 @@ def _line(author: str, parts) -> str | None:
 
 async def main() -> None:
     if not os.getenv("GOOGLE_API_KEY"):
-        raise SystemExit("Set GOOGLE_API_KEY to run the agent pipeline (the engine-only demo is examples/quickstart.py).")
+        raise SystemExit("Set GOOGLE_API_KEY to run the agent pipeline.")
+    csv, goal = _parse_args()
 
     sessions = InMemorySessionService()
-    await sessions.create_session(app_name="codas", user_id="demo", session_id="s", state={"csv_path": str(SAMPLE)})
+    await sessions.create_session(app_name="codas", user_id="demo", session_id="s", state={"csv_path": str(csv)})
     runner = Runner(app_name="codas", agent=root_agent, session_service=sessions)
-    message = types.Content(role="user", parts=[types.Part(text=GOAL)])
+    message = types.Content(role="user", parts=[types.Part(text=goal)])
 
-    print(f"goal   : {GOAL}\n" + "-" * 96)
+    print(f"data   : {csv}\ngoal   : {goal}\n" + "-" * 96)
     final = ""
     async for event in runner.run_async(user_id="demo", session_id="s", new_message=message):
         parts = getattr(getattr(event, "content", None), "parts", None) or []
