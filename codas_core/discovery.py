@@ -708,139 +708,17 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
                          audit_log=audit_log), warnings
 
 
-def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryReport:
-    warnings: list[str] = []
-    # Robustness: accept any DataFrame. Make column names unique and coerce a non-numeric target
-    # before anything reads the frame, so malformed inputs give a clear result, never a crash.
-    df = _dedupe_columns(df, warnings)
-    df = _normalize_target(df, request.target_column, warnings)
-    # +/-inf is never a valid measurement and would poison variance/correlation/scaling; treat it as
-    # missing. Guarded so it is a no-op (no copy) on clean data.
-    _numeric = df.select_dtypes(include="number")
-    if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
-        df = df.replace([np.inf, -np.inf], np.nan)
-    LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
-    warnings.extend(_input_quality_warnings(df, request.target_column))
-    profile = profile_dataframe(
-        df,
-        target_column=request.target_column,
-        participant_id_column=request.participant_id_column,
-        time_column=request.time_column,
-    )
-    # NOTE: the engine performs NO name-based proxy/subscale exclusion. Construct overlap and
-    # item->total leakage are caught STATISTICALLY downstream (construct-validity / near-determinism
-    # hard gates operate on the actual target's values, not on column names). A caller who already
-    # knows certain columns are proxies can still pass them in request.excluded_columns.
-
-    # Roles come ONLY from the caller. profile_dataframe
-    # is used ONLY for its structural facts; it never infers a role from column names.
-    effective_participant = request.participant_id_column
-    effective_time = request.time_column
-    # NOTE: the accurate repeated-measures warning is emitted AFTER build_analysis_frame, once we
-    # know whether the frame was actually aggregated to one row per participant (target constant
-    # within subject) or retained at row level (target varies within subject -> cluster-corrected
-    # screening). Emitting an unconditional "aggregated ... not inflated" claim here was FALSE for
-    # within-subject-varying targets (e.g. longitudinal UPDRS): the rows stayed un-aggregated and
-    # screening ran at the inflated row count while the warning claimed otherwise.
-    if (not effective_participant) and request.target_column in df.columns:
-        # No participant id found. Warn if the rows still look like un-keyed repeated measures
-        # (a string/categorical column clusters many rows) so the reviewer can set it.
-        _n = int(len(df))
-        for _c in df.columns:
-            if _c == request.target_column:
-                continue
-            _s = df[_c]
-            if not pd.api.types.is_object_dtype(_s):
-                continue
-            _k = int(_s.nunique(dropna=True))
-            if 2 < _k < _n / 3 and (_n / max(_k, 1)) >= 3:
-                warnings.append(
-                    f"Rows may be repeated measures: column '{_c}' has {_k} distinct values across "
-                    f"{_n:,} rows (~{_n / _k:.0f} rows each). If '{_c}' identifies participants/subjects, "
-                    f"set it as the participant id so per-row significance is not inflated (pseudo-replication)."
-                )
-                break
-    screen, _screen_warnings = _screen(df, request, effective_participant, effective_time)
-    warnings.extend(_screen_warnings)
+def _assemble_report(df: pd.DataFrame, candidates: list[Candidate], validated: list[Candidate],
+                     screen: "_ScreenResult", profile, request: "DiscoveryRequest",
+                     warnings: list[str]) -> DiscoveryReport:
+    """Reporting phase: ML benchmark on the top features, grounded Fact Sheet, methodological
+    warnings, markdown report, and audit log -> DiscoveryReport. `profile` is the DatasetProfile;
+    `screen` is the _ScreenResult from _screen()."""
     analysis = screen.analysis
-    validation_pool = screen.validation_pool
     screened_count = screen.screened_count
     cluster_screen_info = screen.cluster_screen_info
+    validation_pool = screen.validation_pool
     audit_log = screen.audit_log
-
-    # Bound validation work so the run always finishes within the interactive request
-    # timeout, regardless of dataset size: (1) scale resamples inversely with row count
-    # so resamples x rows stays ~constant, and (2) stop validating further candidates once
-    # a wall-clock budget is hit, finalizing gracefully with whatever passed. Together with
-    # the row cap above and the per-candidate LOO cap, this is the hard guarantee that the
-    # UI can never hang on "Running" waiting for a request the platform will kill.
-    work_budget = int(os.getenv("CODAS_VALIDATION_WORK_BUDGET", "3000000"))
-    eff_resamples = max(200, min(request.validation_resamples, work_budget // max(1, len(analysis.frame))))
-    config = ValidationConfig(
-        n_resamples=eff_resamples,
-        random_state=request.random_state,
-        fdr_alpha=request.fdr_alpha,
-    )
-    time_budget = float(os.getenv("CODAS_DISCOVERY_BUDGET_SECONDS", "300"))
-    deadline = time.monotonic() + time_budget
-    validated = []
-    for candidate in validation_pool:
-        validated.append(
-            validate_candidate(
-                frame=analysis.frame,
-                candidate=candidate,
-                target_column=analysis.target_column,
-                participant_id_column=analysis.participant_id_column,
-                confounder_columns=analysis.confounder_columns,
-                excluded_columns=analysis.excluded_columns,
-                feature_components=analysis.feature_components,
-                config=config,
-            )
-        )
-        if time.monotonic() > deadline:
-            warnings.append(
-                f"Validation time budget ({int(time_budget)}s) reached; validated "
-                f"{len(validated)} of {len(validation_pool)} candidates and finalized to stay "
-                f"within the interactive timeout (remaining candidates were not blocked, just deferred)."
-            )
-            break
-    verdict_rank = {"validated": 0, "conditional": 1, "rejected": 2, "untested": 3}
-    ordered_candidates = sorted(
-        validated,
-        key=lambda item: (verdict_rank.get(item.verdict, 9), -item.score, item.q_value),
-    )
-    candidates = ordered_candidates[: request.top_k]
-
-    # Keep high-risk hard-gate failures visible in the audit trail even when many
-    # stronger passing associations exist. Expert reviewers need to see leakage
-    # and construct-overlap failures, not just the successful shortlist.
-    selected_features = {candidate.feature for candidate in candidates}
-    hard_gate_failures = sorted(
-        [
-            candidate
-            for candidate in validated
-            if candidate.feature not in selected_features
-            and any(test.hard_gate and test.applicable and not test.passed for test in candidate.tests)
-        ],
-        key=lambda item: abs(item.rho) if np.isfinite(item.rho) else 0.0,
-        reverse=True,
-    )
-    if hard_gate_failures:
-        candidates.extend(hard_gate_failures[:3])
-        warnings.append("High-risk hard-gate failures were retained in the public audit trail for reviewer inspection.")
-
-    warnings.extend(_demote_collinear(candidates, analysis.frame))
-
-    warnings.extend(_effect_size_warnings(candidates))
-
-    warnings.extend(_combined_feature_attribution(candidates, analysis))
-
-    warnings.extend(_construct_circularity_advisory(candidates, analysis, request))
-
-    # NOTE: no NAME-based temporal/future-leakage advisory. The engine does not infer a measurement
-    # timeline from column names. A caller who knows a feature is measured post-outcome or in a future
-    # window can exclude it explicitly via request.excluded_columns.
-
     model_features = [
         candidate.feature
         for candidate in candidates
@@ -1000,6 +878,142 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
         warnings=warnings,
         markdown_report=markdown,
     )
+
+
+def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryReport:
+    warnings: list[str] = []
+    # Robustness: accept any DataFrame. Make column names unique and coerce a non-numeric target
+    # before anything reads the frame, so malformed inputs give a clear result, never a crash.
+    df = _dedupe_columns(df, warnings)
+    df = _normalize_target(df, request.target_column, warnings)
+    # +/-inf is never a valid measurement and would poison variance/correlation/scaling; treat it as
+    # missing. Guarded so it is a no-op (no copy) on clean data.
+    _numeric = df.select_dtypes(include="number")
+    if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
+        df = df.replace([np.inf, -np.inf], np.nan)
+    LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
+    warnings.extend(_input_quality_warnings(df, request.target_column))
+    profile = profile_dataframe(
+        df,
+        target_column=request.target_column,
+        participant_id_column=request.participant_id_column,
+        time_column=request.time_column,
+    )
+    # NOTE: the engine performs NO name-based proxy/subscale exclusion. Construct overlap and
+    # item->total leakage are caught STATISTICALLY downstream (construct-validity / near-determinism
+    # hard gates operate on the actual target's values, not on column names). A caller who already
+    # knows certain columns are proxies can still pass them in request.excluded_columns.
+
+    # Roles come ONLY from the caller. profile_dataframe
+    # is used ONLY for its structural facts; it never infers a role from column names.
+    effective_participant = request.participant_id_column
+    effective_time = request.time_column
+    # NOTE: the accurate repeated-measures warning is emitted AFTER build_analysis_frame, once we
+    # know whether the frame was actually aggregated to one row per participant (target constant
+    # within subject) or retained at row level (target varies within subject -> cluster-corrected
+    # screening). Emitting an unconditional "aggregated ... not inflated" claim here was FALSE for
+    # within-subject-varying targets (e.g. longitudinal UPDRS): the rows stayed un-aggregated and
+    # screening ran at the inflated row count while the warning claimed otherwise.
+    if (not effective_participant) and request.target_column in df.columns:
+        # No participant id found. Warn if the rows still look like un-keyed repeated measures
+        # (a string/categorical column clusters many rows) so the reviewer can set it.
+        _n = int(len(df))
+        for _c in df.columns:
+            if _c == request.target_column:
+                continue
+            _s = df[_c]
+            if not pd.api.types.is_object_dtype(_s):
+                continue
+            _k = int(_s.nunique(dropna=True))
+            if 2 < _k < _n / 3 and (_n / max(_k, 1)) >= 3:
+                warnings.append(
+                    f"Rows may be repeated measures: column '{_c}' has {_k} distinct values across "
+                    f"{_n:,} rows (~{_n / _k:.0f} rows each). If '{_c}' identifies participants/subjects, "
+                    f"set it as the participant id so per-row significance is not inflated (pseudo-replication)."
+                )
+                break
+    screen, _screen_warnings = _screen(df, request, effective_participant, effective_time)
+    warnings.extend(_screen_warnings)
+    analysis = screen.analysis
+    validation_pool = screen.validation_pool
+    screened_count = screen.screened_count
+    cluster_screen_info = screen.cluster_screen_info
+    audit_log = screen.audit_log
+
+    # Bound validation work so the run always finishes within the interactive request
+    # timeout, regardless of dataset size: (1) scale resamples inversely with row count
+    # so resamples x rows stays ~constant, and (2) stop validating further candidates once
+    # a wall-clock budget is hit, finalizing gracefully with whatever passed. Together with
+    # the row cap above and the per-candidate LOO cap, this is the hard guarantee that the
+    # UI can never hang on "Running" waiting for a request the platform will kill.
+    work_budget = int(os.getenv("CODAS_VALIDATION_WORK_BUDGET", "3000000"))
+    eff_resamples = max(200, min(request.validation_resamples, work_budget // max(1, len(analysis.frame))))
+    config = ValidationConfig(
+        n_resamples=eff_resamples,
+        random_state=request.random_state,
+        fdr_alpha=request.fdr_alpha,
+    )
+    time_budget = float(os.getenv("CODAS_DISCOVERY_BUDGET_SECONDS", "300"))
+    deadline = time.monotonic() + time_budget
+    validated = []
+    for candidate in validation_pool:
+        validated.append(
+            validate_candidate(
+                frame=analysis.frame,
+                candidate=candidate,
+                target_column=analysis.target_column,
+                participant_id_column=analysis.participant_id_column,
+                confounder_columns=analysis.confounder_columns,
+                excluded_columns=analysis.excluded_columns,
+                feature_components=analysis.feature_components,
+                config=config,
+            )
+        )
+        if time.monotonic() > deadline:
+            warnings.append(
+                f"Validation time budget ({int(time_budget)}s) reached; validated "
+                f"{len(validated)} of {len(validation_pool)} candidates and finalized to stay "
+                f"within the interactive timeout (remaining candidates were not blocked, just deferred)."
+            )
+            break
+    verdict_rank = {"validated": 0, "conditional": 1, "rejected": 2, "untested": 3}
+    ordered_candidates = sorted(
+        validated,
+        key=lambda item: (verdict_rank.get(item.verdict, 9), -item.score, item.q_value),
+    )
+    candidates = ordered_candidates[: request.top_k]
+
+    # Keep high-risk hard-gate failures visible in the audit trail even when many
+    # stronger passing associations exist. Expert reviewers need to see leakage
+    # and construct-overlap failures, not just the successful shortlist.
+    selected_features = {candidate.feature for candidate in candidates}
+    hard_gate_failures = sorted(
+        [
+            candidate
+            for candidate in validated
+            if candidate.feature not in selected_features
+            and any(test.hard_gate and test.applicable and not test.passed for test in candidate.tests)
+        ],
+        key=lambda item: abs(item.rho) if np.isfinite(item.rho) else 0.0,
+        reverse=True,
+    )
+    if hard_gate_failures:
+        candidates.extend(hard_gate_failures[:3])
+        warnings.append("High-risk hard-gate failures were retained in the public audit trail for reviewer inspection.")
+
+    warnings.extend(_demote_collinear(candidates, analysis.frame))
+
+    warnings.extend(_effect_size_warnings(candidates))
+
+    warnings.extend(_combined_feature_attribution(candidates, analysis))
+
+    warnings.extend(_construct_circularity_advisory(candidates, analysis, request))
+
+    # NOTE: no NAME-based temporal/future-leakage advisory. The engine does not infer a measurement
+    # timeline from column names. A caller who knows a feature is measured post-outcome or in a future
+    # window can exclude it explicitly via request.excluded_columns.
+
+    return _assemble_report(df, candidates, validated, screen, profile, request, warnings)
 
 
 def run_discovery_from_csv(path: str | Path, request: DiscoveryRequest) -> DiscoveryReport:
