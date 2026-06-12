@@ -66,6 +66,7 @@ async def _run_once(csv_path: str, goal: str) -> dict:
     out["state"] = dict(sess.state)
     out["rounds"] = sess.state.get("rounds", [])
     out["fact_sheet"] = sess.state.get("fact_sheet", {})
+    out["candidates"] = (sess.state.get("latest_report", {}) or {}).get("candidates", [])
     return out
 
 
@@ -93,25 +94,63 @@ def check_r4(run: dict) -> list[tuple[str, bool, str]]:
     ]
 
 
+def _engine_values(run: dict) -> set[float]:
+    """Every number the deterministic engine actually produced, plus legitimate derivations
+    (variance-explained = rho^2, percent forms), each rounded to 2/3/4 dp for tolerant matching."""
+    vals: set[float] = set()
+
+    def add(v):
+        if isinstance(v, (int, float)) and v == v:
+            for k in (2, 3, 4):
+                vals.add(round(float(v), k))
+
+    fs = run.get("fact_sheet", {})
+    for key in ("ml_metric_value", "rows", "columns", "candidate_features_screened",
+                "internal_battery_passing_variants", "ml_metric_vs_null_p", "ml_pr_auc", "positive_rate"):
+        add(fs.get(key))
+    mv = fs.get("ml_metric_value")
+    if isinstance(mv, (int, float)):
+        add(mv * 100)
+    for r in run.get("rounds", []):
+        add(r.get("ml_metric_value")); add(r.get("validated_count"))
+    for c in run.get("candidates", []):
+        for key in ("rho", "q_value", "p_value", "n"):
+            add(c.get(key))
+        if isinstance(c.get("rho"), (int, float)):
+            add(c["rho"] ** 2); add(c["rho"] ** 2 * 100); add(abs(c["rho"]))
+    return vals
+
+
+_STAT_CLAIM = re.compile(
+    r"(auc|r2|r²|r-squared|rho|ρ|spearman|p-value|p value|\bp\b|correlation|coefficient|variance|q-value|q=)"
+    r"[^\d\n]{0,18}([-+]?\d*\.?\d+)", re.I)
+
+
 def check_r5_grounding(run: dict) -> list[tuple[str, bool, str]]:
+    """RIGOROUS grounding: every statistic-claim in the report must trace to a number the engine
+    produced — not just the headline metric. An ungrounded statistic-claim is a fabrication."""
     fs = run.get("fact_sheet", {})
     metric = fs.get("ml_metric_value")
-    rows = fs.get("rows")
     report = run["report"]
+    engine_vals = _engine_values(run)
+
+    def grounded(x: float) -> bool:
+        return any(abs(x - e) <= 0.011 for e in engine_vals)
+
+    claims = [(m.group(1), float(m.group(2))) for m in _STAT_CLAIM.finditer(report)]
+    # benign non-engine numbers: years, and small structural integers (phase counts, "6 phases", etc.)
+    ungrounded = [(k, v) for k, v in claims
+                  if not grounded(v) and not (1900 < v < 2100) and v not in (0, 1, 2, 3, 4, 5, 6, 10, 90, 95, 100)]
     nums = [float(x) for x in re.findall(r"[-+]?\d*\.\d+", report)]
-    checks = []
+    checks = [("every_statistic_claim_is_grounded", len(ungrounded) == 0,
+               f"{len(claims) - len(ungrounded)}/{len(claims)} stat-claims trace to engine values"
+               + (f"; UNGROUNDED={ungrounded[:5]}" if ungrounded else ""))]
     if isinstance(metric, (int, float)):
-        cites_metric = any(abs(x - float(metric)) < 0.011 for x in nums)  # within 2-decimal rounding
-        checks.append(("headline_metric_matches_factsheet", cites_metric,
-                       f"engine {fs.get('ml_metric_name')}={float(metric):.4f}; report cites it = {cites_metric}"))
-    if isinstance(rows, int):
-        cites_n = bool(re.search(rf"\b{rows}\b", report)) or bool(re.search(rf"{rows:,}".replace(",", ",") , report))
-        checks.append(("sample_size_matches_factsheet", cites_n, f"N={rows} appears in report = {cites_n}"))
-    # no impossible/fabricated metric: a reported AUC/R2 above the engine's by a wide margin is a red flag
-    if isinstance(metric, (int, float)):
+        checks.append(("headline_metric_matches_factsheet", any(abs(x - float(metric)) < 0.011 for x in nums),
+                       f"engine {fs.get('ml_metric_name')}={float(metric):.4f}"))
         inflated = any(0.97 <= x <= 1.0 for x in nums) and float(metric) < 0.9
         checks.append(("no_inflated_headline", not inflated,
-                       "report does not assert a near-perfect metric the engine did not produce"))
+                       "report asserts no near-perfect metric the engine did not produce"))
     return checks
 
 
