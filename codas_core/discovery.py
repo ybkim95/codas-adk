@@ -324,6 +324,45 @@ def _normalize_target(df: pd.DataFrame, target_column: str, warnings: list[str])
     )
 
 
+def _input_quality_warnings(df: pd.DataFrame, target_column: str) -> list[str]:
+    """Methodological caveats about the INPUT itself (read-only; returns the warnings to append).
+
+    Heavy outcome missingness biases the analysis toward the observed subgroup (only rows with an
+    observed target are used); high feature missingness has the same risk; and a class-imbalanced
+    binary target makes held-out ROC-AUC optimistic.
+    """
+    out: list[str] = []
+    if target_column not in df.columns:
+        return out
+    feature_cols = [c for c in df.columns
+                    if c != target_column and pd.api.types.is_numeric_dtype(df[c])]
+    high_miss = [c for c in feature_cols if float(df[c].isna().mean()) > 0.30]
+    if high_miss:
+        rates = {c: round(float(df[c].isna().mean() * 100), 0) for c in high_miss[:4]}
+        out.append(
+            f"High feature missingness detected: {rates}. These features are only available for a "
+            "subset of rows; if data is missing-not-at-random the associations reflect the observed "
+            "subgroup and may not generalise. Verify the missingness mechanism before interpreting."
+        )
+    target_missing = float(df[target_column].isna().mean())
+    if target_missing > 0.10:
+        out.append(
+            f"{target_missing * 100:.0f}% of the outcome '{target_column}' is missing; only rows with "
+            "an observed outcome are analyzed. If missingness is informative (missing-not-at-random), "
+            "the associations are biased toward the reporting subgroup. Confirm the mechanism first."
+        )
+    observed = df[target_column].dropna()
+    if observed.nunique() == 2:
+        minority = float(observed.value_counts(normalize=True).min())
+        if minority < 0.15:
+            out.append(
+                f"Outcome is imbalanced ({minority * 100:.1f}% minority class); held-out ROC-AUC is "
+                "optimistic at low prevalence — prioritize precision-recall (PR-AUC) and calibrate to "
+                f"the {minority * 100:.1f}% base rate before interpreting predictive performance."
+            )
+    return out
+
+
 def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryReport:
     warnings: list[str] = []
     # Robustness: accept any DataFrame. Make column names unique and coerce a non-numeric target
@@ -336,52 +375,7 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
         df = df.replace([np.inf, -np.inf], np.nan)
     LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
-    # Heavy OUTCOME missingness is silently biasing: only rows with an observed target are
-    # analyzed, so if the outcome is missing-not-at-random (e.g. high-stress states under-reported
-    # in EMA, sicker patients lost to follow-up) the association reflects the reporting subgroup,
-    # not the cohort. Surface it explicitly rather than analyzing the biased subset as if complete.
-    if request.target_column in df.columns:
-        # Feature-level missingness warning (sensor dropout, sensor dropout).
-        # A feature with >30% missing data is either a signal with systematic
-        # non-wear periods, or a measurement artifact. If the missingness correlates with
-        # the outcome (MNAR), the analysis on observed rows is biased toward a subset.
-        _HIGH_FEAT_MISS = 0.30
-        # Scope to genuine CANDIDATE features: a column we block from candidacy (another outcome/label
-        # like target_BDI2, or a demographic) is not a "feature", so warning about its missingness
-        # would mislabel it. (Surfacing target_BDI2 at 92% missing as a "feature" reads as if it were
-        # a predictor candidate when it is excluded as a circular alternative outcome.)
-        _feat_cols_for_miss = [c for c in df.columns if c != request.target_column
-                               and pd.api.types.is_numeric_dtype(df[c])]
-        _high_miss_feats = [c for c in _feat_cols_for_miss
-                            if float(df[c].isna().mean()) > _HIGH_FEAT_MISS]
-        if _high_miss_feats:
-            _miss_rates = {c: round(float(df[c].isna().mean()*100), 0) for c in _high_miss_feats[:4]}
-            warnings.append(
-                f"High feature missingness detected: {_miss_rates}. These features are only available "
-                f"for a subset of rows; if data is missing-not-at-random (e.g. sensor dropout during "
-                f"high-activity or high-stress periods), associations reflect the observed subgroup and "
-                f"may not generalise. Verify the missingness mechanism before interpreting."
-            )
-
-        _target_missing = float(df[request.target_column].isna().mean())
-        if _target_missing > 0.10:
-            warnings.append(
-                f"{_target_missing * 100:.0f}% of the outcome '{request.target_column}' is missing; only rows with an "
-                "observed outcome are analyzed. If missingness is informative (missing-not-at-random — e.g. "
-                "under-reported states or loss to follow-up), the associations are biased toward the reporting "
-                "subgroup. Confirm the missingness mechanism before interpreting."
-            )
-        # Class imbalance: ROC-AUC is optimistic at low prevalence (a rare-event detector can look
-        # strong while missing most positives). Surface the base rate and steer to PR-AUC.
-        _t_obs = df[request.target_column].dropna()
-        if _t_obs.nunique() == 2:
-            _minority = float(_t_obs.value_counts(normalize=True).min())
-            if _minority < 0.15:
-                warnings.append(
-                    f"Outcome is imbalanced ({_minority * 100:.1f}% minority class); held-out ROC-AUC is "
-                    f"optimistic at low prevalence — prioritize precision–recall (PR-AUC) and calibrate to the "
-                    f"{_minority * 100:.1f}% base rate before interpreting predictive performance."
-                )
+    warnings.extend(_input_quality_warnings(df, request.target_column))
     profile = profile_dataframe(
         df,
         target_column=request.target_column,
