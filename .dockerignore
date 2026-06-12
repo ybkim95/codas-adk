@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.codas_runs
+.env
+.env.*
+*.log
+tmp_*
+tests
+examples
+docs
+.DS_Store

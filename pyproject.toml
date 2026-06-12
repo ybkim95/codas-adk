@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codas"
+version = "1.0.0"
+description = "CoDaS: AI Co-Data-Scientist for wearable biomarker discovery (deterministic engine + google-adk/Gemini agent)."
+readme = "README.md"
+requires-python = ">=3.10"
+# License intentionally left as proprietary until the team chooses one (see LICENSE).
+license = { text = "Proprietary - All Rights Reserved" }
+
+# The deterministic engine (codas_core) needs only a minimal scientific stack. Each is pinned
+# below the next major so a fresh build cannot silently pull an untested breaking version.
+dependencies = [
+  "numpy<3",
+  "pandas>=2.1,<3.0",
+  "scipy>=1.11,<2",
+  "scikit-learn>=1.4,<2",
+]
+
+[project.optional-dependencies]
+# google-adk + Gemini agent layer (codas_agents) and the Gemini API boundary.
+agent = ["google-adk", "google-genai"]
+# HTTP service layer (codas_service).
+service = ["fastapi", "uvicorn", "pydantic", "python-multipart"]
+dev = ["pytest"]
+all = ["google-adk", "google-genai", "fastapi", "uvicorn", "pydantic", "python-multipart"]
+
+# Only the importable Python packages are installed. examples/ and tests/ are not shipped.
+[tool.setuptools.packages.find]
+include = ["codas_core*", "codas_agents*", "codas_service*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
