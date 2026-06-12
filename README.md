@@ -1,192 +1,98 @@
-# CoDaS — AI Co-Data-Scientist for Association Discovery
+# CoDaS — AI Co-Data-Scientist
 
-CoDaS turns any tabular CSV plus an explicit target column into a rigorously
-validated, auditable set of candidate predictors of that target. Its defining
-design choice is the **separation of LLM reasoning from deterministic
-statistics**: a Gemini-driven [google-adk](https://google.github.io/adk-docs/)
-agent plans, profiles, and explains, but every reportable number is produced by
-deterministic Python runners that the model cannot bypass or invent.
+CoDaS turns **any tabular CSV + a target column** into a rigorously validated, auditable set of
+candidate predictors of that target. It separates LLM reasoning from statistics: a
+[google-adk](https://google.github.io/adk-docs/) + Gemini agent plans and explains, but every
+reported number is computed by deterministic Python that the model cannot bypass or invent.
 
-The engine is **domain-agnostic**. It makes no assumption about column names or
-problem domain: it never infers a target, participant, time, or confounder role
-from a column's name, and it contains no hardcoded feature lists or
-dataset-specific rules. You name the target; the engine does the statistics.
+The engine is **domain-agnostic** — it makes no assumption about column names or problem domain,
+and contains no hardcoded features or dataset-specific rules. You name the target; it does the stats.
 
-## Why it is more than a wrapper
-
-CoDaS encodes the methodology a careful data scientist would apply, as code:
-
-- **Deterministic and reproducible** — given the same input and seed, the output
-  is identical to the bit. No statistic is ever produced by the LLM.
-- **Statistical (not name-based) leakage guards** — a candidate that reconstructs
-  the target near-deterministically, separates a low-cardinality target almost
-  perfectly, or is collinear with an excluded column is caught by gates that
-  operate on the actual target's *values*, not on column names or domain
-  keywords.
-- **Internal validation battery** — each candidate is screened (Spearman + FDR)
-  and stress-tested for replication, bootstrap stability, subgroup robustness, and
-  confounder adjustment before it is reported as `validated`, `conditional`, or
-  `rejected`.
-- **Pseudo-replication aware** — when you declare a participant/unit column,
-  repeated measures are handled with grouped splits and intraclass-correlation /
-  effective-N corrections, not naive row sampling.
-- **Grounded Fact Sheet** — every reportable number is assembled into a
-  deterministic Fact Sheet that the report layer must cite, so prose can never
-  drift from the computed evidence.
-- **Integrity-enforcing model prompt** — the Gemini boundary refuses to weaken
-  rigor (drop FDR, skip cross-validation, remove confounder adjustment,
-  cherry-pick) and never calls an association causal, or validated for diagnosis
-  or deployment.
-
-## Architecture
-
-```
-            ┌───────────────────────────────────────────────────────────┐
-            │ codas_service/  —  thin FastAPI surface (API-key, stateless)│
-            │   /v1/discover   /v1/profile             /v1/agent          │
-            └───────────────┬───────────────────────────────┬───────────┘
-                            │ deterministic                  │ google-adk + Gemini
-            ┌───────────────▼───────────────┐   ┌────────────▼────────────────┐
-            │ codas_core/  (no LLM, no net)  │   │ codas_agents/  (LlmAgent×11) │
-            │  data · statistics · validation│◄──│  SequentialAgent orchestrator│
-            │  discovery · reporting         │tool│  tool-grounded, guardrailed │
-            │  deps: numpy/pandas/scipy/sklearn   │  deps: google-adk/google-genai│
-            └────────────────────────────────┘   └──────────────────────────────┘
-```
-
-- **`codas_core/`** — the deterministic engine. Pure Python; depends only on
-  numpy, pandas, scipy, scikit-learn. Call it directly: `run_discovery(df, request)`.
-- **`codas_agents/`** — the [google-adk](https://google.github.io/adk-docs/)
-  layer: eleven `LlmAgent`s (scout, profiler, empirical, validation, defender,
-  critic, mechanism, novelty, strategy, artifact, report) chained by a
-  `SequentialAgent`. Each is tool-grounded — it calls the deterministic runners
-  and may plan/explain/choose the target, but cannot fabricate numbers. The
-  harness is split for review: tools in `agent.py`, prompts in `prompts.py`,
-  session/execution in `runtime.py`, guardrails + logging in `callbacks.py`.
-  Gemini is reached through `codas_core/gemini.py`.
-- **`codas_service/`** — a thin FastAPI app exposing both layers over HTTPS with
-  server-to-server API-key auth. Stateless: callers send data inline.
-
-## Quickstart
+## Run it in 60 seconds
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install ".[all]"          # engine + agent + service; use `pip install .` for engine-only
+pip install ".[all]"
+python examples/quickstart.py          # deterministic discovery on a sample CSV — no API key needed
 ```
 
-**1. Call the engine directly (no LLM, no key needed):**
+Call the engine directly (this is the whole API):
 
 ```python
 from codas_core.discovery import DiscoveryRequest, run_discovery_from_csv
 
-# You name the target; the engine assumes nothing about the columns.
-report = run_discovery_from_csv(
-    "examples/sample_dataset.csv",
-    DiscoveryRequest(target_column="depression_score", top_k=5),
-)
+report = run_discovery_from_csv("examples/sample_dataset.csv",
+                                DiscoveryRequest(target_column="depression_score", top_k=5))
 print(report.fact_sheet["ml_metric_name"], report.fact_sheet["ml_metric_value"])
 for c in report.candidates:
-    print(c.feature, c.verdict, round(c.rho, 3))
+    print(c.feature, c.verdict, round(c.rho, 3))      # verdict ∈ validated|conditional|rejected
 ```
 
-The bundled `examples/sample_dataset.csv` is one example (a wearable-health table)
-— the engine treats it like any other CSV. See `tests/test_generalization.py`,
-which runs the same engine on housing prices and on abstract `x1..x6` columns.
-
-Or run the demo: `python examples/quickstart.py`.
-
-**2. Run the HTTP service:**
+Run it as a service, or let the Gemini agent pick the target itself:
 
 ```bash
-uvicorn codas_service.app:app --port 8000
-curl -s localhost:8000/v1/discover -H "Content-Type: application/json" --data "$(python3 -c '
-import json; print(json.dumps({"csv": open("examples/sample_dataset.csv").read(),
-                               "target_column": "depression_score", "top_k": 5}))')"
+uvicorn codas_service.app:app --port 8000            # POST /v1/discover with {csv, target_column}
+export GOOGLE_API_KEY=...                             # then /v1/agent runs the google-adk pipeline
 ```
 
-**3. Run the google-adk + Gemini pipeline** (needs a Gemini key). Here the LLM
-chooses the target/roles from the schema and the task:
+## What makes it trustworthy
 
-```bash
-export GOOGLE_API_KEY=...        # see .env.example
-curl -s localhost:8000/v1/agent -H "Content-Type: application/json" \
-  --data '{"csv":"...","query":"find the strongest predictors of <your target>"}'
+- **Deterministic & reproducible** — same input + seed ⇒ identical output; no number comes from the LLM.
+- **Statistical leakage guards** — a feature that reconstructs the target (near-perfect proxy,
+  collinear duplicate, concurrent measure) is caught from the data, not from column names.
+- **Validation battery** — each candidate is screened (Spearman + FDR) then stress-tested for
+  replication, bootstrap stability, subgroup robustness, and confounder adjustment.
+- **Pseudo-replication aware** — declare a participant column and repeated measures get grouped
+  splits + ICC corrections, not naive row sampling.
+- **Grounded Fact Sheet** — every reportable number is assembled deterministically and cited by the report.
+
+## Architecture
+
 ```
+codas_service/   thin FastAPI surface (API-key auth, stateless)   /v1/discover /v1/profile /v1/agent
+      │ deterministic                              │ google-adk + Gemini
+codas_core/      the engine (no LLM, no network)   codas_agents/   LlmAgent ×11 + SequentialAgent
+  numpy/pandas/scipy/scikit-learn only             tool-grounded; the LLM cannot invent numbers
+```
+
+- **`codas_core/`** — deterministic engine; depends only on numpy/pandas/scipy/scikit-learn.
+- **`codas_agents/`** — google-adk harness: tools (`agent.py`), prompts (`prompts.py`), session
+  (`runtime.py`), guardrails+logging (`callbacks.py`). Gemini is reached via `codas_core/gemini.py`.
+- **`codas_service/`** — FastAPI app exposing both layers over HTTPS.
 
 ## HTTP API
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/healthz` | none | Liveness probe |
-| GET | `/v1/health` | key | Readiness + whether Gemini is configured |
-| POST | `/v1/profile` | key | Structural summary (dtypes, missingness, numeric columns) |
-| POST | `/v1/discover` | key | Deterministic discovery for an explicit target → report |
+| GET | `/healthz` | none | Liveness |
+| POST | `/v1/profile` | key | Schema / missingness / numeric columns |
+| POST | `/v1/discover` | key | Deterministic discovery for an explicit `target_column` |
 | POST | `/v1/agent` | key | google-adk + Gemini pipeline (LLM picks the target/roles) |
 
-`/v1/discover` requires `target_column`; optional `participant_id_column`,
-`time_column`, `excluded_columns`, `confounder_columns` are honored if given and
-simply not used if omitted (no name-based guessing). Auth: send
-`X-CoDaS-Agent-Key: <key>` (keys in `CODAS_AGENT_API_KEYS`, comma-separated for
-rotation). With no keys configured the service answers only localhost. CORS is
-explicit-origin and credential-free by default.
+Auth: `X-CoDaS-Agent-Key: <key>` (`CODAS_AGENT_API_KEYS`, comma-separated for rotation); unset ⇒
+localhost-only. CORS is explicit-origin, credential-free. See `.env.example` for configuration.
 
 ## Two ways to integrate
 
-1. **Host as an API (Docker / Cloud Run).** `docker build -t codas . && docker run -p 8080:8080 codas`,
-   then call `/v1/discover` or `/v1/agent`. Best when consumers are remote.
-2. **Vendor the engine as a library.** `codas_core` is a pure
-   numpy/pandas/scipy/scikit-learn package with no web, Firebase, or ADK
-   dependency, so a consumer can `from codas_core.discovery import run_discovery`
-   and call it in-process. Best when the consumer is itself a Python program.
+1. **Host it** — `docker build -t codas . && docker run -p 8080:8080 codas`, then call `/v1/discover`.
+2. **Vendor the engine** — `codas_core` is a pure scientific library with no web/cloud dependency:
+   `from codas_core.discovery import run_discovery` and call it in-process.
 
-## Project layout
-
-```
-codas_core/      deterministic engine (data, statistics, validation, discovery, reporting, gemini)
-codas_agents/    google-adk harness — tools (agent.py), prompts (prompts.py), session (runtime.py), guardrails (callbacks.py)
-codas_service/   thin FastAPI service (app, API-key auth)
-examples/        sample dataset + quickstart.py
-scripts/         benchmark_datasets.py (real cross-domain robustness benchmark)
-tests/           determinism, generalization, edge cases, real datasets, agent harness, service
-```
-
-## Tests and robustness
+## Tests
 
 ```bash
-pip install ".[all,dev]" && python -m pytest -q        # 38 tests
+pip install ".[all,dev]" && python -m pytest -q     # 38 tests; CI runs them on py3.10–3.12
 ```
 
-The suite covers:
+Coverage: determinism, cross-domain generalization, adversarial edge cases (never crash), real
+clinical datasets, and the agent harness. `python scripts/benchmark_datasets.py` runs the engine on
+real public datasets (breast-cancer, diabetes, penguins, wine, …) and fails on any crash.
 
-- **`test_generalization.py`** — the engine runs on unrelated domains (housing,
-  abstract synthetic) with arbitrary column names; no special-casing.
-- **`test_edge_cases.py`** — degenerate and adversarial inputs (empty, single-row,
-  constant/all-NaN, duplicate column names, non-numeric targets, inf, p≫n, unicode,
-  perfect leakage). The contract: never crash — either a valid report or a clear
-  `InsufficientDataError`.
-- **`test_real_datasets.py`** — real clinical datasets (sklearn breast-cancer,
-  diabetes), offline.
-- **`test_agent_harness.py`** — the tool-calling path sandbox, the ADK tools, and
-  engine logging.
+## Scope
 
-For a broader real-data check across domains, run the network benchmark (cached in
-`.cache/`, skips offline):
-
-```bash
-python scripts/benchmark_datasets.py
-```
-
-It exercises the engine on real public datasets — breast-cancer, diabetes, pima,
-penguins, auto-mpg, and a `;`-delimited wine file — and fails if any input crashes.
-
-## Scientific scope and honesty
-
-CoDaS reports **candidate** associations and an internal validation verdict.
-Internal validation is hypothesis-generating; it is not external validation. CoDaS
-never labels a finding causal, validated for diagnosis, or deployment-ready. Treat
-results as a rigorously filtered starting point for confirmatory study.
+CoDaS reports **candidate** associations with an internal validation verdict — hypothesis-generating,
+not external or clinical validation. It never labels a finding causal or deployment-ready.
 
 ## License
 
-Not yet chosen. The repository ships with a proprietary "all rights reserved"
-placeholder (`LICENSE`); pick a license before any external distribution.
+Proprietary placeholder (`LICENSE`) — choose a license before any external distribution.
