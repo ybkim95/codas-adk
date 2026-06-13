@@ -78,6 +78,8 @@ API-key auth via `X-CoDaS-Agent-Key` (`CODAS_AGENT_API_KEYS`, comma-separated); 
 ```bash
 pip install ".[all,dev]" && python -m pytest -q     # 72 tests: engine, six-phase graph, loop tools, robustness
 python scripts/robustness_audit.py                   # scored audit: no-crash, determinism, stats, service, scale
+python scripts/scientific_validation.py              # longitudinal/wearable science: pseudo-replication, autocorrelation,
+                                                     #   confounding, within-vs-between, leakage, effect size, imbalance
 python scripts/agent_robustness.py                   # live audit: orchestration, grounding integrity, prompt-injection
 python scripts/loadtest.py                            # load + soak: throughput, latency percentiles, memory stability
 ```

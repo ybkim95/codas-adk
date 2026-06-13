@@ -179,12 +179,29 @@ def _bootstrap_distribution(
     y: np.ndarray,
     n_resamples: int,
     random_state: int,
+    groups: np.ndarray | None = None,
 ) -> np.ndarray:
-    # Same indices (same RNG draws) as before; only the per-resample rho is computed via the fast
-    # rank+Pearson path (skips scipy's discarded p-value). x/y are pre-dropna'd (finite).
+    # x/y are pre-dropna'd (finite); rho via the fast rank+Pearson path.
+    # Repeated measures: when `groups` gives a participant id per row (>= 3 clusters), resample
+    # PARTICIPANTS with replacement (cluster / block bootstrap), not rows. A row bootstrap treats
+    # pseudo-replicated rows as independent and yields an anti-conservatively tight CI, so a chance
+    # between-subject correlation would falsely read as "stable"; the cluster bootstrap widens the CI
+    # to the true effective sample size. Cross-sectional data (groups=None) is unchanged / bit-identical.
     rng = np.random.default_rng(random_state)
-    values = []
+    values: list[float] = []
     n = len(x)
+    if groups is not None:
+        unique = np.unique(groups)
+        if 3 <= len(unique) < n:
+            idx_by_cluster = [np.flatnonzero(groups == g) for g in unique]
+            k = len(unique)
+            for _ in range(n_resamples):
+                picked = rng.integers(0, k, k)
+                index = np.concatenate([idx_by_cluster[j] for j in picked])
+                rho = spearman_rho_fast(x[index], y[index])
+                if np.isfinite(rho):
+                    values.append(rho)
+            return np.asarray(values, dtype=float)
     for _ in range(n_resamples):
         index = rng.integers(0, n, n)
         rho = spearman_rho_fast(x[index], y[index])
@@ -281,7 +298,13 @@ def validate_candidate(
         details=f"resamples={config.n_resamples}",
     ))
 
-    boot = _bootstrap_distribution(x, y, config.n_resamples, config.random_state)
+    # Cluster bootstrap for repeated measures: resample participants, not pseudo-replicated rows.
+    boot_groups = None
+    if participant_id_column and participant_id_column in frame.columns:
+        ids = frame.loc[subset.index, participant_id_column].to_numpy()
+        if 3 <= len(np.unique(ids)) < len(ids):
+            boot_groups = ids
+    boot = _bootstrap_distribution(x, y, config.n_resamples, config.random_state, groups=boot_groups)
     if len(boot) >= max(50, config.n_resamples // 10):
         ci_low, ci_high = np.percentile(boot, [2.5, 97.5])
         ci_mid = float((ci_low + ci_high) / 2)
