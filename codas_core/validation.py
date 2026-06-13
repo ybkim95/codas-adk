@@ -384,6 +384,115 @@ def _sequential_split_test(subset, feature, target_column, candidate):
     return results
 
 
+def _leave_one_out_test(x, y, candidate, config):
+    results: list[ValidationTestResult] = []
+    loo_indices = np.arange(len(x))
+    if len(loo_indices) > config.max_loo_checks:
+        rng = np.random.default_rng(config.random_state)
+        loo_indices = np.sort(rng.choice(loo_indices, config.max_loo_checks, replace=False))
+    sign_flips = 0
+    for idx in loo_indices:
+        mask = np.ones(len(x), dtype=bool)
+        mask[idx] = False
+        rho, _, _ = safe_spearman(x[mask], y[mask])
+        if not same_sign(candidate.rho, rho):
+            sign_flips += 1
+            break
+    results.append(ValidationTestResult(
+        name="leave_one_out_influence",
+        dimension="stability",
+        passed=sign_flips == 0 and len(loo_indices) > 0,
+        metric=float(sign_flips),
+        details=f"checked={len(loo_indices)}",
+    ))
+
+    return results
+
+
+def _subgroup_consistency_test(y, subset, feature, target_column, candidate):
+    results: list[ValidationTestResult] = []
+    median = np.nanmedian(y)
+    lower = subset[subset[target_column] <= median]
+    upper = subset[subset[target_column] > median]
+    if len(lower) >= 10 and len(upper) >= 10:
+        lower_rho, lower_p, _ = safe_spearman(lower[feature], lower[target_column])
+        upper_rho, upper_p, _ = safe_spearman(upper[feature], upper[target_column])
+        passed = same_sign(candidate.rho, lower_rho) and same_sign(candidate.rho, upper_rho)
+        results.append(ValidationTestResult(
+            name="subgroup_consistency",
+            dimension="robustness",
+            passed=passed,
+            metric=float(min(abs(lower_rho), abs(upper_rho))),
+            p_value=float(max(lower_p, upper_p)),
+            details=f"median_split=({len(lower)}, {len(upper)})",
+        ))
+    else:
+        results.append(ValidationTestResult(
+            name="subgroup_consistency",
+            dimension="robustness",
+            passed=False,
+            applicable=False,
+            details="not enough rows after median split",
+        ))
+
+    return results
+
+
+def _method_triangulation_test(x, y, candidate, config):
+    results: list[ValidationTestResult] = []
+    pearson_r, pearson_p, _ = safe_pearson(x, y)
+    kendall_tau, kendall_p, _ = safe_kendall(x, y)
+    method_passed = (
+        same_sign(candidate.rho, pearson_r)
+        and same_sign(candidate.rho, kendall_tau)
+        and pearson_p <= config.alpha
+        and kendall_p <= config.alpha
+    )
+    results.append(ValidationTestResult(
+        name="method_triangulation",
+        dimension="robustness",
+        passed=method_passed,
+        metric=float(min(abs(pearson_r), abs(kendall_tau))),
+        p_value=float(max(pearson_p, kendall_p)),
+        details=f"pearson={pearson_r:.4g}, kendall_tau={kendall_tau:.4g}",
+    ))
+
+    return results
+
+
+def _construct_validity_test(x, y, candidate, config):
+    results: list[ValidationTestResult] = []
+    # Construct-validity hard gate: a feature so target-like that it is a copy/proxy of the outcome
+    # (leakage), not an independent predictor. Spearman |rho|>threshold catches near-perfect CONTINUOUS
+    # leaks, but Spearman SATURATES on a binary target (a perfect class separator reads rho~0.8, below
+    # the 0.85 threshold), so a near-deterministic copy of a binary outcome would slip through. Add a
+    # class-separation ceiling: an essentially-perfect single-feature separator (AUC>=0.99 either
+    # direction) is leakage regardless of Spearman rho. (Found via adversarial leak-injection across 12
+    # real datasets: an injected target-copy was validated on 7 binary-target datasets.)
+    construct_auc, _construct_auc_n = auc_against_target(y, x)
+    near_perfect_separator = (
+        (np.isfinite(construct_auc) and max(construct_auc, 1.0 - construct_auc) >= 0.99)
+        or _near_deterministic_of_target(x, y)  # multiclass-aware (binary AUC undefined for >2 classes)
+    )
+    construct_passed = not (
+        candidate.n > 30
+        and (
+            (np.isfinite(candidate.rho) and abs(candidate.rho) > config.construct_threshold)
+            or near_perfect_separator
+        )
+    )
+    results.append(ValidationTestResult(
+        name="construct_validity_hard_gate",
+        dimension="robustness",
+        passed=construct_passed,
+        hard_gate=True,
+        metric=abs(candidate.rho),
+        details=f"threshold={config.construct_threshold}, auc={construct_auc:.4g} (near_perfect_separator={near_perfect_separator})",
+    ))
+
+    return results
+
+
 def validate_candidate(
     frame: pd.DataFrame,
     candidate: Candidate,
@@ -461,97 +570,12 @@ def validate_candidate(
             details="insufficient valid bootstrap resamples",
         ))
 
-    loo_indices = np.arange(len(x))
-    if len(loo_indices) > config.max_loo_checks:
-        rng = np.random.default_rng(config.random_state)
-        loo_indices = np.sort(rng.choice(loo_indices, config.max_loo_checks, replace=False))
-    sign_flips = 0
-    for idx in loo_indices:
-        mask = np.ones(len(x), dtype=bool)
-        mask[idx] = False
-        rho, _, _ = safe_spearman(x[mask], y[mask])
-        if not same_sign(candidate.rho, rho):
-            sign_flips += 1
-            break
-    tests.append(ValidationTestResult(
-        name="leave_one_out_influence",
-        dimension="stability",
-        passed=sign_flips == 0 and len(loo_indices) > 0,
-        metric=float(sign_flips),
-        details=f"checked={len(loo_indices)}",
-    ))
-
-    median = np.nanmedian(y)
-    lower = subset[subset[target_column] <= median]
-    upper = subset[subset[target_column] > median]
-    if len(lower) >= 10 and len(upper) >= 10:
-        lower_rho, lower_p, _ = safe_spearman(lower[feature], lower[target_column])
-        upper_rho, upper_p, _ = safe_spearman(upper[feature], upper[target_column])
-        passed = same_sign(candidate.rho, lower_rho) and same_sign(candidate.rho, upper_rho)
-        tests.append(ValidationTestResult(
-            name="subgroup_consistency",
-            dimension="robustness",
-            passed=passed,
-            metric=float(min(abs(lower_rho), abs(upper_rho))),
-            p_value=float(max(lower_p, upper_p)),
-            details=f"median_split=({len(lower)}, {len(upper)})",
-        ))
-    else:
-        tests.append(ValidationTestResult(
-            name="subgroup_consistency",
-            dimension="robustness",
-            passed=False,
-            applicable=False,
-            details="not enough rows after median split",
-        ))
-
+    tests.extend(_leave_one_out_test(x, y, candidate, config))
+    tests.extend(_subgroup_consistency_test(y, subset, feature, target_column, candidate))
     tests.extend(_sequential_split_test(subset, feature, target_column, candidate))
 
-    pearson_r, pearson_p, _ = safe_pearson(x, y)
-    kendall_tau, kendall_p, _ = safe_kendall(x, y)
-    method_passed = (
-        same_sign(candidate.rho, pearson_r)
-        and same_sign(candidate.rho, kendall_tau)
-        and pearson_p <= config.alpha
-        and kendall_p <= config.alpha
-    )
-    tests.append(ValidationTestResult(
-        name="method_triangulation",
-        dimension="robustness",
-        passed=method_passed,
-        metric=float(min(abs(pearson_r), abs(kendall_tau))),
-        p_value=float(max(pearson_p, kendall_p)),
-        details=f"pearson={pearson_r:.4g}, kendall_tau={kendall_tau:.4g}",
-    ))
-
-    # Construct-validity hard gate: a feature so target-like that it is a copy/proxy of the outcome
-    # (leakage), not an independent predictor. Spearman |rho|>threshold catches near-perfect CONTINUOUS
-    # leaks, but Spearman SATURATES on a binary target (a perfect class separator reads rho~0.8, below
-    # the 0.85 threshold), so a near-deterministic copy of a binary outcome would slip through. Add a
-    # class-separation ceiling: an essentially-perfect single-feature separator (AUC>=0.99 either
-    # direction) is leakage regardless of Spearman rho. (Found via adversarial leak-injection across 12
-    # real datasets: an injected target-copy was validated on 7 binary-target datasets.)
-    construct_auc, _construct_auc_n = auc_against_target(y, x)
-    near_perfect_separator = (
-        (np.isfinite(construct_auc) and max(construct_auc, 1.0 - construct_auc) >= 0.99)
-        or _near_deterministic_of_target(x, y)  # multiclass-aware (binary AUC undefined for >2 classes)
-    )
-    construct_passed = not (
-        candidate.n > 30
-        and (
-            (np.isfinite(candidate.rho) and abs(candidate.rho) > config.construct_threshold)
-            or near_perfect_separator
-        )
-    )
-    tests.append(ValidationTestResult(
-        name="construct_validity_hard_gate",
-        dimension="robustness",
-        passed=construct_passed,
-        hard_gate=True,
-        metric=abs(candidate.rho),
-        details=f"threshold={config.construct_threshold}, auc={construct_auc:.4g} (near_perfect_separator={near_perfect_separator})",
-    ))
-
+    tests.extend(_method_triangulation_test(x, y, candidate, config))
+    tests.extend(_construct_validity_test(x, y, candidate, config))
     tests.extend(_confounder_tests(frame, subset, x, y, candidate, confounder_columns, config))
 
     independence_failures = []
