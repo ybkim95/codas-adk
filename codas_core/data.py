@@ -637,15 +637,10 @@ def _add_interaction_features(
     return added
 
 
-def build_analysis_frame(
-    df: pd.DataFrame,
-    target_column: str,
-    participant_id_column: str | None = None,
-    time_column: str | None = None,
-    excluded_columns: list[str] | None = None,
-    confounder_columns: list[str] | None = None,
-    max_ratio_features: int = 24,
-) -> AnalysisFrame:
+def _validate_and_encode_target(df: pd.DataFrame, target_column: str) -> tuple[pd.DataFrame, str | None]:
+    """Validate the target and encode a binary categorical one to 0/1. Raises InsufficientDataError
+    for an absent / constant / high-cardinality-text / multi-class-text target. Returns the
+    (possibly target-encoded) frame and an optional encoding note. Extracted from build_analysis_frame."""
     if target_column not in df.columns:
         raise InsufficientDataError(f"Target column '{target_column}' is not present in the dataset.")
     # Constant target = nothing to associate/predict. (Too-few-observations is left
@@ -693,6 +688,81 @@ def build_analysis_frame(
                     "association discovery requires a numeric or binary outcome. Choose a numeric endpoint, or a binary "
                     "target for classification."
                 )
+    return df, _binary_target_note
+
+
+def _drop_identifier_like_columns(work: pd.DataFrame, feature_columns: list[str], audit_log: list[str]) -> list[str]:
+    """Drop identifier / row-index columns that survived as numeric features — a structural
+    all-unique-consecutive-integer detector plus an id/index name match with near-uniqueness.
+    Prevents a sequential id on a target-sorted export from being screened as a predictor.
+    Appends to audit_log and returns the filtered feature list. Extracted from build_analysis_frame."""
+    # Drop trivial identifier / row-index columns that survived as numeric features. A column whose
+    # NAME looks like an id/index AND whose values are ~unique per row is a record id, not a
+    # predictor. Without this, a sequential id that happens to track the target (sorted exports —
+    # the A15 trivial-leakage trap) could be screened and ratio-engineered into a spurious
+    # "predictor". Requiring BOTH the name pattern AND near-uniqueness keeps real measurements
+    # (e.g. a low-cardinality "device_id" grouping, or any genuinely continuous feature).
+    _ID_NAMES = {
+        "id", "index", "rowid", "row_id", "row_index", "rowindex", "record_id", "recordid",
+        "record_number", "uuid", "guid", "seq", "sequence", "sample_id", "sampleid", "row",
+        "row_number", "rownum", "serial", "serial_number",
+    }
+    _AGG_SUFFIXES = ("_mean", "_median", "_min", "_max", "_std", "_sum", "_count", "_first", "_last", "_iqr", "_range")
+
+    def _is_identifier_like(col: str) -> bool:
+        # STRUCTURAL row-index/ID detector (name-independent): a column whose values are all-unique
+        # CONSECUTIVE integers (an arange-like 0..n-1 / 1..n in any order) is a row index or record id,
+        # never a continuous predictor. Caught regardless of column name — fixes the row-order leakage
+        # where a sequential id on a target-SORTED export was screened+validated as a "predictor"
+        # (found via injection probe on thyroid_recurrence / obesity_level, which are sorted by target).
+        _series0 = work[col].dropna()
+        _n0 = len(_series0)
+        if _n0 >= 20 and _series0.nunique() == _n0:
+            _vals = pd.to_numeric(_series0, errors="coerce").dropna()
+            if len(_vals) == _n0 and np.all(np.isfinite(_vals)) and np.allclose(np.mod(_vals, 1.0), 0.0):
+                _span = float(_vals.max() - _vals.min())
+                if abs(_span - (_n0 - 1)) <= max(1.0, 0.001 * _n0):  # consecutive integer sequence
+                    return True
+        name = str(col).strip().lower()
+        # Longitudinal aggregation renames "record_id" -> "record_id_mean"/"_min"/... so match the
+        # base name (suffix stripped) as well as the raw name.
+        base = name
+        for suffix in _AGG_SUFFIXES:
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        name_hit = any(
+            candidate in _ID_NAMES
+            or candidate.endswith("_id") or candidate.endswith("_index")
+            or candidate.endswith("_uuid") or candidate.endswith("_guid")
+            or candidate.startswith("unnamed:")
+            for candidate in (name, base)
+        )
+        if not name_hit:
+            return False
+        series = work[col].dropna()
+        return len(series) >= 20 and series.nunique() >= 0.95 * len(series)
+
+    identifier_like = [column for column in feature_columns if _is_identifier_like(column)]
+    if identifier_like:
+        feature_columns = [column for column in feature_columns if column not in identifier_like]
+        audit_log.append(
+            f"Excluded identifier/index-like columns from predictor features (near-unique per row): "
+            f"{', '.join(map(str, identifier_like))}."
+        )
+    return feature_columns
+
+
+def build_analysis_frame(
+    df: pd.DataFrame,
+    target_column: str,
+    participant_id_column: str | None = None,
+    time_column: str | None = None,
+    excluded_columns: list[str] | None = None,
+    confounder_columns: list[str] | None = None,
+    max_ratio_features: int = 24,
+) -> AnalysisFrame:
+    df, _binary_target_note = _validate_and_encode_target(df, target_column)
     excluded = set(excluded_columns or [])
     confounders = [column for column in (confounder_columns or []) if column in df.columns]
     audit_log: list[str] = []
@@ -782,60 +852,7 @@ def build_analysis_frame(
         if work[column].notna().sum() >= 20 and work[column].nunique(dropna=True) > 1
     ]
 
-    # Drop trivial identifier / row-index columns that survived as numeric features. A column whose
-    # NAME looks like an id/index AND whose values are ~unique per row is a record id, not a
-    # predictor. Without this, a sequential id that happens to track the target (sorted exports —
-    # the A15 trivial-leakage trap) could be screened and ratio-engineered into a spurious
-    # "predictor". Requiring BOTH the name pattern AND near-uniqueness keeps real measurements
-    # (e.g. a low-cardinality "device_id" grouping, or any genuinely continuous feature).
-    _ID_NAMES = {
-        "id", "index", "rowid", "row_id", "row_index", "rowindex", "record_id", "recordid",
-        "record_number", "uuid", "guid", "seq", "sequence", "sample_id", "sampleid", "row",
-        "row_number", "rownum", "serial", "serial_number",
-    }
-    _AGG_SUFFIXES = ("_mean", "_median", "_min", "_max", "_std", "_sum", "_count", "_first", "_last", "_iqr", "_range")
-
-    def _is_identifier_like(col: str) -> bool:
-        # STRUCTURAL row-index/ID detector (name-independent): a column whose values are all-unique
-        # CONSECUTIVE integers (an arange-like 0..n-1 / 1..n in any order) is a row index or record id,
-        # never a continuous predictor. Caught regardless of column name — fixes the row-order leakage
-        # where a sequential id on a target-SORTED export was screened+validated as a "predictor"
-        # (found via injection probe on thyroid_recurrence / obesity_level, which are sorted by target).
-        _series0 = work[col].dropna()
-        _n0 = len(_series0)
-        if _n0 >= 20 and _series0.nunique() == _n0:
-            _vals = pd.to_numeric(_series0, errors="coerce").dropna()
-            if len(_vals) == _n0 and np.all(np.isfinite(_vals)) and np.allclose(np.mod(_vals, 1.0), 0.0):
-                _span = float(_vals.max() - _vals.min())
-                if abs(_span - (_n0 - 1)) <= max(1.0, 0.001 * _n0):  # consecutive integer sequence
-                    return True
-        name = str(col).strip().lower()
-        # Longitudinal aggregation renames "record_id" -> "record_id_mean"/"_min"/... so match the
-        # base name (suffix stripped) as well as the raw name.
-        base = name
-        for suffix in _AGG_SUFFIXES:
-            if base.endswith(suffix):
-                base = base[: -len(suffix)]
-                break
-        name_hit = any(
-            candidate in _ID_NAMES
-            or candidate.endswith("_id") or candidate.endswith("_index")
-            or candidate.endswith("_uuid") or candidate.endswith("_guid")
-            or candidate.startswith("unnamed:")
-            for candidate in (name, base)
-        )
-        if not name_hit:
-            return False
-        series = work[col].dropna()
-        return len(series) >= 20 and series.nunique() >= 0.95 * len(series)
-
-    identifier_like = [column for column in feature_columns if _is_identifier_like(column)]
-    if identifier_like:
-        feature_columns = [column for column in feature_columns if column not in identifier_like]
-        audit_log.append(
-            f"Excluded identifier/index-like columns from predictor features (near-unique per row): "
-            f"{', '.join(map(str, identifier_like))}."
-        )
+    feature_columns = _drop_identifier_like_columns(work, feature_columns, audit_log)
     feature_components = {column: [column] for column in feature_columns}
     feature_columns, added_ratios = _add_ratio_features(
         work,
