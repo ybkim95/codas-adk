@@ -493,6 +493,38 @@ def _construct_validity_test(x, y, candidate, config):
     return results
 
 
+def _subsample_replication_test(frame, feature, target_column, participant_id_column, candidate, config):
+    """Within-sample 20% resplit stability check (NOT a pre-selection holdout — an optimistic
+    stability test; selection multiplicity is controlled by the FDR screen). Pinned by the golden test."""
+    results: list[ValidationTestResult] = []
+    # NOTE: this is a within-sample 20% resplit of the SAME data used to screen/select the
+    # candidate, NOT a pre-selection holdout, so it is an optimistic stability check rather than
+    # true out-of-sample replication. Named `subsample_replication` (not `independent_replication`)
+    # to avoid overclaiming. Selection multiplicity is controlled by the FDR screen, not this test.
+    holdout = _split_holdout(frame, feature, target_column, participant_id_column, config.random_state)
+    if len(holdout) >= config.min_holdout_n:
+        holdout_rho, holdout_p, holdout_n = safe_spearman(holdout[feature], holdout[target_column])
+        passed = same_sign(candidate.rho, holdout_rho) and holdout_p <= config.alpha
+        results.append(ValidationTestResult(
+            name="subsample_replication",
+            dimension="replication",
+            passed=passed,
+            metric=holdout_rho,
+            p_value=holdout_p,
+            details=f"within-sample 20% resplit (not a pre-selection holdout); holdout_n={holdout_n}",
+        ))
+    else:
+        results.append(ValidationTestResult(
+            name="subsample_replication",
+            dimension="replication",
+            passed=False,
+            applicable=False,
+            details=f"holdout_n={len(holdout)} below minimum {config.min_holdout_n}",
+        ))
+
+    return results
+
+
 def validate_candidate(
     frame: pd.DataFrame,
     candidate: Candidate,
@@ -508,31 +540,7 @@ def validate_candidate(
     x, y, subset = _valid_arrays(frame, feature, target_column)
     tests: list[ValidationTestResult] = []
 
-    # NOTE: this is a within-sample 20% resplit of the SAME data used to screen/select the
-    # candidate, NOT a pre-selection holdout, so it is an optimistic stability check rather than
-    # true out-of-sample replication. Named `subsample_replication` (not `independent_replication`)
-    # to avoid overclaiming. Selection multiplicity is controlled by the FDR screen, not this test.
-    holdout = _split_holdout(frame, feature, target_column, participant_id_column, config.random_state)
-    if len(holdout) >= config.min_holdout_n:
-        holdout_rho, holdout_p, holdout_n = safe_spearman(holdout[feature], holdout[target_column])
-        passed = same_sign(candidate.rho, holdout_rho) and holdout_p <= config.alpha
-        tests.append(ValidationTestResult(
-            name="subsample_replication",
-            dimension="replication",
-            passed=passed,
-            metric=holdout_rho,
-            p_value=holdout_p,
-            details=f"within-sample 20% resplit (not a pre-selection holdout); holdout_n={holdout_n}",
-        ))
-    else:
-        tests.append(ValidationTestResult(
-            name="subsample_replication",
-            dimension="replication",
-            passed=False,
-            applicable=False,
-            details=f"holdout_n={len(holdout)} below minimum {config.min_holdout_n}",
-        ))
-
+    tests.extend(_subsample_replication_test(frame, feature, target_column, participant_id_column, candidate, config))
     perm_p = _permutation_p_value(x, y, candidate.rho, config.n_resamples, config.random_state)
     tests.append(ValidationTestResult(
         name="permutation_test",
