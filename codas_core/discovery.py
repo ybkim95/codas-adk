@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +57,12 @@ class DiscoveryRequest:
     # upstream risk factors; if they survive the battery they are ADVISED against (not
     # auto-excluded, since the user may intend them). Matched case-insensitively by exact name.
     concurrent_test_columns: list[str] = field(default_factory=list)
+    # Columns the USER/PROFILE has declared to be measured AT OR AFTER the outcome window (e.g. a
+    # forward-looking "next-week" aggregate, or any post-outcome reading). Including such a feature is
+    # look-ahead / temporal leakage: it inflates apparent predictive power for the CURRENT outcome.
+    # CoDaS cannot infer measurement timing from values, so these are caller-declared; when declared
+    # they are EXCLUDED before screening (a hard guard) and the exclusion is disclosed. Matched by name.
+    post_outcome_columns: list[str] = field(default_factory=list)
 
 
 def _rank_candidates(
@@ -504,6 +510,40 @@ def _construct_circularity_advisory(candidates: list[Candidate], analysis, reque
     ]
 
 
+# A validated association at or above this strength on time-structured data is worth a temporal-leakage
+# check (it is in the band where a forward-looking / post-outcome feature typically lands).
+_TEMPORAL_LEAKAGE_RHO = float(os.getenv("CODAS_TEMPORAL_LEAKAGE_RHO", "0.5"))
+
+
+def _temporal_leakage_advisory(candidates: list[Candidate], request: "DiscoveryRequest") -> list[str]:
+    """Soft, value+structure-based look-ahead-leakage advisory (NOT name-based, NOT auto-excluding).
+
+    Look-ahead leakage is a timing problem the engine cannot read from values, so it cannot auto-detect
+    a post-outcome feature. But it CAN flag the risk where it matters: on time-structured data (a time
+    axis, or repeated measures), any strongly-associated surviving feature should be confirmed to be
+    measured at or before the outcome window. Cross-sectional data has no look-ahead notion, so this
+    stays silent there (no false-positive spam). Caller-declared post_outcome_columns are already
+    excluded upstream, so they never reach this advisory.
+    """
+    if not (request.time_column or request.participant_id_column):
+        return []
+    strong = [
+        c for c in candidates
+        if c.verdict in {"validated", "conditional"} and np.isfinite(c.rho) and abs(c.rho) >= _TEMPORAL_LEAKAGE_RHO
+    ]
+    if not strong:
+        return []
+    listed = ", ".join(f"'{c.feature}' (ρ={c.rho:+.2f})" for c in strong[:8])
+    return [
+        f"TEMPORAL-LEAKAGE CHECK (time-structured data): {len(strong)} surviving feature(s) show a strong "
+        f"association with '{request.target_column}': {listed}. CoDaS cannot infer when each column was "
+        f"measured, so confirm none is recorded at or after the outcome window — a forward-looking or "
+        f"post-outcome feature (e.g. a 'next-week' aggregate) produces look-ahead leakage that inflates "
+        f"apparent predictive power. Declare any such column in post_outcome_columns (or excluded_columns) "
+        f"and re-run before interpreting these as predictors of the current outcome."
+    ]
+
+
 @dataclass
 class _ScreenResult:
     analysis: Any
@@ -892,6 +932,19 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
         df = df.replace([np.inf, -np.inf], np.nan)
     LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
+    # Hard temporal-leakage guard: caller-declared post-outcome columns are excluded before screening
+    # so a forward-looking / post-outcome feature can never be reported as a predictor of the current
+    # outcome. (The engine cannot infer timing from values; this relies on the caller's declaration.)
+    if request.post_outcome_columns:
+        present = [c for c in request.post_outcome_columns if c in df.columns]
+        if present:
+            merged = list(dict.fromkeys(list(request.excluded_columns) + present))
+            request = replace(request, excluded_columns=merged)
+            warnings.append(
+                f"Excluded {len(present)} caller-declared post-outcome column(s) before analysis to "
+                f"prevent look-ahead / temporal leakage: {present}. A feature measured at or after the "
+                f"outcome window is not a legitimate predictor of the current outcome."
+            )
     warnings.extend(_input_quality_warnings(df, request.target_column))
     profile = profile_dataframe(
         df,
@@ -1008,6 +1061,8 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     warnings.extend(_combined_feature_attribution(candidates, analysis))
 
     warnings.extend(_construct_circularity_advisory(candidates, analysis, request))
+
+    warnings.extend(_temporal_leakage_advisory(candidates, request))
 
     # NOTE: no NAME-based temporal/future-leakage advisory. The engine does not infer a measurement
     # timeline from column names. A caller who knows a feature is measured post-outcome or in a future

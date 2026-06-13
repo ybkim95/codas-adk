@@ -74,6 +74,25 @@ def test_participant_id_reduces_pseudo_replication_false_validation():
     assert grouped < naive, f"declaring the participant id must reduce false validation (naive={naive}, grouped={grouped})"
 
 
+def test_temporal_leakage_advisory_and_declared_hard_guard():
+    rng = np.random.default_rng(0)
+    n = 300
+    y = rng.normal(size=n)
+    df = pd.DataFrame({"t": np.arange(n), "legit": 0.4 * y + rng.normal(size=n),
+                       "future_proxy": 0.7 * y + rng.normal(size=n) * 0.8, "y": y})  # strong, post-outcome
+    # (1) on time-structured data the advisory fires for the strong association
+    plain = run_discovery(df, DiscoveryRequest(target_column="y", time_column="t", validation_resamples=150))
+    assert any("TEMPORAL-LEAKAGE" in w for w in plain.warnings)
+    # (2) declaring the post-outcome column hard-excludes it (deterministic guard)
+    guarded = run_discovery(df, DiscoveryRequest(target_column="y", time_column="t",
+                                                 post_outcome_columns=["future_proxy"], validation_resamples=150))
+    assert "future_proxy" not in {c.feature for c in guarded.candidates}
+    # (3) cross-sectional data has no look-ahead notion -> the advisory must stay silent (no spam)
+    cs = run_discovery(pd.DataFrame({"a": rng.normal(size=n), "y": rng.normal(size=n)}),
+                       DiscoveryRequest(target_column="y", validation_resamples=150))
+    assert not any("TEMPORAL-LEAKAGE" in w for w in cs.warnings)
+
+
 def test_within_subject_signal_surfaces_under_opposite_between_correlation():
     rng = np.random.default_rng(0)
     K, T = 30, 40
