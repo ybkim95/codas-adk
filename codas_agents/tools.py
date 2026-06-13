@@ -80,7 +80,7 @@ def _split_csv(value: str) -> list[str]:
 
 # --- stateless tools ---------------------------------------------------------------------------
 
-def profile_dataset(csv_path: str = "", target_column: str = "", tool_context: ToolContext = None) -> dict[str, Any]:
+def profile_dataset(csv_path: str = "", target_column: str = "", tool_context: ToolContext | None = None) -> dict[str, Any]:
     """Profile the dataset: schema, dtypes, missingness, row count, and the numeric columns (the
     candidate targets). The dataset path lives in shared memory, so call this with no arguments;
     pass ``csv_path`` only to profile a different file. Makes no name-based assumption about the
@@ -93,7 +93,7 @@ def profile_dataset(csv_path: str = "", target_column: str = "", tool_context: T
     return _json_safe(profile_dataframe(df, target_column=(target_column or None)).to_dict())
 
 
-def preview_columns(csv_path: str = "", limit: int = 20, tool_context: ToolContext = None) -> dict[str, Any]:
+def preview_columns(csv_path: str = "", limit: int = 20, tool_context: ToolContext | None = None) -> dict[str, Any]:
     """Return a small preview of column names, dtypes, and the first few rows for orientation. The
     dataset path lives in shared memory, so call this with no path; pass ``csv_path`` only to preview
     a different file."""

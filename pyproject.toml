@@ -32,5 +32,11 @@ all = ["google-adk", "google-genai", "fastapi", "uvicorn", "pydantic", "python-m
 [tool.setuptools.packages.find]
 include = ["codas_core*", "codas_agents*", "codas_service*"]
 
+# Ship the PEP 561 marker so downstream type-checkers honour the inline type hints.
+[tool.setuptools.package-data]
+codas_core = ["py.typed"]
+codas_agents = ["py.typed"]
+codas_service = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

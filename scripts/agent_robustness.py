@@ -32,6 +32,8 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from codas_agents.grounding import engine_numbers, ungrounded_claims
+
 MAX_ROUNDS = int(os.environ["CODAS_MAX_DISCOVERY_ROUNDS"])
 
 
@@ -94,56 +96,18 @@ def check_r4(run: dict) -> list[tuple[str, bool, str]]:
     ]
 
 
-def _engine_values(run: dict) -> set[float]:
-    """Every number the deterministic engine actually produced, plus legitimate derivations
-    (variance-explained = rho^2, percent forms), each rounded to 2/3/4 dp for tolerant matching."""
-    vals: set[float] = set()
-
-    def add(v):
-        if isinstance(v, (int, float)) and v == v:
-            for k in (2, 3, 4):
-                vals.add(round(float(v), k))
-
-    fs = run.get("fact_sheet", {})
-    for key in ("ml_metric_value", "rows", "columns", "candidate_features_screened",
-                "internal_battery_passing_variants", "ml_metric_vs_null_p", "ml_pr_auc", "positive_rate"):
-        add(fs.get(key))
-    mv = fs.get("ml_metric_value")
-    if isinstance(mv, (int, float)):
-        add(mv * 100)
-    for r in run.get("rounds", []):
-        add(r.get("ml_metric_value")); add(r.get("validated_count"))
-    for c in run.get("candidates", []):
-        for key in ("rho", "q_value", "p_value", "n"):
-            add(c.get(key))
-        if isinstance(c.get("rho"), (int, float)):
-            add(c["rho"] ** 2); add(c["rho"] ** 2 * 100); add(abs(c["rho"]))
-    return vals
-
-
-_STAT_CLAIM = re.compile(
-    r"(auc|r2|r²|r-squared|rho|ρ|spearman|p-value|p value|\bp\b|correlation|coefficient|variance|q-value|q=)"
-    r"[^\d\n]{0,18}([-+]?\d*\.?\d+)", re.I)
-
-
 def check_r5_grounding(run: dict) -> list[tuple[str, bool, str]]:
     """RIGOROUS grounding: every statistic-claim in the report must trace to a number the engine
-    produced — not just the headline metric. An ungrounded statistic-claim is a fabrication."""
+    produced — not just the headline metric. An ungrounded statistic-claim is a fabrication. Uses the
+    same grounding logic as the runtime guardrail (codas_agents.grounding) so the two cannot drift."""
     fs = run.get("fact_sheet", {})
     metric = fs.get("ml_metric_value")
     report = run["report"]
-    engine_vals = _engine_values(run)
-
-    def grounded(x: float) -> bool:
-        return any(abs(x - e) <= 0.011 for e in engine_vals)
-
-    claims = [(m.group(1), float(m.group(2))) for m in _STAT_CLAIM.finditer(report)]
-    # benign non-engine numbers: years, and small structural integers (phase counts, "6 phases", etc.)
-    ungrounded = [(k, v) for k, v in claims
-                  if not grounded(v) and not (1900 < v < 2100) and v not in (0, 1, 2, 3, 4, 5, 6, 10, 90, 95, 100)]
+    engine_vals = engine_numbers(fs, run.get("candidates"), run.get("rounds"))
+    ungrounded, total = ungrounded_claims(report, engine_vals)
     nums = [float(x) for x in re.findall(r"[-+]?\d*\.\d+", report)]
     checks = [("every_statistic_claim_is_grounded", len(ungrounded) == 0,
-               f"{len(claims) - len(ungrounded)}/{len(claims)} stat-claims trace to engine values"
+               f"{total - len(ungrounded)}/{total} stat-claims trace to engine values"
                + (f"; UNGROUNDED={ungrounded[:5]}" if ungrounded else ""))]
     if isinstance(metric, (int, float)):
         checks.append(("headline_metric_matches_factsheet", any(abs(x - float(metric)) < 0.011 for x in nums),
