@@ -553,6 +553,55 @@ class _ScreenResult:
     audit_log: list[str]
 
 
+def _within_subject_diagnostic(screen_frame, analysis, cluster_groups, request, cluster_screen_info) -> list[str]:
+    """Two-stage within-subject diagnostic for repeated measures: per-subject feature-outcome
+    correlations tested across subjects (n = N_subjects, not pseudo-replicated). Mutates
+    cluster_screen_info in place with the within-subject associations and returns any warnings.
+    Extracted verbatim from _screen (pinned by the full-report golden test)."""
+    results: list[str] = []
+    # WITHIN-SUBJECT two-stage screen (only for row-level repeated measures with a participant id).
+    # The cross-sectional cluster-corrected screen above answers "do subjects with higher X have higher
+    # outcome?" (between-subject, n≈N_subjects). For a LONGITUDINAL predictor the scientific question is
+    # within-subject ("as THIS subject's X rises, does their outcome rise?"), which the cross-sectional
+    # screen cannot see. Compute each subject's own feature↔outcome correlation, then test the per-subject
+    # correlations against zero across subjects (n = N_subjects) — confound-free and not pseudo-replicated.
+    # Surfaced as an ADDITIVE diagnostic (does not alter the conservative cross-sectional verdicts).
+    if cluster_groups is not None:
+        _ws_rows = []
+        _ws_p = []
+        for feat in analysis.feature_columns:
+            r = within_subject_two_stage(screen_frame[feat], screen_frame[analysis.target_column], cluster_groups)
+            if r["n_subjects"] >= 8 and np.isfinite(r["within_rho_median"]):
+                _ws_rows.append({"feature": feat, **r})
+                _ws_p.append(r["p_value"])
+        if _ws_rows:
+            _ws_q = benjamini_hochberg(_ws_p)
+            for row, q in zip(_ws_rows, _ws_q):
+                row["q_value"] = float(q)
+            _ws_rows.sort(key=lambda d: (d["q_value"], -abs(d["within_rho_median"])))
+            # Flag near-perfect within-subject correlations as likely target leakage/components (the same
+            # signature the cross-sectional construct gate rejects) so they are NOT highlighted as predictors.
+            for d in _ws_rows:
+                d["likely_leakage"] = bool(abs(d["within_rho_median"]) > 0.95)
+            _ws_sig = [d for d in _ws_rows
+                       if d["q_value"] <= request.fdr_alpha and 0.1 <= abs(d["within_rho_median"]) <= 0.95]
+            cluster_screen_info["within_subject_associations"] = _ws_rows[:12]
+            cluster_screen_info["within_subject_significant_count"] = len(_ws_sig)
+            if _ws_sig:
+                _top = "; ".join(f"{d['feature']} (within-ρ̃={d['within_rho_median']:.2f}, q={d['q_value']:.1e}, "
+                                 f"{int(round(d['frac_consistent_sign']*100))}% of {d['n_subjects']} subjects same-sign)"
+                                 for d in _ws_sig[:5])
+                results.append(
+                    f"WITHIN-SUBJECT diagnostic (two-stage; per-subject correlations tested across "
+                    f"{_ws_rows[0]['n_subjects']} subjects, NOT pseudo-replicated): {len(_ws_sig)} feature(s) track "
+                    f"the outcome within participants — {_top}. This is the longitudinal-tracking signal the "
+                    f"cross-sectional screen cannot capture; treat as exploratory (not corrected for within-subject "
+                    f"temporal autocorrelation) and confirm with mixed-effects + external data."
+                )
+
+    return results
+
+
 def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant: str | None,
             effective_time: str | None) -> tuple["_ScreenResult", list[str]]:
     """Screening phase: subsample very large data, build the analysis frame, apply the
@@ -676,46 +725,7 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
     if not ranked:
         raise InsufficientDataError("No candidate feature had enough valid observations for screening.")
 
-    # WITHIN-SUBJECT two-stage screen (only for row-level repeated measures with a participant id).
-    # The cross-sectional cluster-corrected screen above answers "do subjects with higher X have higher
-    # outcome?" (between-subject, n≈N_subjects). For a LONGITUDINAL predictor the scientific question is
-    # within-subject ("as THIS subject's X rises, does their outcome rise?"), which the cross-sectional
-    # screen cannot see. Compute each subject's own feature↔outcome correlation, then test the per-subject
-    # correlations against zero across subjects (n = N_subjects) — confound-free and not pseudo-replicated.
-    # Surfaced as an ADDITIVE diagnostic (does not alter the conservative cross-sectional verdicts).
-    if cluster_groups is not None:
-        _ws_rows = []
-        _ws_p = []
-        for feat in analysis.feature_columns:
-            r = within_subject_two_stage(screen_frame[feat], screen_frame[analysis.target_column], cluster_groups)
-            if r["n_subjects"] >= 8 and np.isfinite(r["within_rho_median"]):
-                _ws_rows.append({"feature": feat, **r})
-                _ws_p.append(r["p_value"])
-        if _ws_rows:
-            _ws_q = benjamini_hochberg(_ws_p)
-            for row, q in zip(_ws_rows, _ws_q):
-                row["q_value"] = float(q)
-            _ws_rows.sort(key=lambda d: (d["q_value"], -abs(d["within_rho_median"])))
-            # Flag near-perfect within-subject correlations as likely target leakage/components (the same
-            # signature the cross-sectional construct gate rejects) so they are NOT highlighted as predictors.
-            for d in _ws_rows:
-                d["likely_leakage"] = bool(abs(d["within_rho_median"]) > 0.95)
-            _ws_sig = [d for d in _ws_rows
-                       if d["q_value"] <= request.fdr_alpha and 0.1 <= abs(d["within_rho_median"]) <= 0.95]
-            cluster_screen_info["within_subject_associations"] = _ws_rows[:12]
-            cluster_screen_info["within_subject_significant_count"] = len(_ws_sig)
-            if _ws_sig:
-                _top = "; ".join(f"{d['feature']} (within-ρ̃={d['within_rho_median']:.2f}, q={d['q_value']:.1e}, "
-                                 f"{int(round(d['frac_consistent_sign']*100))}% of {d['n_subjects']} subjects same-sign)"
-                                 for d in _ws_sig[:5])
-                warnings.append(
-                    f"WITHIN-SUBJECT diagnostic (two-stage; per-subject correlations tested across "
-                    f"{_ws_rows[0]['n_subjects']} subjects, NOT pseudo-replicated): {len(_ws_sig)} feature(s) track "
-                    f"the outcome within participants — {_top}. This is the longitudinal-tracking signal the "
-                    f"cross-sectional screen cannot capture; treat as exploratory (not corrected for within-subject "
-                    f"temporal autocorrelation) and confirm with mixed-effects + external data."
-                )
-
+    warnings.extend(_within_subject_diagnostic(screen_frame, analysis, cluster_groups, request, cluster_screen_info))
     screened_count = len(ranked)
     validation_pool = [
         candidate for candidate in ranked if candidate.q_value <= request.fdr_alpha
