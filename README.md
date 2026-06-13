@@ -82,6 +82,7 @@ python scripts/scientific_validation.py              # longitudinal/wearable sci
                                                      #   confounding, within-vs-between, leakage, effect size, imbalance
 python scripts/agent_robustness.py                   # live audit: orchestration, grounding integrity, prompt-injection
 python scripts/loadtest.py                            # load + soak: throughput, latency percentiles, memory stability
+python scripts/reproduce_paper_biomarkers.py A.csv B.csv   # runs the paper's discovery method on its cohorts
 ```
 
 ## About
