@@ -249,6 +249,141 @@ def _permutation_p_value(
     return float((ge + 1) / (total + 1))
 
 
+def _confounder_tests(frame, subset, x, y, candidate, confounder_columns, config):
+    """Confounder-adjustment dimension: partial Spearman given the usable confounders, plus a
+    hard gate that fails a feature whose association does not survive adjustment (sign flip,
+    >=75% magnitude collapse, or a non-significant partial at n>=50). Returns the dimension's
+    test result(s). Extracted verbatim from validate_candidate (behaviour pinned by the golden test)."""
+    results: list[ValidationTestResult] = []
+    usable_confounders = [
+        column
+        for column in confounder_columns
+        if column in frame.columns and _is_adjustable_confounder(frame[column])
+    ]
+    if usable_confounders:
+        covariates = _confounder_covariate_matrix(frame, usable_confounders, subset.index)
+        partial_rho, partial_p, partial_n = partial_spearman(x, y, covariates)
+        confounder_adjusted_passed = same_sign(candidate.rho, partial_rho) and partial_p <= config.alpha
+        results.append(ValidationTestResult(
+            name="confounder_adjusted_robustness",
+            dimension="robustness",
+            passed=confounder_adjusted_passed,
+            metric=partial_rho,
+            p_value=partial_p,
+            details=f"partial_spearman_n={partial_n}, covariates={usable_confounders}",
+        ))
+        # HARD GATE: if the association does not SURVIVE adjustment for the supplied
+        # confounders, the feature is confounded, not an independent predictor, and must
+        # not be promoted to "validated". Three independent criteria for confounding:
+        #   (a) Sign flip after adjustment — the "predictor" reverses direction.
+        #   (b) Effect collapses to <25% of the raw effect (magnitude attenuation ≥75%).
+        #   (c) Partial effect is statistically non-significant (p>α) while still having a
+        #       substantial raw effect (|raw_rho|>0.25). This is the key case for masking
+        #       confounded associations: the partial correlation may retain the correct sign
+        #       but be explicable entirely by the confounder.
+        # Low-power samples (n<50) are exempted from (c) to avoid false downgrades when the
+        # partial test simply lacks power.
+        severe_sign_flip = (
+            np.isfinite(partial_rho) and np.isfinite(candidate.rho)
+            and abs(candidate.rho) > 1e-9
+            and not same_sign(candidate.rho, partial_rho)
+        )
+        severe_collapse = (
+            np.isfinite(partial_rho) and np.isfinite(candidate.rho)
+            and abs(candidate.rho) > 1e-9
+            and abs(partial_rho) < 0.25 * abs(candidate.rho)
+        )
+        severe_nonsig = (
+            partial_n >= 50
+            and np.isfinite(partial_rho) and np.isfinite(candidate.rho)
+            and abs(candidate.rho) > 0.25           # meaningful raw effect
+            and partial_p > config.alpha             # but partial is non-significant
+        )
+        severely_confounded = partial_n >= 50 and (severe_sign_flip or severe_collapse or severe_nonsig)
+        if severely_confounded:
+            _reason = (
+                "sign flip after confounder adjustment" if severe_sign_flip
+                else f"effect magnitude collapses to {abs(partial_rho):.3f} (raw={abs(candidate.rho):.3f}, attenuation≥75%)" if severe_collapse
+                else f"partial effect non-significant after adjustment (partial_p={partial_p:.3g}>α={config.alpha}, partial_rho={partial_rho:.3f})"
+            )
+            _conf_msg = (
+                f"raw_rho={candidate.rho:.3f}, partial_rho={partial_rho:.3f} given {usable_confounders}: "
+                f"confounded — {_reason}. "
+                f"The raw association appears to be driven by {usable_confounders} rather than an "
+                f"independent relationship with the target."
+            )
+        else:
+            _conf_msg = (
+                f"raw_rho={candidate.rho:.3f}, partial_rho={partial_rho:.3f} given {usable_confounders}: "
+                f"survives confounder adjustment"
+            )
+        results.append(ValidationTestResult(
+            name="confounder_independence_hard_gate",
+            dimension="robustness",
+            passed=not severely_confounded,
+            hard_gate=True,
+            applicable=True,
+            metric=partial_rho,
+            p_value=partial_p,
+            details=_conf_msg,
+        ))
+    else:
+        results.append(ValidationTestResult(
+            name="confounder_adjusted_robustness",
+            dimension="robustness",
+            passed=False,
+            applicable=False,
+            details="no numeric confounders supplied",
+        ))
+    return results
+
+
+def _sequential_split_test(subset, feature, target_column, candidate):
+    """Sequential (temporal/batch) split consistency: split rows in given order into halves and
+    check the association holds (same sign, magnitude ratio >= 0.25) in both — a drift/cohort
+    artefact otherwise. Returns [] when there are too few rows. Pinned by the golden test."""
+    results: list[ValidationTestResult] = []
+    # Sequential (temporal / batch) split consistency: divide the rows in their GIVEN ORDER into
+    # a first half and second half. If the association holds in the first half but NOT in the
+    # second half (or vice versa), the effect may reflect a batch, drift, or cohort artefact
+    # rather than a stable biological relationship. This is especially important in longitudinal
+    # datasets where the first and second halves may correspond to different periods or cohorts.
+    # NOT a hard gate (the first/last ordering may be arbitrary in cross-sectional data);
+    # surfaces as an instability note so a reviewer can check whether their data is ordered by
+    # time or cohort, in which case this inconsistency is a meaningful replication concern.
+    n_sub = len(subset)
+    if n_sub >= 40:
+        first_half = subset.iloc[: n_sub // 2]
+        second_half = subset.iloc[n_sub // 2 :]
+        rho_f, _, _ = safe_spearman(first_half[feature], first_half[target_column])
+        rho_s, _, _ = safe_spearman(second_half[feature], second_half[target_column])
+        # Consistent = same sign in BOTH halves AND neither half is near-zero relative to the other.
+        # A 10x magnitude drop (e.g. ρ=-0.56 vs ρ=-0.05) is a replication concern even if signs agree.
+        _mag_ratio = (
+            min(abs(rho_f), abs(rho_s)) / max(abs(rho_f), abs(rho_s))
+            if max(abs(rho_f), abs(rho_s)) > 1e-9 else 1.0
+        )
+        consistent = (
+            np.isfinite(rho_f) and np.isfinite(rho_s)
+            and same_sign(candidate.rho, rho_f) and same_sign(candidate.rho, rho_s)
+            and _mag_ratio >= 0.25  # second-half effect must be at least 25% of first-half
+        )
+        results.append(ValidationTestResult(
+            name="sequential_split_consistency",
+            dimension="stability",
+            passed=consistent,
+            # Not a hard gate — only flags drift/batch concern; does not block validation
+            applicable=True,
+            metric=float(min(abs(rho_f), abs(rho_s))) if (np.isfinite(rho_f) and np.isfinite(rho_s)) else float("nan"),
+            details=(
+                f"first_half_rho={rho_f:.3f}, second_half_rho={rho_s:.3f} — "
+                + ("UNSTABLE: different directions in first vs second half; check if rows are ordered "
+                   "by time/cohort (if so, this is a replication concern)" if not consistent else "stable")
+            ),
+        ))
+    return results
+
+
 def validate_candidate(
     frame: pd.DataFrame,
     candidate: Candidate,
@@ -370,44 +505,7 @@ def validate_candidate(
             details="not enough rows after median split",
         ))
 
-    # Sequential (temporal / batch) split consistency: divide the rows in their GIVEN ORDER into
-    # a first half and second half. If the association holds in the first half but NOT in the
-    # second half (or vice versa), the effect may reflect a batch, drift, or cohort artefact
-    # rather than a stable biological relationship. This is especially important in longitudinal
-    # datasets where the first and second halves may correspond to different periods or cohorts.
-    # NOT a hard gate (the first/last ordering may be arbitrary in cross-sectional data);
-    # surfaces as an instability note so a reviewer can check whether their data is ordered by
-    # time or cohort, in which case this inconsistency is a meaningful replication concern.
-    n_sub = len(subset)
-    if n_sub >= 40:
-        first_half = subset.iloc[: n_sub // 2]
-        second_half = subset.iloc[n_sub // 2 :]
-        rho_f, _, _ = safe_spearman(first_half[feature], first_half[target_column])
-        rho_s, _, _ = safe_spearman(second_half[feature], second_half[target_column])
-        # Consistent = same sign in BOTH halves AND neither half is near-zero relative to the other.
-        # A 10x magnitude drop (e.g. ρ=-0.56 vs ρ=-0.05) is a replication concern even if signs agree.
-        _mag_ratio = (
-            min(abs(rho_f), abs(rho_s)) / max(abs(rho_f), abs(rho_s))
-            if max(abs(rho_f), abs(rho_s)) > 1e-9 else 1.0
-        )
-        consistent = (
-            np.isfinite(rho_f) and np.isfinite(rho_s)
-            and same_sign(candidate.rho, rho_f) and same_sign(candidate.rho, rho_s)
-            and _mag_ratio >= 0.25  # second-half effect must be at least 25% of first-half
-        )
-        tests.append(ValidationTestResult(
-            name="sequential_split_consistency",
-            dimension="stability",
-            passed=consistent,
-            # Not a hard gate — only flags drift/batch concern; does not block validation
-            applicable=True,
-            metric=float(min(abs(rho_f), abs(rho_s))) if (np.isfinite(rho_f) and np.isfinite(rho_s)) else float("nan"),
-            details=(
-                f"first_half_rho={rho_f:.3f}, second_half_rho={rho_s:.3f} — "
-                + ("UNSTABLE: different directions in first vs second half; check if rows are ordered "
-                   "by time/cohort (if so, this is a replication concern)" if not consistent else "stable")
-            ),
-        ))
+    tests.extend(_sequential_split_test(subset, feature, target_column, candidate))
 
     pearson_r, pearson_p, _ = safe_pearson(x, y)
     kendall_tau, kendall_p, _ = safe_kendall(x, y)
@@ -454,86 +552,7 @@ def validate_candidate(
         details=f"threshold={config.construct_threshold}, auc={construct_auc:.4g} (near_perfect_separator={near_perfect_separator})",
     ))
 
-    usable_confounders = [
-        column
-        for column in confounder_columns
-        if column in frame.columns and _is_adjustable_confounder(frame[column])
-    ]
-    if usable_confounders:
-        covariates = _confounder_covariate_matrix(frame, usable_confounders, subset.index)
-        partial_rho, partial_p, partial_n = partial_spearman(x, y, covariates)
-        confounder_adjusted_passed = same_sign(candidate.rho, partial_rho) and partial_p <= config.alpha
-        tests.append(ValidationTestResult(
-            name="confounder_adjusted_robustness",
-            dimension="robustness",
-            passed=confounder_adjusted_passed,
-            metric=partial_rho,
-            p_value=partial_p,
-            details=f"partial_spearman_n={partial_n}, covariates={usable_confounders}",
-        ))
-        # HARD GATE: if the association does not SURVIVE adjustment for the supplied
-        # confounders, the feature is confounded, not an independent predictor, and must
-        # not be promoted to "validated". Three independent criteria for confounding:
-        #   (a) Sign flip after adjustment — the "predictor" reverses direction.
-        #   (b) Effect collapses to <25% of the raw effect (magnitude attenuation ≥75%).
-        #   (c) Partial effect is statistically non-significant (p>α) while still having a
-        #       substantial raw effect (|raw_rho|>0.25). This is the key case for masking
-        #       confounded associations: the partial correlation may retain the correct sign
-        #       but be explicable entirely by the confounder.
-        # Low-power samples (n<50) are exempted from (c) to avoid false downgrades when the
-        # partial test simply lacks power.
-        severe_sign_flip = (
-            np.isfinite(partial_rho) and np.isfinite(candidate.rho)
-            and abs(candidate.rho) > 1e-9
-            and not same_sign(candidate.rho, partial_rho)
-        )
-        severe_collapse = (
-            np.isfinite(partial_rho) and np.isfinite(candidate.rho)
-            and abs(candidate.rho) > 1e-9
-            and abs(partial_rho) < 0.25 * abs(candidate.rho)
-        )
-        severe_nonsig = (
-            partial_n >= 50
-            and np.isfinite(partial_rho) and np.isfinite(candidate.rho)
-            and abs(candidate.rho) > 0.25           # meaningful raw effect
-            and partial_p > config.alpha             # but partial is non-significant
-        )
-        severely_confounded = partial_n >= 50 and (severe_sign_flip or severe_collapse or severe_nonsig)
-        if severely_confounded:
-            _reason = (
-                "sign flip after confounder adjustment" if severe_sign_flip
-                else f"effect magnitude collapses to {abs(partial_rho):.3f} (raw={abs(candidate.rho):.3f}, attenuation≥75%)" if severe_collapse
-                else f"partial effect non-significant after adjustment (partial_p={partial_p:.3g}>α={config.alpha}, partial_rho={partial_rho:.3f})"
-            )
-            _conf_msg = (
-                f"raw_rho={candidate.rho:.3f}, partial_rho={partial_rho:.3f} given {usable_confounders}: "
-                f"confounded — {_reason}. "
-                f"The raw association appears to be driven by {usable_confounders} rather than an "
-                f"independent relationship with the target."
-            )
-        else:
-            _conf_msg = (
-                f"raw_rho={candidate.rho:.3f}, partial_rho={partial_rho:.3f} given {usable_confounders}: "
-                f"survives confounder adjustment"
-            )
-        tests.append(ValidationTestResult(
-            name="confounder_independence_hard_gate",
-            dimension="robustness",
-            passed=not severely_confounded,
-            hard_gate=True,
-            applicable=True,
-            metric=partial_rho,
-            p_value=partial_p,
-            details=_conf_msg,
-        ))
-    else:
-        tests.append(ValidationTestResult(
-            name="confounder_adjusted_robustness",
-            dimension="robustness",
-            passed=False,
-            applicable=False,
-            details="no numeric confounders supplied",
-        ))
+    tests.extend(_confounder_tests(frame, subset, x, y, candidate, confounder_columns, config))
 
     independence_failures = []
     components = feature_components.get(feature, [feature])
