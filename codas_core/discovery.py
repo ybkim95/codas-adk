@@ -748,6 +748,135 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
                          audit_log=audit_log), warnings
 
 
+def _ordinal_outcome_warnings(df, request) -> list[str]:
+    results: list[str] = []
+    # --- MED FIX: Ordinal outcome detection ---
+    # When the target has a small number of unique integer values (2-6) the appropriate
+    # statistical model is proportional-odds / ordinal regression, not plain OLS. Flag this
+    # so the user knows to interpret R² with caution and consider an ordinal-specific method.
+    if request.target_column in df.columns:
+        _tgt_vals = df[request.target_column].dropna()
+        _n_unique = int(_tgt_vals.nunique())
+        _is_integer_like = (
+            pd.api.types.is_integer_dtype(_tgt_vals)
+            or (pd.api.types.is_float_dtype(_tgt_vals) and (_tgt_vals % 1 == 0).all())
+        )
+        if _is_integer_like and 2 < _n_unique <= 6:
+            results.append(
+                f"Target '{request.target_column}' appears to be ordinal (integer, {_n_unique} unique levels: "
+                f"{sorted(_tgt_vals.unique().tolist()[:7])}). CoDaS treats it as continuous for screening "
+                f"(Spearman correlation is rank-based and valid), but R² and the linear model are not optimal "
+                f"for ordinal outcomes. For inference, consider proportional-odds (ordered logistic) regression "
+                f"or a cumulative link model to respect the ordered-categorical structure."
+            )
+
+    return results
+
+
+def _within_person_warnings(candidates, cluster_screen_info, analysis, request) -> list[str]:
+    results: list[str] = []
+    # --- MED FIX: Within-person signal surfacing ---
+    # When the between-person aggregate analysis finds no validated predictors, check whether
+    # the within-subject screening (done during cluster-based analysis) surfaced significant
+    # within-person associations. If so, surface them in the report so the user is not left
+    # with an empty result when the real signal is within-person deviation-from-baseline.
+    _validated_count = sum(1 for c in candidates if c.verdict == "validated")
+    if _validated_count == 0 and cluster_screen_info:
+        _ws_rows = cluster_screen_info.get("within_subject_associations", [])
+        _sig_within = [
+            r for r in _ws_rows
+            if float(r.get("q", 1)) < 0.10  # FDR corrected within-subject q
+            and r.get("feature") not in (request.target_column,)
+        ]
+        if _sig_within:
+            _within_summary = "; ".join(
+                f"'{r['feature']}' (within-person ρ={float(r.get('within_rho_median', 0)):.3f}, "
+                f"q={float(r.get('q', 1)):.2g})"
+                for r in _sig_within[:5]
+            )
+            results.append(
+                f"WITHIN-PERSON SIGNAL DETECTED despite no between-person validated predictors. "
+                f"The between-person (aggregate) analysis found no significant associations, but the "
+                f"within-person (repeated-measures) analysis found significant within-subject associations "
+                f"for: {_within_summary}. "
+                f"This pattern indicates that the true signal is a deviation-from-baseline rather than "
+                f"an absolute-value predictor — common in repeated-measures studies with high inter-individual "
+                f"variability. Inspect the mixed_effects_diagnostics.csv artifact for within-person "
+                f"regression coefficients and confidence intervals."
+            )
+    elif _validated_count == 0 and analysis.participant_id_column:
+        # Even without cluster-screen data: if we have repeated measures and no between-person
+        # findings, add a generic advisory that within-person analysis may be more informative.
+        results.append(
+            "WITHIN-PERSON ANALYSIS ADVISORY: No significant between-person (aggregate) predictors were "
+            "detected. Your dataset has repeated measurements per participant — the true signal may be a "
+            "within-person deviation from baseline rather than an absolute-value difference between people. "
+            "Inspect the mixed_effects_diagnostics.csv artifact in the Files panel: a significant "
+            "fixed-effect coefficient there indicates a within-person association that the aggregate screen "
+            "cannot detect."
+        )
+
+    return results
+
+
+def _opaque_schema_warnings(df, request) -> list[str]:
+    results: list[str] = []
+    # --- MED FIX: Opaque/cryptic column schema warning ---
+    # When column names carry no semantic content (e.g., v001, feat_3, col_7) the discovered
+    # "predictor" cannot be mechanistically interpreted without a data dictionary. Flag this
+    # so the user provides context before making any scientific claims.
+    _opaque_patterns = (
+        "^v[0-9]+$", "^feat[_-]?[0-9]+$", "^col[_-]?[0-9]+$", "^x[0-9]+$",
+        "^f[0-9]+$", "^var[_-]?[0-9]+$", "^field[_-]?[0-9]+$",
+    )
+    _opaque_cols = []
+    import re as _re
+    for col in df.columns:
+        if col in (request.target_column, request.participant_id_column, request.time_column):
+            continue
+        if any(_re.fullmatch(pat, str(col).lower().strip()) for pat in _opaque_patterns):
+            _opaque_cols.append(col)
+    if _opaque_cols and len(_opaque_cols) >= 3:
+        results.append(
+            f"OPAQUE SCHEMA: {len(_opaque_cols)} column names appear to be meaningless codes "
+            f"({', '.join(_opaque_cols[:5])}...). Without a data dictionary the discovered associations "
+            f"cannot be mechanistically interpreted — e.g., validating 'v003' as a predictor is only "
+            f"meaningful if you know what v003 measures. "
+            f"Please provide a data dictionary before interpreting or reporting these results as scientific findings."
+        )
+
+    return results
+
+
+def _interaction_terms_warnings(df, request) -> list[str]:
+    results: list[str] = []
+    # --- H4 FIX: Interaction predictors caveat ---
+    # CoDaS engineers per-feature summary statistics (mean, SD, min/max, CV, ratios) but does NOT
+    # generate multiplicative cross-feature interaction terms. This means interaction-only predictors
+    # (where the product or conditional effect of two features drives the outcome, not either
+    # main effect) are structurally outside the current search space and will not be detected.
+    # Surface this as a consistent limitation note so reviewers know the boundary. This fires whenever
+    # at least 2 numeric features exist (so interactions are even possible) — INCLUDING the
+    # 0-validated-candidate case, which is precisely when an undetected interaction is the likely
+    # explanation for a null result.
+    _n_numeric_features = sum(
+        1 for c in df.columns
+        if c not in (request.target_column, request.participant_id_column, request.time_column)
+        and pd.api.types.is_numeric_dtype(df[c])
+    )
+    if _n_numeric_features >= 2:
+        results.append(
+            "INTERACTION TERMS NOT TESTED: CoDaS screens univariate and per-family summary "
+            "features (mean, SD, CV, ratios). Multiplicative interactions between distinct feature "
+            "families (e.g., activity_index × sleep_index) are NOT generated and will not be detected. "
+            "If no predictors were found but you expect a synergistic/conditional effect, the signal "
+            "may live in an interaction the current screen cannot see — specify the interaction term "
+            "explicitly or request a focused interaction analysis."
+        )
+
+    return results
+
+
 def _assemble_report(df: pd.DataFrame, candidates: list[Candidate], validated: list[Candidate],
                      screen: "_ScreenResult", profile, request: "DiscoveryRequest",
                      warnings: list[str]) -> DiscoveryReport:
@@ -789,115 +918,10 @@ def _assemble_report(df: pd.DataFrame, candidates: list[Candidate], validated: l
     # cluster design-effect effective n, not the inflated row count.
     if cluster_screen_info and isinstance(fact_sheet, dict):
         fact_sheet.update(cluster_screen_info)
-    # --- MED FIX: Ordinal outcome detection ---
-    # When the target has a small number of unique integer values (2-6) the appropriate
-    # statistical model is proportional-odds / ordinal regression, not plain OLS. Flag this
-    # so the user knows to interpret R² with caution and consider an ordinal-specific method.
-    if request.target_column in df.columns:
-        _tgt_vals = df[request.target_column].dropna()
-        _n_unique = int(_tgt_vals.nunique())
-        _is_integer_like = (
-            pd.api.types.is_integer_dtype(_tgt_vals)
-            or (pd.api.types.is_float_dtype(_tgt_vals) and (_tgt_vals % 1 == 0).all())
-        )
-        if _is_integer_like and 2 < _n_unique <= 6:
-            warnings.append(
-                f"Target '{request.target_column}' appears to be ordinal (integer, {_n_unique} unique levels: "
-                f"{sorted(_tgt_vals.unique().tolist()[:7])}). CoDaS treats it as continuous for screening "
-                f"(Spearman correlation is rank-based and valid), but R² and the linear model are not optimal "
-                f"for ordinal outcomes. For inference, consider proportional-odds (ordered logistic) regression "
-                f"or a cumulative link model to respect the ordered-categorical structure."
-            )
-
-    # --- MED FIX: Within-person signal surfacing ---
-    # When the between-person aggregate analysis finds no validated predictors, check whether
-    # the within-subject screening (done during cluster-based analysis) surfaced significant
-    # within-person associations. If so, surface them in the report so the user is not left
-    # with an empty result when the real signal is within-person deviation-from-baseline.
-    _validated_count = sum(1 for c in candidates if c.verdict == "validated")
-    if _validated_count == 0 and cluster_screen_info:
-        _ws_rows = cluster_screen_info.get("within_subject_associations", [])
-        _sig_within = [
-            r for r in _ws_rows
-            if float(r.get("q", 1)) < 0.10  # FDR corrected within-subject q
-            and r.get("feature") not in (request.target_column,)
-        ]
-        if _sig_within:
-            _within_summary = "; ".join(
-                f"'{r['feature']}' (within-person ρ={float(r.get('within_rho_median', 0)):.3f}, "
-                f"q={float(r.get('q', 1)):.2g})"
-                for r in _sig_within[:5]
-            )
-            warnings.append(
-                f"WITHIN-PERSON SIGNAL DETECTED despite no between-person validated predictors. "
-                f"The between-person (aggregate) analysis found no significant associations, but the "
-                f"within-person (repeated-measures) analysis found significant within-subject associations "
-                f"for: {_within_summary}. "
-                f"This pattern indicates that the true signal is a deviation-from-baseline rather than "
-                f"an absolute-value predictor — common in repeated-measures studies with high inter-individual "
-                f"variability. Inspect the mixed_effects_diagnostics.csv artifact for within-person "
-                f"regression coefficients and confidence intervals."
-            )
-    elif _validated_count == 0 and analysis.participant_id_column:
-        # Even without cluster-screen data: if we have repeated measures and no between-person
-        # findings, add a generic advisory that within-person analysis may be more informative.
-        warnings.append(
-            "WITHIN-PERSON ANALYSIS ADVISORY: No significant between-person (aggregate) predictors were "
-            "detected. Your dataset has repeated measurements per participant — the true signal may be a "
-            "within-person deviation from baseline rather than an absolute-value difference between people. "
-            "Inspect the mixed_effects_diagnostics.csv artifact in the Files panel: a significant "
-            "fixed-effect coefficient there indicates a within-person association that the aggregate screen "
-            "cannot detect."
-        )
-
-    # --- MED FIX: Opaque/cryptic column schema warning ---
-    # When column names carry no semantic content (e.g., v001, feat_3, col_7) the discovered
-    # "predictor" cannot be mechanistically interpreted without a data dictionary. Flag this
-    # so the user provides context before making any scientific claims.
-    _opaque_patterns = (
-        "^v[0-9]+$", "^feat[_-]?[0-9]+$", "^col[_-]?[0-9]+$", "^x[0-9]+$",
-        "^f[0-9]+$", "^var[_-]?[0-9]+$", "^field[_-]?[0-9]+$",
-    )
-    _opaque_cols = []
-    import re as _re
-    for col in df.columns:
-        if col in (request.target_column, request.participant_id_column, request.time_column):
-            continue
-        if any(_re.fullmatch(pat, str(col).lower().strip()) for pat in _opaque_patterns):
-            _opaque_cols.append(col)
-    if _opaque_cols and len(_opaque_cols) >= 3:
-        warnings.append(
-            f"OPAQUE SCHEMA: {len(_opaque_cols)} column names appear to be meaningless codes "
-            f"({', '.join(_opaque_cols[:5])}...). Without a data dictionary the discovered associations "
-            f"cannot be mechanistically interpreted — e.g., validating 'v003' as a predictor is only "
-            f"meaningful if you know what v003 measures. "
-            f"Please provide a data dictionary before interpreting or reporting these results as scientific findings."
-        )
-
-    # --- H4 FIX: Interaction predictors caveat ---
-    # CoDaS engineers per-feature summary statistics (mean, SD, min/max, CV, ratios) but does NOT
-    # generate multiplicative cross-feature interaction terms. This means interaction-only predictors
-    # (where the product or conditional effect of two features drives the outcome, not either
-    # main effect) are structurally outside the current search space and will not be detected.
-    # Surface this as a consistent limitation note so reviewers know the boundary. This fires whenever
-    # at least 2 numeric features exist (so interactions are even possible) — INCLUDING the
-    # 0-validated-candidate case, which is precisely when an undetected interaction is the likely
-    # explanation for a null result.
-    _n_numeric_features = sum(
-        1 for c in df.columns
-        if c not in (request.target_column, request.participant_id_column, request.time_column)
-        and pd.api.types.is_numeric_dtype(df[c])
-    )
-    if _n_numeric_features >= 2:
-        warnings.append(
-            "INTERACTION TERMS NOT TESTED: CoDaS screens univariate and per-family summary "
-            "features (mean, SD, CV, ratios). Multiplicative interactions between distinct feature "
-            "families (e.g., activity_index × sleep_index) are NOT generated and will not be detected. "
-            "If no predictors were found but you expect a synergistic/conditional effect, the signal "
-            "may live in an interaction the current screen cannot see — specify the interaction term "
-            "explicitly or request a focused interaction analysis."
-        )
-
+    warnings.extend(_ordinal_outcome_warnings(df, request))
+    warnings.extend(_within_person_warnings(candidates, cluster_screen_info, analysis, request))
+    warnings.extend(_opaque_schema_warnings(df, request))
+    warnings.extend(_interaction_terms_warnings(df, request))
     markdown = build_markdown_report(fact_sheet, candidates, warnings)
     audit_log.extend([
         f"Screened {screened_count} candidate features with Spearman correlation and Benjamini-Hochberg FDR.",
