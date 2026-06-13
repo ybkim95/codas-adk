@@ -206,16 +206,20 @@ def s5_picard_future_leakage():
     if not path.exists():
         record("S5 Picard future-leakage (real data)", True, "SKIPPED — dataset not present locally")
         return
-    df = pd.read_csv(path)
+    df = pd.read_csv(df_path := path)
     rep = run_discovery(df, DiscoveryRequest(target_column="phq9_score", participant_id_column="participant_id",
-                                             validation_resamples=300, top_k=15))
-    future_cols = [c for c in df.columns if c.startswith("future_") or c.startswith("next_")]
-    leaked = [c for c in _validated(rep) if c in future_cols]
-    # honest probe: report whether future_* columns were surfaced as clean predictors (engine has no
-    # name-based exclusion — this measures the residual scientific risk a reviewer would flag)
-    record("S5 Picard real-data future-leakage probe", True,
-           f"future/next columns present={future_cols}; surfaced as validated by the ENGINE={leaked}",
-           "engine does no name-based exclusion; the agent/critic or explicit exclusion must catch these")
+                                             validation_resamples=300, top_k=20))
+    # candidates are aggregated/renamed (e.g. future_sleep_next_week_median), so match by PREFIX, not
+    # exact raw name (the bug in the first version of this probe, which falsely read "no leakage").
+    leaked = sorted({c.feature for c in rep.candidates
+                     if c.verdict == "validated" and (c.feature.startswith("future_") or c.feature.startswith("next_"))})
+    # The engine does NO name-based exclusion (domain-neutral by design), so it CANNOT know these are
+    # post-outcome columns: a Picard-grade reviewer sees a future column reported as a validated
+    # predictor of CURRENT depression = temporal leakage. The engine alone FAILS this; the mitigation
+    # is the agent layer (scout exclusion / critic) or explicit excluded_columns — tested separately.
+    record("S5 Picard real-data future-leakage (engine alone)", len(leaked) == 0,
+           f"the engine HARD-VALIDATED {len(leaked)} future/post-outcome column(s) as predictors: {leaked}",
+           "ENGINE LIMITATION: no name-based temporal exclusion; the agent or explicit exclusion must catch these")
 
 
 def main():
