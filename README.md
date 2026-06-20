@@ -92,11 +92,11 @@ CoDaS is ready to be deployed as a private, secure service on Google Cloud Run.
 ### 1. Configuration & Deployment
 You can deploy the service to any Google Cloud project using the provided `deploy.sh` script.
 
-Before running, open `deploy.sh` and configure the settings in the **Configuration Block**:
-* `PROJECT_ID`: The target GCP project.
+Configure the deployment by editing the **Configuration Block** in `deploy.sh`, or by exporting the same names as environment variables:
+* `PROJECT_ID`: The target GCP project. Leave empty to use the active `gcloud` project.
 * `SERVICE_NAME`: The name of the Cloud Run service.
 * `REGION`: The GCP region to deploy to (e.g., `us-central1`).
-* `GOOGLE_GENAI_USE_VERTEXAI`: Set to `"TRUE"` to automatically create and configure a dedicated service account with Vertex AI permissions for Gemini (recommended).
+* `GOOGLE_GENAI_USE_VERTEXAI`: Set to `"TRUE"` to automatically create and configure a dedicated service account with Vertex AI permissions for Gemini (recommended). No external Gemini API key is then required.
 * `ALLOW_UNAUTHENTICATED`: Set to `"no"` to block public access and restrict requests to authorized IAM identities.
 
 To deploy:
@@ -106,7 +106,7 @@ chmod +x deploy.sh
 ```
 
 ### 2. Verifying the Deployment
-Once deployed, the script will output the service URL and a generated API key. You can verify that the service is running using `curl`.
+Once deployed, the script will output the service URL and a generated service key. This key is the CoDaS service access key (`x-codas-agent-key`), which is separate from any Gemini credentials. You can verify that the service is running using `curl`.
 
 #### Health Check
 ```bash

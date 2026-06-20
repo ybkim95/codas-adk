@@ -5,36 +5,38 @@
 set -euo pipefail
 
 # === CONFIGURATION BLOCK ===
-# You can modify these values directly to configure your deployment.
-PROJECT_ID="vesper-platform"
-SERVICE_NAME="codas-service"
-REGION="us-central1"
-MAX_INSTANCES=1
+# Edit these values, or override any of them from the environment
+# (e.g. PROJECT_ID=my-project REGION=us-east1 ./deploy.sh).
+# Leave PROJECT_ID empty to use the active gcloud project.
+PROJECT_ID="${PROJECT_ID:-}"
+SERVICE_NAME="${SERVICE_NAME:-codas-service}"
+REGION="${REGION:-us-central1}"
+MAX_INSTANCES="${MAX_INSTANCES:-1}"
 
 # CoDaS API Authentication Key (For securing access to the Cloud Run endpoint).
 # If left empty, a secure key will be automatically generated during deployment.
-CODAS_AGENT_API_KEYS=""
+CODAS_AGENT_API_KEYS="${CODAS_AGENT_API_KEYS:-}"
 
 # Gemini API Authentication Options:
 # Option A: Use a Google AI Studio API Key. Paste it here.
-GOOGLE_API_KEY=""
+GOOGLE_API_KEY="${GOOGLE_API_KEY:-}"
 
 # Option B: Use Vertex AI native integration (Recommended).
 # Set to "TRUE" to use a dedicated GCP Service Account with Vertex AI access.
-GOOGLE_GENAI_USE_VERTEXAI="TRUE"
+GOOGLE_GENAI_USE_VERTEXAI="${GOOGLE_GENAI_USE_VERTEXAI:-TRUE}"
 
 # Session Backend configuration ('memory' or 'vertex')
 # 'memory' keeps sessions local to the container (requires MAX_INSTANCES=1).
 # 'vertex' uses Vertex AI Agent Engine to support scaling (requires Vertex AI API enabled).
-CODAS_SESSION_BACKEND="memory"
+CODAS_SESSION_BACKEND="${CODAS_SESSION_BACKEND:-memory}"
 
 # IAM Authentication (highly recommended)
 # Set to "no" to disable public internet access and restrict callers to authorized IAM identities.
-ALLOW_UNAUTHENTICATED="no"
+ALLOW_UNAUTHENTICATED="${ALLOW_UNAUTHENTICATED:-no}"
 
 # Custom Service Account for Cloud Run. If empty, the script will automatically
 # create and configure a dedicated 'codas-runner' service account for you.
-CODAS_RUN_SERVICE_ACCOUNT=""
+CODAS_RUN_SERVICE_ACCOUNT="${CODAS_RUN_SERVICE_ACCOUNT:-}"
 # ============================
 
 # ANSI Color codes
@@ -81,12 +83,14 @@ fi
 
 # Configure Gemini Connection
 GEMINI_AUTH_VARS=""
+GEMINI_USES_VERTEX="no"
 if [ -n "${GOOGLE_API_KEY:-}" ]; then
     echo -e "Configuring Gemini client via ${GREEN}GOOGLE_API_KEY${NC}."
     GEMINI_AUTH_VARS="GOOGLE_API_KEY=${GOOGLE_API_KEY}"
 elif [ "${GOOGLE_GENAI_USE_VERTEXAI:-}" = "TRUE" ] || [ "${GOOGLE_GENAI_USE_VERTEXAI:-}" = "true" ]; then
     echo -e "Configuring Gemini client via ${GREEN}Vertex AI (Application Default Credentials)${NC}."
     GEMINI_AUTH_VARS="GOOGLE_GENAI_USE_VERTEXAI=TRUE"
+    GEMINI_USES_VERTEX="yes"
 else
     echo -e "${YELLOW}WARNING: No GOOGLE_API_KEY or GOOGLE_GENAI_USE_VERTEXAI=TRUE detected in your environment.${NC}"
     echo "The service will deploy, but the agent endpoint (/v1/agent) will return 503 (unconfigured)."
@@ -106,9 +110,9 @@ if [ -n "$GEMINI_AUTH_VARS" ]; then
     ENV_VARS="${ENV_VARS},${GEMINI_AUTH_VARS}"
 fi
 
-# Service Account and IAM setup
+# Service Account and IAM setup (only when something actually talks to Vertex AI)
 SA_EMAIL=""
-if [ "${GOOGLE_GENAI_USE_VERTEXAI:-}" = "TRUE" ] || [ "${CODAS_SESSION_BACKEND:-}" = "vertex" ]; then
+if [ "$GEMINI_USES_VERTEX" = "yes" ] || [ "${CODAS_SESSION_BACKEND:-}" = "vertex" ]; then
     if [ -n "${CODAS_RUN_SERVICE_ACCOUNT:-}" ]; then
         SA_EMAIL="$CODAS_RUN_SERVICE_ACCOUNT"
         echo -e "Using user-specified service account: ${GREEN}${SA_EMAIL}${NC}"
@@ -140,11 +144,19 @@ else
     SA_FLAG=""
 fi
 
-# Check if we should use Vertex AI session service
+# Vertex AI (used by Gemini and/or the session service) needs its API enabled and the
+# project/location passed to the container. Without this the service still deploys, but the
+# first Gemini call fails on a project that has not already enabled aiplatform.googleapis.com.
+if [ "$GEMINI_USES_VERTEX" = "yes" ] || [ "${CODAS_SESSION_BACKEND:-}" = "vertex" ]; then
+    echo -e "${BLUE}Enabling Vertex AI API...${NC}"
+    gcloud services enable aiplatform.googleapis.com --project="$PROJECT_ID"
+    ENV_VARS="${ENV_VARS},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION}"
+fi
+
+# Session backend
 if [ "${CODAS_SESSION_BACKEND:-}" = "vertex" ]; then
     echo -e "Configuring session backend to ${GREEN}Vertex AI Agent Engine Session Service${NC}."
-    gcloud services enable aiplatform.googleapis.com --project="$PROJECT_ID"
-    ENV_VARS="${ENV_VARS},CODAS_SESSION_BACKEND=vertex,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION}"
+    ENV_VARS="${ENV_VARS},CODAS_SESSION_BACKEND=vertex"
 else
     echo -e "Configuring session backend to ${GREEN}InMemory (Single Instance)${NC}."
     echo -e "Setting max instances to ${GREEN}1${NC} to prevent state divergence."
