@@ -85,6 +85,46 @@ python scripts/loadtest.py                            # load + soak: throughput,
 python scripts/reproduce_paper_biomarkers.py A.csv B.csv   # runs the paper's discovery method on its cohorts
 ```
 
+## Cloud Deployment (Google Cloud Run)
+
+CoDaS is ready to be deployed as a private, secure service on Google Cloud Run. 
+
+### 1. Configuration & Deployment
+You can deploy the service to any Google Cloud project using the provided `deploy.sh` script.
+
+Configure the deployment by editing the **Configuration Block** in `deploy.sh`, or by exporting the same names as environment variables:
+* `PROJECT_ID`: The target GCP project. Leave empty to use the active `gcloud` project.
+* `SERVICE_NAME`: The name of the Cloud Run service.
+* `REGION`: The GCP region to deploy to (e.g., `us-central1`).
+* `GOOGLE_GENAI_USE_VERTEXAI`: Set to `"TRUE"` to automatically create and configure a dedicated service account with Vertex AI permissions for Gemini (recommended). No external Gemini API key is then required.
+* `ALLOW_UNAUTHENTICATED`: Set to `"no"` to block public access and restrict requests to authorized IAM identities.
+
+To deploy:
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+### 2. Verifying the Deployment
+Once deployed, the script will output the service URL and a generated service key. This key is the CoDaS service access key (`x-codas-agent-key`), which is separate from any Gemini credentials. You can verify that the service is running using `curl`.
+
+#### Health Check
+```bash
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+     -H "x-codas-agent-key: <GENERATED_API_KEY>" \
+     https://<YOUR-SERVICE-URL>.run.app/v1/health
+```
+
+#### Stateless Discovery (Deterministic Engine)
+```bash
+curl -X POST \
+     -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+     -H "x-codas-agent-key: <GENERATED_API_KEY>" \
+     -H "Content-Type: application/json" \
+     -d '{"csv": "participant_id,age,depression_score\n1,25,10\n2,34,12", "target_column": "depression_score"}' \
+     https://<YOUR-SERVICE-URL>.run.app/v1/discover
+```
+
 ## About
 
 CoDaS implements the architecture described in the CoDaS paper
