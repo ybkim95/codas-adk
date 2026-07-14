@@ -1,0 +1,10 @@
+{
+  "__doc__": "CI smoke config: runs the reproduction harness on the bundled SYNTHETIC sample to prove the script executes end-to-end. Real cohort tables are not shipped; exact effect-size reproduction (Delta=0.000) is validated on the real tables locally and pinned deterministically by the golden test in pytest.",
+  "Bundled sample (synthetic)": {
+    "csv": "examples/sample_dataset.csv",
+    "target": "depression_score",
+    "participant": "participant_id",
+    "top_k": 10,
+    "resamples": 150
+  }
+}

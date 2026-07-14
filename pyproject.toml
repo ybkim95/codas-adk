@@ -21,12 +21,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# google-adk + Gemini agent layer (codas_agents) and the Gemini API boundary.
-agent = ["google-adk", "google-genai"]
+# google-adk + Gemini agent layer (codas_agents) and the Gemini API boundary. google-adk is pinned to
+# 2.4.x: it deprecates SequentialAgent/LoopAgent/ParallelAgent in favour of Workflow, which cannot yet
+# be an LlmAgent sub-agent (the graph CoDaS builds), so a newer major could remove the API we rely on.
+# requirements-lock.txt pins the exact tested versions for reproducible installs.
+agent = ["google-adk>=2.4,<2.5", "google-genai"]
 # HTTP service layer (codas_service).
 service = ["fastapi", "uvicorn", "pydantic", "python-multipart"]
 dev = ["pytest"]
-all = ["google-adk", "google-genai", "fastapi", "uvicorn", "pydantic", "python-multipart"]
+all = ["google-adk>=2.4,<2.5", "google-genai", "fastapi", "uvicorn", "pydantic", "python-multipart"]
 
 # Only the importable Python packages are installed. examples/ and tests/ are not shipped.
 [tool.setuptools.packages.find]
@@ -40,3 +43,11 @@ codas_service = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# google-adk 2.4 deprecates SequentialAgent/LoopAgent/ParallelAgent in favour of Workflow, which cannot
+# yet be an LlmAgent sub-agent (see codas_agents/agent.py). We pin ADK and keep the current API, so
+# these specific DeprecationWarnings are expected — filter them to keep the run output signal-clean.
+filterwarnings = [
+    "ignore:SequentialAgent is deprecated in favor of Workflow:DeprecationWarning",
+    "ignore:LoopAgent is deprecated in favor of Workflow:DeprecationWarning",
+    "ignore:ParallelAgent is deprecated in favor of Workflow:DeprecationWarning",
+]

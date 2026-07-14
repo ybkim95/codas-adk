@@ -1,0 +1,26 @@
+{
+  "__doc__": "Example cohort config for scripts/reproduce_paper_biomarkers.py. Fill in `csv` with the path to each participant-level analysis table (real clinical data, not shipped). `exclude` is the caller's domain declaration of outcome proxies / other labels — supplied as data, never inferred by the engine. `expect` lists reference Spearman effects and is used only to print a replication delta.",
+
+  "DWB (PHQ-8)": {
+    "csv": "/path/to/dwb_participant_level.csv",
+    "target": "phq_score",
+    "participant": "participant_id",
+    "exclude": ["gad_score", "pss_score"],
+    "top_k": 40,
+    "expect": {
+      "sleep_min_in_sleep_period_main_sleep_std": 0.252
+    }
+  },
+
+  "WEAR-ME (HOMA-IR)": {
+    "csv": "/path/to/wearme_clean.csv",
+    "target": "True_HOMA_IR",
+    "participant": "Participant_id",
+    "exclude": ["glucose", "insulin", "True_hba1c", "True_IR_Class", "True_Diabetes_2_Class", "True_Normoglycemic_2_Class", "True_Diabetes_3_Class"],
+    "top_k": 40,
+    "expect": {
+      "crp": 0.393,
+      "hdl": -0.380
+    }
+  }
+}

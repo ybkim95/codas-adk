@@ -6,6 +6,7 @@ on:
   pull_request:
 
 jobs:
+  # Cross-version compatibility: resolve dependencies per Python version from the pyproject ranges.
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -22,3 +23,26 @@ jobs:
         run: pip install ".[all,dev]"
       - name: Run tests
         run: python -m pytest -q
+
+  # Reproducibility: install the exact locked environment (Python 3.10) and prove the deterministic
+  # results and the scored audits reproduce — so "it only works on my machine" is not a reviewer risk.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install pinned environment (binary wheels only)
+        run: |
+          pip install --only-binary=:all: -r requirements-lock.txt
+          pip install .
+      - name: Tests (pinned)
+        run: python -m pytest -q
+      - name: Scientific-validity audit (offline)
+        run: python scripts/scientific_validation.py
+      - name: Robustness audit (offline scorecard)
+        run: python scripts/robustness_audit.py
+      - name: Reproduction harness smoke test (bundled synthetic sample)
+        run: python scripts/reproduce_paper_biomarkers.py --config scripts/ci_smoke_cohorts.json
