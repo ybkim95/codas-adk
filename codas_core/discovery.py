@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, cross_val_score
 try:  # StratifiedGroupKFold needs sklearn >= 0.24; fall back to GroupKFold if absent
     from sklearn.model_selection import StratifiedGroupKFold
@@ -29,6 +30,7 @@ from .data import (
 )
 
 from .models import Candidate, DiscoveryReport
+from .quality_gates import evaluate_quality_gates
 from .reporting import build_fact_sheet, build_markdown_report
 from .statistics import autocorr_effective_n, benjamini_hochberg, cluster_effective_n, correlation_pvalue, intraclass_correlation, lag1_autocorr, safe_spearman, signed_direction, within_subject_two_stage
 from .validation import ValidationConfig, validate_candidate
@@ -47,7 +49,7 @@ class DiscoveryRequest:
     excluded_columns: list[str] = field(default_factory=list)
     confounder_columns: list[str] = field(default_factory=list)
     top_k: int = 25
-    fdr_alpha: float = 0.10
+    fdr_alpha: float = 0.05  # Benjamini-Hochberg FDR control level (alpha = 0.05)
     max_ratio_features: int = 24
     validation_resamples: int = 1000
     random_state: int = 17
@@ -63,6 +65,14 @@ class DiscoveryRequest:
     # CoDaS cannot infer measurement timing from values, so these are caller-declared; when declared
     # they are EXCLUDED before screening (a hard guard) and the exclusion is disclosed. Matched by name.
     post_outcome_columns: list[str] = field(default_factory=list)
+    # Physiologically-motivated transformations PROPOSED by the generative interpreters: they propose
+    # transformations which the deterministic runners immediately evaluate. Each spec is
+    # {"op": ratio|product|difference|sum, "a": col, "b": col, "name": str?}.
+    # A proposed feature is materialised as an ordinary column BEFORE screening, so it is evaluated by
+    # the SAME FDR screen and validation battery as every other candidate — the loop can surface a
+    # composite (e.g. steps/resting-heart-rate) that the bounded default enumeration would miss, but it
+    # can never bypass the statistical gates.
+    proposed_features: list[dict] = field(default_factory=list)
 
 
 def _rank_candidates(
@@ -240,6 +250,20 @@ def _ml_benchmark(
                 out["pr_auc"] = float(np.nanmean(cross_val_score(model, x, yv, groups=groups, scoring="average_precision", cv=cv_pr)))
         except Exception:
             pass
+    # In-sample (train) metric for the overfitting quality gate: a large train-vs-CV gap
+    # signals memorization. Fit once on all rows and score in-sample; None if the fit fails.
+    out["train_metric_value"] = None
+    if real is not None:
+        try:
+            fitted = model.fit(x, yv)
+            if binary:
+                scores = (fitted.predict_proba(x)[:, 1] if hasattr(fitted, "predict_proba")
+                          else fitted.decision_function(x))
+                out["train_metric_value"] = float(roc_auc_score(yv, scores))
+            else:
+                out["train_metric_value"] = float(fitted.score(x, yv))  # in-sample R^2
+        except Exception:
+            out["train_metric_value"] = None
     return out
 
 
@@ -327,6 +351,53 @@ def _normalize_target(df: pd.DataFrame, target_column: str, warnings: list[str])
         "numeric outcome or a binary (two-class) categorical target; correlating arbitrary codes of "
         "a multi-class text label is not meaningful."
     )
+
+
+_PROPOSED_FEATURE_OPS = ("ratio", "product", "difference", "sum")
+
+
+def _materialize_proposed_features(df: pd.DataFrame, proposed: list[dict], warnings: list[str]) -> pd.DataFrame:
+    """Realise generative-interpreter feature proposals as ordinary numeric columns.
+
+    Each proposal names a safe binary operation over two existing numeric columns; there is no
+    expression evaluation. Once materialised, the new column flows through the standard screening, FDR
+    correction and validation battery like any other feature — so a proposal is evaluated, never
+    trusted. Malformed or duplicate proposals are skipped with a disclosed warning.
+    """
+    if not proposed:
+        return df
+    out = df
+    for spec in proposed:
+        op = str(spec.get("op", "")).strip().lower()
+        a, b = spec.get("a"), spec.get("b")
+        name = str(spec.get("name") or f"{a}_{op}_{b}").strip()
+        if op not in _PROPOSED_FEATURE_OPS:
+            warnings.append(f"Proposed feature '{name}' skipped: unsupported operation '{op}'.")
+            continue
+        if a not in out.columns or b not in out.columns:
+            missing = [c for c in (a, b) if c not in out.columns]
+            warnings.append(f"Proposed feature '{name}' skipped: column(s) not found: {missing}.")
+            continue
+        if name in out.columns:
+            continue  # already present (a prior round materialised it) — evaluate once
+        col_a = pd.to_numeric(out[a], errors="coerce")
+        col_b = pd.to_numeric(out[b], errors="coerce")
+        if op == "ratio":
+            col = col_a / col_b.replace(0.0, np.nan)
+        elif op == "product":
+            col = col_a * col_b
+        elif op == "difference":
+            col = col_a - col_b
+        else:  # sum
+            col = col_a + col_b
+        if out is df:
+            out = df.copy()
+        out[name] = col.replace([np.inf, -np.inf], np.nan)
+        warnings.append(
+            f"Evaluated caller-proposed feature '{name}' = {a} {op} {b}; it is screened and validated "
+            f"with the full battery (a proposal is evaluated, not trusted)."
+        )
+    return out
 
 
 _COLLINEAR_THRESHOLD = 0.90  # |inter-feature rho| above this => same signal (e.g. PPG vs ECG HRV)
@@ -733,8 +804,8 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
     # FDR significance is a NON-WAIVABLE hard gate. When the screen finds 0 significant candidates,
     # we must NOT promote non-significant features into validation — doing so is equivalent to
     # p-hacking and GUARANTEES false positives on null datasets (any dataset will produce SOME
-    # top-ranked features that then pass the 12-dimension battery simply because the battery doesn't
-    # re-apply the FDR threshold). The previous fallback was removed: if q > fdr_alpha for every
+    # top-ranked features that then pass the internal validation battery simply because the battery
+    # does not re-apply the FDR threshold). The previous fallback was removed: if q > fdr_alpha for every
     # feature, the discovery correctly reports "no significant predictors detected".
     # Exception: autocorrelation/cluster-corrected pools are already conservative — allow top_k
     # non-significant candidates there as exploratory candidates (they will be labeled conditional).
@@ -928,6 +999,20 @@ def _assemble_report(df: pd.DataFrame, candidates: list[Candidate], validated: l
     # cluster design-effect effective n, not the inflated row count.
     if cluster_screen_info and isinstance(fact_sheet, dict):
         fact_sheet.update(cluster_screen_info)
+    # Deterministic quality gates: record each gate's decision in the Fact Sheet so the reason a
+    # result view was or was not surfaced is auditable. A single concise note
+    # summarises any gate that would suppress its corresponding table.
+    gates = evaluate_quality_gates(analysis.frame, model_features, ml_metrics, candidates)
+    if isinstance(fact_sheet, dict):
+        fact_sheet["quality_gates"] = gates
+    if gates["triggered"]:
+        details = "; ".join(
+            f"{g['name']} ({g['detail']})" for g in gates["gates"] if g["triggered"]
+        )
+        warnings.append(
+            f"Quality gates triggered — {details}. The corresponding result view(s) are flagged for "
+            f"suppression per the output-suppression policy; interpret with caution."
+        )
     warnings.extend(_ordinal_outcome_warnings(df, request))
     warnings.extend(_within_person_warnings(candidates, cluster_screen_info, analysis, request))
     warnings.extend(_opaque_schema_warnings(df, request))
@@ -965,6 +1050,9 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     _numeric = df.select_dtypes(include="number")
     if _numeric.shape[1] and bool(np.isinf(_numeric.to_numpy(dtype="float64", na_value=np.nan)).any()):
         df = df.replace([np.inf, -np.inf], np.nan)
+    # Generative-interpreter proposals: materialise proposed transformations as ordinary
+    # columns so they enter the same screening + FDR + validation as every other feature.
+    df = _materialize_proposed_features(df, request.proposed_features, warnings)
     LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
     # Hard temporal-leakage guard: caller-declared post-outcome columns are excluded before screening
     # so a forward-looking / post-outcome feature can never be reported as a predictor of the current

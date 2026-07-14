@@ -22,7 +22,7 @@ from codas_core.discovery import DiscoveryRequest, run_discovery
 _EXPECTED_SHA = "2db56e0b2b9256ef710482b627e4f46c1a3316f8c1bfafc61a0b4fd4fcb015a4"
 # Full-report fingerprint (fact sheet + warnings + audit log + candidates) — pins the WHOLE discovery
 # pipeline so _screen / _assemble_report / build_analysis_frame can also be refactored no-change.
-_EXPECTED_REPORT_SHA = "b04ca2aa0afa5a7ddaed2f6ccb57d56e0ca5c337f0ba6a04d54608e41143a6e8"
+_EXPECTED_REPORT_SHA = "e0217c20ba83cd276b0df1d3bf9b6dbb02bc485208adc202a698894f6d5e9718"
 
 
 def _fingerprint(df: pd.DataFrame, **kw) -> list:

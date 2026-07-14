@@ -741,7 +741,14 @@ def _drop_identifier_like_columns(work: pd.DataFrame, feature_columns: list[str]
         if not name_hit:
             return False
         series = work[col].dropna()
-        return len(series) >= 20 and series.nunique() >= 0.95 * len(series)
+        if len(series) < 20 or series.nunique() < 0.95 * len(series):
+            return False
+        # A record id / row index is INTEGER-valued and near-unique. A continuous physiological "index"
+        # (e.g. a fitness or activity index that is a ratio of measurements) is also near-unique but NOT
+        # integer-valued, and must not be mistaken for an identifier just because its name ends in
+        # "index". Require integer-valued data before dropping on the name match.
+        vals = pd.to_numeric(series, errors="coerce").dropna()
+        return len(vals) == len(series) and bool(np.all(np.mod(vals.to_numpy(dtype=float), 1.0) == 0.0))
 
     identifier_like = [column for column in feature_columns if _is_identifier_like(column)]
     if identifier_like:

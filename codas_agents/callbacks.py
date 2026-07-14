@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import uuid
 from pathlib import Path
 from typing import Any
 
 from codas_agents.grounding import engine_numbers, ungrounded_claims
+from codas_agents.numeric_audit import verify_and_correct
 
 
 LOGGER = logging.getLogger("codas.agents")
@@ -56,29 +60,57 @@ def before_model_logger(callback_context: Any, llm_request: Any) -> None:
     return None
 
 
+def _write_numeric_audit(payload: dict[str, Any]) -> None:
+    """Persist the numeric verification result to a per-run audit file. The
+    directory is CODAS_AUDIT_DIR or ``<repo>/.codas_runs``; failures are swallowed (best-effort)."""
+    try:
+        audit_dir = Path(os.getenv("CODAS_AUDIT_DIR", str(ROOT / ".codas_runs")))
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        path = audit_dir / f"numeric_audit_{uuid.uuid4().hex[:12]}.json"
+        path.write_text(json.dumps(payload, indent=2, default=str))
+        LOGGER.info("numeric audit written: %s", path)
+    except Exception as exc:  # never break a run on the audit file
+        LOGGER.debug("numeric audit file skipped: %s", exc)
+
+
 def report_grounding_audit(callback_context: Any) -> None:
-    """Runtime grounding guardrail (non-blocking): after the report is written, log how many of its
-    statistic-figures trace to a Fact Sheet value and WARN on any that do not — a possible fabricated
-    number. Observability, not enforcement: it never edits or blocks the report, and never raises.
-    Shares its grounding logic with the offline audit via ``codas_agents.grounding``."""
+    """Numeric verification & grounding guardrail. After the report is written:
+    (1) correct count near-misses (sample sizes, feature/candidate/validation-check counts) toward the
+    Fact Sheet ground truth; (2) verify remaining statistic-figures trace to an engine value and warn on
+    any that do not (a possible fabrication); (3) log both to a per-run audit file. Corrections are
+    conservative and count-only; it never blocks a run and never raises."""
     try:
         state = callback_context.state
         report = str(state.get("report") or "")
         if not report:
             return None
+        fact_sheet = state.get("fact_sheet")
+
+        corrected, corrections = verify_and_correct(report, fact_sheet)
+        if corrections:
+            state["report"] = corrected  # apply the fix so downstream consumers see corrected prose
+            report = corrected
+            LOGGER.info("numeric verification corrected %d count(s): %s", len(corrections), corrections[:6])
+
         engine_vals = engine_numbers(
-            state.get("fact_sheet"),
+            fact_sheet,
             (state.get("latest_report", {}) or {}).get("candidates"),
             state.get("rounds"),
         )
         ungrounded, total = ungrounded_claims(report, engine_vals)
-        if total == 0:
-            return None
-        LOGGER.info("grounding: %d/%d report statistic-figures verified against the Fact Sheet",
-                    total - len(ungrounded), total)
-        if ungrounded:
-            LOGGER.warning("grounding: %d unverified figure(s) in the report (possible fabrication): %s",
-                           len(ungrounded), ungrounded[:6])
+        if total:
+            LOGGER.info("grounding: %d/%d report statistic-figures verified against the Fact Sheet",
+                        total - len(ungrounded), total)
+            if ungrounded:
+                LOGGER.warning("grounding: %d unverified figure(s) in the report (possible fabrication): %s",
+                               len(ungrounded), ungrounded[:6])
+
+        if corrections or total:
+            _write_numeric_audit({
+                "corrections": corrections,
+                "grounding": {"verified": total - len(ungrounded), "total": total,
+                              "ungrounded": [{"keyword": k, "value": v} for k, v in ungrounded[:20]]},
+            })
     except Exception as exc:  # never break a run on the guardrail
         LOGGER.debug("grounding audit skipped: %s", exc)
     return None

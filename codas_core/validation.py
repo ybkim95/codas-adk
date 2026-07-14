@@ -21,6 +21,38 @@ from .statistics import (
     spearman_rho_fast,
 )
 
+# The internal validation battery: four complementary dimensions (replication, stability, robustness,
+# discriminative power) operationalised via eleven checks. This mapping is the single source of truth
+# for what "11 checks / 4 dimensions" means, so the counted battery cannot drift as the code changes.
+# A candidate's pass-rate and its "X of 11" evidence are computed over exactly these checks.
+#
+# Three further safeguards run alongside the battery but are deliberately NOT counted among the 11,
+# to avoid conflating them with independent checks:
+#   * multiple_comparison_screen      — the Benjamini-Hochberg FDR screen is applied upstream of the
+#                                        battery (a screening gate, not one of the 11); it remains a
+#                                        non-waivable requirement for the "validated" verdict.
+#   * confounder_independence_hard_gate — enforces the causal-robustness requirement (the association
+#                                        must survive partial-correlation control), the gate for
+#                                        check 8. It is distinct from the three hard gates that reject
+#                                        on construct validity, construct independence and CI
+#                                        consistency, and is not a separate counted check.
+#   * sequential_split_consistency    — an auxiliary temporal/batch-drift diagnostic (never a gate).
+CANONICAL_BATTERY: dict[str, str] = {
+    "subsample_replication": "replication",
+    "permutation_test": "replication",
+    "bootstrap_stability": "stability",
+    "leave_one_out_influence": "stability",
+    "ci_consistency_hard_gate": "stability",
+    "subgroup_consistency": "robustness",
+    "method_triangulation": "robustness",
+    "construct_validity_hard_gate": "robustness",
+    "confounder_adjusted_robustness": "robustness",
+    "construct_independence_hard_gate": "robustness",
+    "discriminative_power": "discriminative_power",
+}
+BATTERY_DIMENSIONS: tuple[str, ...] = ("replication", "stability", "robustness", "discriminative_power")
+assert len(CANONICAL_BATTERY) == 11 and set(CANONICAL_BATTERY.values()) == set(BATTERY_DIMENSIONS)
+
 
 def _near_deterministic_of_target(x, y, threshold: float = 0.97) -> bool:
     """Does a SINGLE feature near-perfectly determine a low-cardinality (categorical) target?
@@ -141,7 +173,7 @@ class ValidationConfig:
     # sampled points detect influential observations adequately and cost ~10x less than
     # 2000 (which dominated runtime on large datasets). Override via CODAS_MAX_LOO_CHECKS.
     max_loo_checks: int = int(os.getenv("CODAS_MAX_LOO_CHECKS", "200"))
-    fdr_alpha: float = 0.10
+    fdr_alpha: float = 0.05  # Benjamini-Hochberg FDR control level (alpha = 0.05)
 
 
 def _valid_arrays(frame: pd.DataFrame, feature: str, target: str) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
@@ -645,9 +677,13 @@ def validate_candidate(
         details=f"benjamini_hochberg_q={candidate.q_value:.4g}, fdr_alpha={config.fdr_alpha}",
     ))
 
-    applicable = [test for test in tests if test.applicable]
-    passed_count = sum(1 for test in applicable if test.passed)
-    pass_rate = passed_count / len(applicable) if applicable else 0.0
+    # Pass-rate and the reported "X of 11" are computed over exactly the canonical battery
+    # (CANONICAL_BATTERY) that are applicable to this candidate — over the four-dimension,
+    # eleven-check framing. Auxiliary safeguards (FDR screen, confounder-independence gate, sequential
+    # split) still drive the verdict via the hard-gate / FDR logic below, but are not counted here.
+    counted = [test for test in tests if test.applicable and test.name in CANONICAL_BATTERY]
+    passed_count = sum(1 for test in counted if test.passed)
+    pass_rate = passed_count / len(counted) if counted else 0.0
     test_map = {test.name: test for test in tests}
     core_names = {
         "subsample_replication",
@@ -684,5 +720,8 @@ def validate_candidate(
     candidate.verdict = verdict
     candidate.components = components
     candidate.score = float(abs(candidate.rho) * (1.0 - min(candidate.q_value, 1.0)) * (0.5 + pass_rate))
-    candidate.evidence = f"{passed_count}/{len(applicable)} applicable validation checks passed."
+    candidate.evidence = (
+        f"{passed_count} of {len(counted)} applicable internal-battery checks passed "
+        f"(canonical battery: 11 checks across 4 dimensions)."
+    )
     return candidate

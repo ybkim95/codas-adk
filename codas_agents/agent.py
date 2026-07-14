@@ -1,4 +1,4 @@
-"""Google ADK agent graph for CoDaS — a faithful build of the paper's architecture.
+"""Google ADK agent graph for CoDaS.
 
 The Orchestrator coordinates state transitions across six phases, with all agents sharing one memory
 (``session.state``), one Fact Sheet, and one deterministic tool set:
@@ -6,17 +6,18 @@ The Orchestrator coordinates state transitions across six phases, with all agent
     root_agent  (SequentialAgent, the Orchestrator)
     ├─ Phase A  data_understanding  (SequentialAgent)
     │    ├─ scout_agent ............ profiles, chooses target/roles, set_target -> memory
-    │    └─ hypotheses_agent ....... states prior expectations to test
+    │    └─ hypotheses_agent ....... biological anchoring: grounds priors in the literature (search_literature)
     ├─ Phase B&C  discovery_loop  (LoopAgent, iterates until the GapChecker escalates)
     │    ├─ search_agent ........... run_discovery_round -> appends a round to memory
-    │    ├─ dual_track  (ParallelAgent)        # the paper's parallel statistical ∥ ML iterations
+    │    ├─ dual_track  (ParallelAgent)        # parallel statistical ∥ ML iterations
     │    │    ├─ statistical_interpreter ...... reads the round, interprets association evidence
     │    │    └─ ml_interpreter ............... reads the round, interprets predictive evidence
     │    ├─ critic_agent ........... adversarial validation (attack)
     │    ├─ defender_agent ......... adversarial validation (defend from evidence)
     │    └─ gapcheck_agent ......... check_convergence -> escalate ends the loop
     └─ Phase D/E/F  reporting  (SequentialAgent)
-         ├─ mechanism_agent / novelty_agent / strategy_agent / artifact_agent
+         ├─ mechanism_agent / novelty_agent ... literature-grounded deep research (search_literature)
+         ├─ strategy_agent / artifact_agent
          └─ report_agent ........... publication-style summary, invites human feedback
 
 Numbers come only from the deterministic tools in ``tools.py`` (engine = ``codas_core``). The LLMs
@@ -30,6 +31,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
+# ADK 2.4 marks SequentialAgent / LoopAgent / ParallelAgent as deprecated in favour of Workflow, but
+# — per ADK's own deprecation notice — "Workflow cannot yet be used as an LlmAgent sub-agent". CoDaS
+# nests these as sub-agents (the loop and the phase pipelines sit inside the root SequentialAgent), so
+# the Workflow replacement cannot express this graph yet. We therefore pin google-adk (see
+# pyproject.toml / requirements-lock.txt) and keep the current, correct API until Workflow supports
+# nested sub-agents. The corresponding DeprecationWarnings are filtered in the pytest config so a
+# run's output is not mistaken for staleness.
 from google.adk.agents import LlmAgent, LoopAgent, ParallelAgent, SequentialAgent
 from google.adk.models import Gemini
 from google.genai.types import HttpRetryOptions
@@ -45,8 +53,10 @@ from codas_agents.tools import (
     check_convergence,
     preview_columns,
     profile_dataset,
+    propose_feature,
     run_discovery,
     run_discovery_round,
+    search_literature,
     set_target,
 )
 from codas_core.settings import load_local_env
@@ -57,7 +67,14 @@ load_local_env()
 # internal) with exponential backoff + jitter, so a Gemini 503 spike no longer aborts a multi-agent
 # run. This is cheaper and stronger than retrying the whole pipeline — only the failing call repeats,
 # not the agents that already succeeded. The service boundary keeps a last-resort retry on top.
-_MODEL_NAME = os.getenv("CODAS_GEMINI_MODEL", "gemini-3.5-flash")
+# Two model tiers: a Pro tier for research-intensive reasoning and
+# code generation (design, adversarial debate, mechanism, reporting) and a Flash tier for the repeated
+# lower-latency tasks in the discovery loop (interpretation, gap-checking). Set CODAS_GEMINI_MODEL to
+# force a single model across every agent (useful for CI or a constrained quota).
+_REASONING_MODEL_NAME = os.getenv("CODAS_GEMINI_REASONING_MODEL", "gemini-3.1-pro-preview")
+_FAST_MODEL_NAME = os.getenv("CODAS_GEMINI_FAST_MODEL", "gemini-3-flash-preview")
+if os.getenv("CODAS_GEMINI_MODEL"):  # single-model override applies to both tiers
+    _REASONING_MODEL_NAME = _FAST_MODEL_NAME = os.environ["CODAS_GEMINI_MODEL"]
 _MODEL_RETRY = HttpRetryOptions(
     attempts=int(os.getenv("CODAS_MODEL_RETRY_ATTEMPTS", "5")),
     initial_delay=1.0,
@@ -65,7 +82,8 @@ _MODEL_RETRY = HttpRetryOptions(
     exp_base=2.0,
     http_status_codes=[408, 429, 500, 502, 503, 504],
 )
-MODEL = Gemini(model=_MODEL_NAME, retry_options=_MODEL_RETRY)
+REASONING_MODEL = Gemini(model=_REASONING_MODEL_NAME, retry_options=_MODEL_RETRY)
+FAST_MODEL = Gemini(model=_FAST_MODEL_NAME, retry_options=_MODEL_RETRY)
 # The orchestrator's loop runs at most this many deepening rounds; the GapChecker usually stops it
 # earlier via escalate once deeper search saturates. Bounded so a live run stays within the timeout.
 MAX_DISCOVERY_ROUNDS = int(os.getenv("CODAS_MAX_DISCOVERY_ROUNDS", "3"))
@@ -76,19 +94,22 @@ def _agent(
     description: str,
     instruction: str,
     *,
+    model: Gemini = FAST_MODEL,
     tools: list | None = None,
     output_key: str | None = None,
     after_agent: Any = None,
 ) -> LlmAgent:
     """Construct an LlmAgent with the shared logging/guardrail callbacks.
 
-    ``output_key`` publishes the agent's response into shared memory so later agents (including the
-    other branch of a ParallelAgent) can read it; ``tools`` wires the deterministic tool guardrail;
-    ``after_agent`` runs a post-agent callback (used to grounding-audit the final report).
+    ``model`` selects the tier: the Flash ``FAST_MODEL`` is the default for the repeated discovery-loop
+    tasks; reasoning-heavy agents pass ``model=REASONING_MODEL`` (the Pro tier). ``output_key`` publishes
+    the agent's response into shared memory so later agents (including the other branch of a
+    ParallelAgent) can read it; ``tools`` wires the deterministic tool guardrail; ``after_agent`` runs a
+    post-agent callback (used to grounding-audit the final report).
     """
     kwargs: dict[str, Any] = dict(
         name=name,
-        model=MODEL,
+        model=model,
         description=description,
         instruction=instruction,
         before_model_callback=before_model_logger,
@@ -112,12 +133,15 @@ scout_agent = _agent(
     "scout_agent",
     "Profiles the dataset and records the target and participant/time/confounder roles in memory.",
     prompts.SCOUT,
+    model=REASONING_MODEL,
     tools=[profile_dataset, preview_columns, set_target],
 )
 hypotheses_agent = _agent(
     "hypotheses_agent",
-    "States the prior expectations the analysis will test, to orient the search.",
+    "Grounds prior expectations in the scientific literature to orient the search (biological anchoring).",
     prompts.HYPOTHESES,
+    model=REASONING_MODEL,
+    tools=[search_literature],
     output_key="hypotheses",
 )
 data_understanding = SequentialAgent(
@@ -136,8 +160,9 @@ search_agent = _agent(
 )
 statistical_interpreter = _agent(
     "statistical_interpreter",
-    "Interprets the association (Spearman + FDR) evidence of the latest round.",
+    "Interprets association evidence and proposes physiological feature transformations to evaluate.",
     prompts.STATISTICAL_INTERPRETER,
+    tools=[propose_feature],
     output_key="statistical_interpretation",
 )
 ml_interpreter = _agent(
@@ -148,19 +173,21 @@ ml_interpreter = _agent(
 )
 dual_track = ParallelAgent(
     name="dual_track",
-    description="The paper's parallel statistical ∥ machine-learning iterations over the same round.",
+    description="Parallel statistical ∥ machine-learning iterations over the same round.",
     sub_agents=[statistical_interpreter, ml_interpreter],
 )
 critic_agent = _agent(
     "critic_agent",
     "Adversarially attacks candidates for leakage, confounding, construct overlap, and overclaiming.",
     prompts.CRITIC,
+    model=REASONING_MODEL,
     output_key="critique",
 )
 defender_agent = _agent(
     "defender_agent",
     "Defends candidates only when deterministic evidence supports retention; concedes otherwise.",
     prompts.DEFENDER,
+    model=REASONING_MODEL,
     output_key="defense",
 )
 gapcheck_agent = _agent(
@@ -181,20 +208,25 @@ discovery_loop = LoopAgent(
 
 mechanism_agent = _agent(
     "mechanism_agent",
-    "Links surviving candidates to plausible mechanisms and interpretation boundaries.",
+    "Links surviving candidates to literature-grounded mechanisms and interpretation boundaries.",
     prompts.MECHANISM,
+    model=REASONING_MODEL,
+    tools=[search_literature],
     output_key="mechanisms",
 )
 novelty_agent = _agent(
     "novelty_agent",
-    "Classifies candidates as established, supported, emerging, or unverified from supplied evidence.",
+    "Classifies candidates as established, supported, emerging, or unverified against the literature.",
     prompts.NOVELTY,
+    model=REASONING_MODEL,
+    tools=[search_literature],
     output_key="novelty",
 )
 strategy_agent = _agent(
     "strategy_agent",
     "Recommends accept / reinvestigate / deeper-analysis / human-feedback from the run evidence.",
     prompts.STRATEGY,
+    model=REASONING_MODEL,
     output_key="strategy",
 )
 artifact_agent = _agent(
@@ -207,6 +239,7 @@ report_agent = _agent(
     "report_agent",
     "Drafts a publication-style summary from the Fact Sheet and invites human feedback.",
     prompts.REPORT,
+    model=REASONING_MODEL,
     output_key="report",
     after_agent=report_grounding_audit,  # runtime grounding guardrail: logs/warns on unverified figures
 )

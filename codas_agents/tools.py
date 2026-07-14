@@ -26,8 +26,12 @@ from typing import Any
 import pandas as pd
 from google.adk.tools import ToolContext
 
+from codas_core import gemini
 from codas_core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas_core.discovery import DiscoveryRequest, run_discovery_from_csv
+from codas_core.statistics import safe_spearman
+
+_PROPOSE_OPS = ("ratio", "product", "difference", "sum")
 
 
 def _json_safe(obj: Any) -> Any:
@@ -53,7 +57,7 @@ def _json_safe(obj: Any) -> Any:
     return str(obj)
 
 # Per-round deepening schedule for the discovery loop. The GapChecker (``check_convergence``) decides,
-# per the paper, "whether to pursue deeper feature engineering or move to validation"; concretely each
+# it decides "whether to pursue deeper feature engineering or move to validation"; concretely each
 # extra round widens the engineered-ratio-feature budget and the reported candidate count, so a later
 # round can surface structure a shallower one missed. Bounded so the loop stays within the timeout.
 _RATIO_FEATURES_BASE = int(os.getenv("CODAS_ROUND_RATIO_BASE", "12"))
@@ -135,6 +139,40 @@ def run_discovery(
     return _json_safe(run_discovery_from_csv(Path(csv_path).expanduser().resolve(), request).to_dict())
 
 
+def search_literature(query: str, tool_context: ToolContext | None = None) -> dict[str, Any]:
+    """Retrieve grounded scientific-literature context for a biomarker query (Phase A biological
+    anchoring / Phase D deep research). Runs a Google-search-grounded Gemini call and returns a short
+    evidence summary with its source list, so mechanism/novelty claims can be anchored in published
+    work rather than the model's parametric memory.
+
+    Returns ``{"grounded": bool, "summary": str, "sources": [...], "queries": [...]}``. When no Gemini
+    key is configured the tool returns ``grounded=False`` with an empty summary — the caller must then
+    reason from general principles and MUST NOT fabricate citations. Statistics are never sourced here;
+    every reported number still comes only from the deterministic engine.
+    """
+    if not query or not query.strip():
+        return {"grounded": False, "summary": "", "sources": [], "queries": [], "note": "empty query"}
+    reply = gemini.generate_grounded_reply(
+        query.strip(),
+        context=("You are grounding a wearable-biomarker discovery finding in the scientific literature. "
+                 "Summarise established evidence and mechanisms with citations; do not invent numeric "
+                 "statistics — those come only from the deterministic engine."),
+    )
+    if not reply.configured:
+        return {"grounded": False, "summary": "", "sources": [], "queries": [],
+                "note": "Literature grounding unavailable (no Gemini key). Reason from general principles "
+                        "and do not fabricate citations."}
+    if reply.error or not reply.text:
+        return {"grounded": False, "summary": "", "sources": [], "queries": [],
+                "note": f"Literature grounding failed: {reply.error or 'empty response'}. Do not fabricate citations."}
+    return _json_safe({
+        "grounded": True,
+        "summary": reply.text,
+        "sources": reply.sources,
+        "queries": reply.queries,
+    })
+
+
 # --- stateful tools (shared session memory) ----------------------------------------------------
 
 def set_target(
@@ -161,6 +199,64 @@ def set_target(
         "confounder_columns": _split_csv(confounder_columns_csv),
         "note": "Analysis design recorded in shared memory. Run the first discovery round next.",
     }
+
+
+def propose_feature(
+    operation: str,
+    feature_a: str,
+    feature_b: str,
+    tool_context: ToolContext,
+    name: str = "",
+) -> dict[str, Any]:
+    """Propose a physiologically-motivated transformation of two existing features for the engine to
+    evaluate (generative interpreters propose transformations which deterministic
+    runners immediately evaluate — e.g. a steps/resting-heart-rate fitness index).
+
+    ``operation`` is one of ratio, product, difference, sum, applied to two existing numeric columns
+    (``feature_a``, ``feature_b``). There is no free-form expression evaluation. The proposal is
+    registered so the NEXT discovery round screens and validates it with the SAME FDR correction and
+    validation battery as every other feature — a proposal is evaluated, never trusted. An exploratory
+    Spearman association is returned for immediate feedback; the authoritative verdict is the feature's
+    entry in the validated candidate list, not this preview number.
+    """
+    op = (operation or "").strip().lower()
+    if op not in _PROPOSE_OPS:
+        return {"error": f"unsupported operation {operation!r}; use one of: {', '.join(_PROPOSE_OPS)}."}
+    if not (feature_a or "").strip() or not (feature_b or "").strip():
+        return {"error": "propose_feature needs two existing column names (feature_a, feature_b)."}
+    label = (name or f"{feature_a}_{op}_{feature_b}").strip()
+    proposals = list(tool_context.state.get("proposed_features") or [])
+    if not any(p.get("name") == label for p in proposals):
+        proposals.append({"op": op, "a": feature_a, "b": feature_b, "name": label})
+    tool_context.state["proposed_features"] = proposals
+
+    exploratory: dict[str, Any] | None = None
+    path = _resolve_csv_path(tool_context.state.get("csv_path"), "")
+    target = str(tool_context.state.get("target_column") or "").strip()
+    if path is not None and target:
+        try:
+            df = read_csv_dataset(path)
+            if all(c in df.columns for c in (feature_a, feature_b, target)):
+                a = pd.to_numeric(df[feature_a], errors="coerce")
+                b = pd.to_numeric(df[feature_b], errors="coerce")
+                col = {"ratio": a / b.replace(0.0, math.nan), "product": a * b,
+                       "difference": a - b, "sum": a + b}[op]
+                rho, _, n = safe_spearman(col, df[target])
+                if math.isfinite(rho):
+                    exploratory = {"spearman_rho": round(float(rho), 4), "n": int(n)}
+        except Exception:
+            exploratory = None
+
+    return _json_safe({
+        "registered": label,
+        "operation": op,
+        "feature_a": feature_a,
+        "feature_b": feature_b,
+        "exploratory_association": exploratory,
+        "note": "Registered. The next discovery round screens and validates this feature with the full "
+                "FDR correction and validation battery; the exploratory rho is a preview, not the verdict.",
+        "proposed_features": [p["name"] for p in proposals],
+    })
 
 
 def _round_summary(round_index: int, ratio_features: int, top_k: int, report: dict[str, Any]) -> dict[str, Any]:
@@ -216,6 +312,7 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
         time_column=str(tool_context.state.get("time_column") or "").strip() or None,
         excluded_columns=list(tool_context.state.get("excluded_columns") or []),
         confounder_columns=list(tool_context.state.get("confounder_columns") or []),
+        proposed_features=list(tool_context.state.get("proposed_features") or []),
         top_k=top_k,
         max_ratio_features=ratio_features,
         validation_resamples=_ROUND_RESAMPLES,

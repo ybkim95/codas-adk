@@ -6,7 +6,7 @@ Two layers are exposed:
   reproducible; identical numbers for identical input. No LLM required. The caller specifies the
   target column explicitly: the engine makes NO assumption about column names or problem domain.
 * ``/v1/agent`` (+ ``/v1/agent/feedback``) — the google-adk Orchestrator (``codas_agents``) running
-  the paper's six-phase pipeline over the same deterministic tools with Gemini. Here the LLM chooses
+  the six-phase pipeline over the same deterministic tools with Gemini. Here the LLM chooses
   the target/roles from the schema and the task, iterates a deepening search loop, and writes the
   report; ``/v1/agent/feedback`` resumes the SAME session so a reviewer can steer an optional next
   iteration. Requires a Gemini API key; degrades to 503 without one.
@@ -156,7 +156,7 @@ def healthz() -> dict[str, str]:
 def health(request: Request) -> dict[str, Any]:
     """Authenticated readiness probe; also reports whether the Gemini agent layer is configured."""
     principal = require_api_key(request)
-    return {"status": "ok", "principal": principal, "gemini_configured": gemini.configured()}
+    return {"status": "ok", "principal": principal, "gemini": gemini.status()}
 
 
 @router.post("/profile")
@@ -270,7 +270,7 @@ def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
 
 @router.post("/agent/feedback")
 def agent_feedback(payload: AgentFeedbackPayload, request: Request) -> dict[str, Any]:
-    """Resume a finished discovery with reviewer feedback (the paper's optional human-in-the-loop).
+    """Resume a finished discovery with reviewer feedback (the optional human-in-the-loop).
 
     Re-enters the SAME session — its target/roles, prior rounds, and Fact Sheet are intact in shared
     memory — so the orchestrator incorporates the feedback and runs further deepening rounds (the loop
