@@ -153,7 +153,11 @@ async def main() -> int:
         print("Set GOOGLE_API_KEY to run the live agent-robustness audit.")
         return 2
 
-    data = Path("/Users/ybkim95/Documents/CoDaS/codas_ui_test_data/public_wearable_20260607")
+    data_dir = os.getenv("CODAS_AGENT_AUDIT_DATA_DIR", "")
+    if not data_dir:
+        print("Set CODAS_AGENT_AUDIT_DATA_DIR to a directory holding the audit datasets to run.")
+        return 2
+    data = Path(data_dir)
     zenodo = str(data / "zenodo_depresjon_actigraphy_monthly.csv")
 
     print("=" * 90)

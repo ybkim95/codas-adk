@@ -25,7 +25,7 @@ jobs:
         run: python -m pytest -q
 
   # Reproducibility: install the exact locked environment (Python 3.10) and prove the deterministic
-  # results and the scored audits reproduce — so "it only works on my machine" is not a reviewer risk.
+  # results and the scored audits reproduce on a clean clone.
   verify:
     runs-on: ubuntu-latest
     steps:

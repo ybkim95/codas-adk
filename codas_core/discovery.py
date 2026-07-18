@@ -937,7 +937,7 @@ def _interaction_terms_warnings(df, request) -> list[str]:
     # generate multiplicative cross-feature interaction terms. This means interaction-only predictors
     # (where the product or conditional effect of two features drives the outcome, not either
     # main effect) are structurally outside the current search space and will not be detected.
-    # Surface this as a consistent limitation note so reviewers know the boundary. This fires whenever
+    # Surface this as a consistent limitation note so the boundary is explicit. This fires whenever
     # at least 2 numeric features exist (so interactions are even possible) — INCLUDING the
     # 0-validated-candidate case, which is precisely when an undetected interaction is the likely
     # explanation for a null result.
@@ -1092,7 +1092,7 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     # screening ran at the inflated row count while the warning claimed otherwise.
     if (not effective_participant) and request.target_column in df.columns:
         # No participant id found. Warn if the rows still look like un-keyed repeated measures
-        # (a string/categorical column clusters many rows) so the reviewer can set it.
+        # (a string/categorical column clusters many rows) so the caller can set it.
         _n = int(len(df))
         for _c in df.columns:
             if _c == request.target_column:
@@ -1169,8 +1169,8 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     candidates = ordered_candidates[: request.top_k]
 
     # Keep high-risk hard-gate failures visible in the audit trail even when many
-    # stronger passing associations exist. Expert reviewers need to see leakage
-    # and construct-overlap failures, not just the successful shortlist.
+    # stronger passing associations exist. The audit trail must show leakage and
+    # construct-overlap failures, not just the successful shortlist.
     selected_features = {candidate.feature for candidate in candidates}
     hard_gate_failures = sorted(
         [
@@ -1184,7 +1184,7 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     )
     if hard_gate_failures:
         candidates.extend(hard_gate_failures[:3])
-        warnings.append("High-risk hard-gate failures were retained in the public audit trail for reviewer inspection.")
+        warnings.append("High-risk hard-gate failures were retained in the audit trail for inspection.")
 
     warnings.extend(_demote_collinear(candidates, analysis.frame))
 

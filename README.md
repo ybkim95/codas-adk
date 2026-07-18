@@ -98,4 +98,4 @@ The count of validated candidates depends on the declared exclusions and thresho
 
 ## License
 
-Released under the [MIT License](LICENSE).
+See [LICENSE](LICENSE).

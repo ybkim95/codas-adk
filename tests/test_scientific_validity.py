@@ -1,7 +1,7 @@
 """Scientific-validity guards for longitudinal / wearable data (a fast subset of
-scripts/scientific_validation.py). These lock the statistical behaviours a rigorous reviewer of
-physiological time-series would demand: no pseudo-replication, autocorrelation/effective-n awareness,
-confounder adjustment, cluster-honest bootstrap CIs, and surfacing within-subject signal.
+scripts/scientific_validation.py). These lock the statistical behaviours physiological time-series
+analysis requires: no pseudo-replication, autocorrelation and effective-n awareness, confounder
+adjustment, cluster-honest bootstrap CIs, and surfacing within-subject signal.
 """
 
 from __future__ import annotations

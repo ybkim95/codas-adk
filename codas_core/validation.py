@@ -409,7 +409,7 @@ def _sequential_split_test(subset, feature, target_column, candidate):
     # rather than a stable biological relationship. This is especially important in longitudinal
     # datasets where the first and second halves may correspond to different periods or cohorts.
     # NOT a hard gate (the first/last ordering may be arbitrary in cross-sectional data);
-    # surfaces as an instability note so a reviewer can check whether their data is ordered by
+    # surfaces as an instability note so the caller can check whether their data is ordered by
     # time or cohort, in which case this inconsistency is a meaningful replication concern.
     n_sub = len(subset)
     if n_sub >= 40:

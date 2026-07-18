@@ -8,8 +8,8 @@ Two layers are exposed:
 * ``/v1/agent`` (+ ``/v1/agent/feedback``) — the google-adk Orchestrator (``codas_agents``) running
   the six-phase pipeline over the same deterministic tools with Gemini. Here the LLM chooses
   the target/roles from the schema and the task, iterates a deepening search loop, and writes the
-  report; ``/v1/agent/feedback`` resumes the SAME session so a reviewer can steer an optional next
-  iteration. Requires a Gemini API key; degrades to 503 without one.
+  report; ``/v1/agent/feedback`` resumes the SAME session so a domain expert can steer an optional
+  next iteration. Requires a Gemini API key; degrades to 503 without one.
 
 Auth is server-to-server API key (see ``codas_service.auth``). There is no browser/Firebase auth and
 no local dataset registry: callers hand the data over inline, keeping the service stateless.
@@ -108,7 +108,7 @@ class AgentPayload(_InlineData):
 
 class AgentFeedbackPayload(BaseModel):
     session_id: str = Field(description="The session_id returned by /v1/agent, to resume in place.")
-    feedback: str = Field(description="Reviewer feedback to steer the next discovery iteration.")
+    feedback: str = Field(description="Domain-expert feedback to steer the next discovery iteration.")
 
 
 def _decode_csv_text(data: _InlineData) -> str:
@@ -270,7 +270,7 @@ def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
 
 @router.post("/agent/feedback")
 def agent_feedback(payload: AgentFeedbackPayload, request: Request) -> dict[str, Any]:
-    """Resume a finished discovery with reviewer feedback (the optional human-in-the-loop).
+    """Resume a finished discovery with domain-expert feedback (the optional human-in-the-loop).
 
     Re-enters the SAME session — its target/roles, prior rounds, and Fact Sheet are intact in shared
     memory — so the orchestrator incorporates the feedback and runs further deepening rounds (the loop
@@ -286,7 +286,7 @@ def agent_feedback(payload: AgentFeedbackPayload, request: Request) -> dict[str,
     from codas_agents.runtime import run_adk_agent_text
 
     prompt = (
-        "Reviewer feedback on the discovery so far. Incorporate it, and if it calls for more evidence "
+        "Domain-expert feedback on the discovery so far. Incorporate it, and if it calls for more evidence "
         f"run further discovery rounds before revising the report.\n\nFeedback: {payload.feedback}"
     )
     try:
@@ -300,7 +300,7 @@ def agent_feedback(payload: AgentFeedbackPayload, request: Request) -> dict[str,
         )
     except Exception as exc:  # noqa: BLE001
         # No auto-retry here (the session is mid-mutation); surface a transient backend hiccup as a
-        # retryable 503 rather than a 500 so the reviewer can resend the same feedback.
+        # retryable 503 rather than a 500 so the caller can resend the same feedback.
         if _is_transient_llm_error(exc):
             raise HTTPException(status_code=503, detail=f"Model backend temporarily unavailable; retry shortly. ({exc})") from exc
         raise

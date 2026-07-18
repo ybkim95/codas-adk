@@ -136,6 +136,6 @@ grounded strictly in the shared Fact Sheet {fact_sheet?}, the discovery rounds {
 preceding agents' analysis. State the target, the surviving candidates with their direction and
 evidence, the held-out predictive performance, and the limitations. Findings are exploratory and
 hypothesis-generating — never causal or deployment-ready. Invent no statistic, sample size, file, or
-citation. End by inviting the reviewer's feedback: name the one or two questions whose answers would
-most change the conclusions, so a human can steer an optional next iteration.
+citation. End by inviting the domain expert's feedback. Name the one or two questions whose answers
+would most change the conclusions, so a human can steer an optional next iteration.
 """

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Picard-grade scientific-validity audit of the CoDaS engine.
+"""Scientific-validity audit of the CoDaS engine.
 
-A world-class wearable/affective-computing reviewer does not ask "did it crash" — she asks whether
-the discovered associations are SCIENTIFICALLY trustworthy on longitudinal physiological data. Each
-scenario plants a KNOWN ground truth (a real signal, a null, a confound, a leak) and checks that the
-engine reaches the scientifically-correct verdict, with a quantitative metric. Deterministic, offline.
+Each scenario plants a known ground truth (a real signal, a null, a confound, a leak) and checks that
+the engine reaches the correct verdict, with a quantitative metric. The question is not whether the
+code runs but whether the discovered associations are statistically trustworthy on longitudinal
+physiological data. Deterministic and offline.
 
     python scripts/scientific_validation.py
 """
 from __future__ import annotations
 
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -96,7 +97,7 @@ def s2_pseudoreplication():
     nr, gr = naive / len(seeds), grouped / len(seeds)
     # PASS: declaring the participant id sharply cuts false validation (pseudo-replication corrected).
     # The small residual is genuine chance correlation at only K=20 independent units — irreducible,
-    # and the engine still flags the cluster count / effective n for the reviewer.
+    # and the engine still flags the cluster count / effective n.
     record("S2 pseudo-replication correction (20 subj x 50, null)", gr <= 0.20 and gr < nr,
            f"hard-validated: naive(rows independent)={naive}/20 ({100*nr:.0f}%) -> "
            f"grouped(participant id)={grouped}/20 ({100*gr:.0f}%); residual = chance at K=20")
@@ -198,15 +199,16 @@ def s9_no_overclaim():
            f"hype language={hype}; exploratory caveat present={caveated}")
 
 
-# S5 — REAL PICARD DATASET: temporal/future leakage. The set contains future_* columns (measured
-# AFTER the outcome window). A naive tool reports them as top predictors of current phq9. This probes
-# whether the ENGINE alone catches future leakage (it does no name-based exclusion by design).
-def s5_picard_future_leakage():
-    path = Path("/Users/ybkim95/Documents/CoDaS/codas_ui_test_data/rosalind_picard_20260606/picard_master_wearable_144x58.csv")
-    if not path.exists():
-        record("S5 Picard future-leakage (real data)", True, "SKIPPED — dataset not present locally")
+# S5 — real-data future/temporal leakage. The dataset (supplied via CODAS_LEAKAGE_TEST_CSV) contains
+# future_* columns measured AFTER the outcome window. A naive tool reports them as top predictors of
+# the current outcome. This probes whether the engine catches future leakage (it does no name-based
+# exclusion by design). Skipped unless the environment variable points at such a table.
+def s5_future_leakage_real_data():
+    raw = os.getenv("CODAS_LEAKAGE_TEST_CSV", "")
+    if not raw or not Path(raw).exists():
+        record("S5 future-leakage (real data)", True, "SKIPPED — set CODAS_LEAKAGE_TEST_CSV to run")
         return
-    df = pd.read_csv(path)
+    df = pd.read_csv(raw)
 
     def _leaked(rep):  # validated candidates that are future/post-outcome columns (matched by prefix)
         return sorted({c.feature for c in rep.candidates if c.verdict == "validated"
@@ -224,7 +226,7 @@ def s5_picard_future_leakage():
     # undeclared future column (leaked_plain is non-empty — it still validates them). What it CAN do,
     # and now does: (1) emit a temporal-leakage advisory naming the strong associations, and (2) hard-
     # exclude them when the caller declares post_outcome_columns. Pass = both behaviours hold.
-    record("S5 Picard future-leakage: advisory fires + declared exclusion works",
+    record("S5 future-leakage: advisory fires + declared exclusion works",
            advisory and bool(leaked_plain) and not leaked_guarded,
            f"plain run: advisory fired={advisory}, future cols still validated (undeclared)={leaked_plain}; "
            f"declared post_outcome_columns -> future cols validated={leaked_guarded} (empty = excluded)",
@@ -233,14 +235,14 @@ def s5_picard_future_leakage():
 
 def main():
     for fn in (s1_within_between, s2_pseudoreplication, s3_autocorrelation, s4_confounding,
-               s6_effect_size, s7_imbalance, s8_mnar, s9_no_overclaim, s5_picard_future_leakage):
+               s6_effect_size, s7_imbalance, s8_mnar, s9_no_overclaim, s5_future_leakage_real_data):
         try:
             fn()
         except Exception as exc:
             import traceback
             record(fn.__name__, False, f"CRASH {type(exc).__name__}: {exc}", traceback.format_exc()[-300:])
     print("=" * 92)
-    print("CoDaS — PICARD-GRADE SCIENTIFIC-VALIDITY AUDIT (longitudinal wearable scenarios, ground truth)")
+    print("CoDaS — SCIENTIFIC-VALIDITY AUDIT (longitudinal wearable scenarios, ground truth)")
     print("=" * 92)
     passed = 0
     for name, ok, metric, detail in RESULTS:

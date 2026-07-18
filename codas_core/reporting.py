@@ -90,8 +90,8 @@ def build_markdown_report(
         "",
     ]
     for key, value in fact_sheet.items():
-        # Round floats so the report doesn't show noise like 0.802005643204628 (a skeptical
-        # reviewer reads 15-decimal values as sloppy); 4 significant figures is plenty here.
+        # Round floats so the report doesn't show noise like 0.802005643204628. Four significant
+        # figures is plenty here.
         if isinstance(value, float):
             value = f"{value:.4g}"
         lines.append(f"- `{key}`: {value}")
