@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from codas_core.discovery import DiscoveryRequest, run_discovery_from_csv
+from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "sample_dataset.csv"
 

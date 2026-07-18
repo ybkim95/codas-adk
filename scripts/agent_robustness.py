@@ -32,7 +32,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from codas_agents.grounding import engine_numbers, ungrounded_claims
+from codas.agents.grounding import engine_numbers, ungrounded_claims
 
 MAX_ROUNDS = int(os.environ["CODAS_MAX_DISCOVERY_ROUNDS"])
 
@@ -43,7 +43,7 @@ def _is_transient(err: str) -> bool:
 
 
 async def _run_once(csv_path: str, goal: str) -> dict:
-    from codas_agents.agent import root_agent
+    from codas.agents.agent import root_agent
 
     sessions = InMemorySessionService()
     await sessions.create_session(app_name="codas", user_id="audit", session_id="s", state={"csv_path": csv_path})
@@ -99,7 +99,7 @@ def check_r4(run: dict) -> list[tuple[str, bool, str]]:
 def check_r5_grounding(run: dict) -> list[tuple[str, bool, str]]:
     """RIGOROUS grounding: every statistic-claim in the report must trace to a number the engine
     produced — not just the headline metric. An ungrounded statistic-claim is a fabrication. Uses the
-    same grounding logic as the runtime guardrail (codas_agents.grounding) so the two cannot drift."""
+    same grounding logic as the runtime guardrail (codas.agents.grounding) so the two cannot drift."""
     fs = run.get("fact_sheet", {})
     metric = fs.get("ml_metric_value")
     report = run["report"]

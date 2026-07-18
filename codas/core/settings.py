@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def load_local_env(env_path: str | Path | None = None) -> None:
-    path = Path(env_path) if env_path else Path(__file__).resolve().parents[1] / ".env"
+    path = Path(env_path) if env_path else Path(__file__).resolve().parents[2] / ".env"
     if not path.exists():
         return
     for raw_line in path.read_text(encoding="utf-8").splitlines():

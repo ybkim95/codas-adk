@@ -8,7 +8,7 @@ column names the engine has never been told anything about.
 import numpy as np
 import pandas as pd
 
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 
 def _housing_df() -> pd.DataFrame:

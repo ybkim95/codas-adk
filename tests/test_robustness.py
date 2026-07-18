@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from codas_core.data import InsufficientDataError
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.data import InsufficientDataError
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 
 def _run(df: pd.DataFrame, target: str, **kw):
@@ -142,7 +142,7 @@ def test_concurrent_discoveries_are_isolated_and_thread_safe():
 
 
 def test_nonstandard_delimiters_and_encodings_parse(tmp_path):
-    from codas_core.data import read_csv_dataset
+    from codas.core.data import read_csv_dataset
 
     semi = tmp_path / "semi.csv"
     semi.write_text("a;b;y\n" + "\n".join(f"{i};{i * 2};{i * 0.5}" for i in range(30)))

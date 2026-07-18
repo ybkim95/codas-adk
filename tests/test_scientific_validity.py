@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from codas_core.discovery import DiscoveryRequest, run_discovery
-from codas_core.validation import _bootstrap_distribution
+from codas.core.discovery import DiscoveryRequest, run_discovery
+from codas.core.validation import _bootstrap_distribution
 
 
 def _hard_validated(df, **kw) -> set[str]:

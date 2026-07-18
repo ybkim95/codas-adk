@@ -13,7 +13,7 @@ from pathlib import Path
 # Run from a checkout without installing: put the repo root on the import path.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from codas_core.discovery import DiscoveryRequest, run_discovery_from_csv
+from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
 
 SAMPLE = Path(__file__).resolve().parent / "sample_dataset.csv"
 

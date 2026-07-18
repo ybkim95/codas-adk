@@ -9,8 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from codas_agents.grounding import engine_numbers, ungrounded_claims
-from codas_agents.numeric_audit import verify_and_correct
+from codas.agents.grounding import engine_numbers, ungrounded_claims
+from codas.agents.numeric_audit import verify_and_correct
 
 
 LOGGER = logging.getLogger("codas.agents")
@@ -19,7 +19,7 @@ LOGGER = logging.getLogger("codas.agents")
 # model calls, tool start/end, and the grounding guardrail. (Previously propagate=False made all of
 # this unreachable in production unless a handler was attached to "codas.agents" by name.)
 LOGGER.addHandler(logging.NullHandler())
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]  # repo root (this file is codas/agents/callbacks.py)
 ALLOWED_DATA_ROOTS = [
     (ROOT / ".codas_runs").resolve(),
     (ROOT / "examples").resolve(),

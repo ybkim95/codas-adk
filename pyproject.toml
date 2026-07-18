@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 # License intentionally left as proprietary until the team chooses one (see LICENSE).
 license = { text = "Proprietary - All Rights Reserved" }
 
-# The deterministic engine (codas_core) needs only a minimal scientific stack. Each is pinned
+# The deterministic engine (codas.core) needs only a minimal scientific stack. Each is pinned
 # below the next major so a fresh build cannot silently pull an untested breaking version.
 dependencies = [
   "numpy<3",
@@ -21,30 +21,30 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# google-adk + Gemini agent layer (codas_agents) and the Gemini API boundary. google-adk is pinned to
+# google-adk + Gemini agent layer (codas.agents) and the Gemini API boundary. google-adk is pinned to
 # 2.4.x: it deprecates SequentialAgent/LoopAgent/ParallelAgent in favour of Workflow, which cannot yet
 # be an LlmAgent sub-agent (the graph CoDaS builds), so a newer major could remove the API we rely on.
 # requirements-lock.txt pins the exact tested versions for reproducible installs.
 agent = ["google-adk>=2.4,<2.5", "google-genai"]
-# HTTP service layer (codas_service).
+# HTTP service layer (codas.service).
 service = ["fastapi", "uvicorn", "pydantic", "python-multipart"]
 dev = ["pytest"]
 all = ["google-adk>=2.4,<2.5", "google-genai", "fastapi", "uvicorn", "pydantic", "python-multipart"]
 
-# Only the importable Python packages are installed. examples/ and tests/ are not shipped.
+# Only the importable Python package is installed. examples/ and tests/ are not shipped.
 [tool.setuptools.packages.find]
-include = ["codas_core*", "codas_agents*", "codas_service*"]
+include = ["codas*"]
 
 # Ship the PEP 561 marker so downstream type-checkers honour the inline type hints.
 [tool.setuptools.package-data]
-codas_core = ["py.typed"]
-codas_agents = ["py.typed"]
-codas_service = ["py.typed"]
+"codas.core" = ["py.typed"]
+"codas.agents" = ["py.typed"]
+"codas.service" = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # google-adk 2.4 deprecates SequentialAgent/LoopAgent/ParallelAgent in favour of Workflow, which cannot
-# yet be an LlmAgent sub-agent (see codas_agents/agent.py). We pin ADK and keep the current API, so
+# yet be an LlmAgent sub-agent (see codas/agents/agent.py). We pin ADK and keep the current API, so
 # these specific DeprecationWarnings are expected — filter them to keep the run output signal-clean.
 filterwarnings = [
     "ignore:SequentialAgent is deprecated in favor of Workflow:DeprecationWarning",

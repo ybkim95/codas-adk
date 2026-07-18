@@ -20,7 +20,7 @@ The Orchestrator coordinates state transitions across six phases, with all agent
          ├─ strategy_agent / artifact_agent
          └─ report_agent ........... publication-style summary, invites human feedback
 
-Numbers come only from the deterministic tools in ``tools.py`` (engine = ``codas_core``). The LLMs
+Numbers come only from the deterministic tools in ``tools.py`` (engine = ``codas.core``). The LLMs
 plan, profile, interpret, debate, decide when to stop, and write — they never invent a statistic.
 Prompts live in ``prompts.py``; guardrails/logging in ``callbacks.py``; session execution in
 ``runtime.py``.
@@ -42,14 +42,14 @@ from google.adk.agents import LlmAgent, LoopAgent, ParallelAgent, SequentialAgen
 from google.adk.models import Gemini
 from google.genai.types import HttpRetryOptions
 
-from codas_agents import prompts
-from codas_agents.callbacks import (
+from codas.agents import prompts
+from codas.agents.callbacks import (
     after_tool_logger,
     before_model_logger,
     before_tool_guardrail,
     report_grounding_audit,
 )
-from codas_agents.tools import (
+from codas.agents.tools import (
     check_convergence,
     preview_columns,
     profile_dataset,
@@ -59,7 +59,7 @@ from codas_agents.tools import (
     search_literature,
     set_target,
 )
-from codas_core.settings import load_local_env
+from codas.core.settings import load_local_env
 
 load_local_env()
 

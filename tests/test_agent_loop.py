@@ -15,8 +15,8 @@ import pytest
 
 from google.adk.agents import LoopAgent, ParallelAgent, SequentialAgent
 
-from codas_agents.agent import discovery_loop, reporting, root_agent
-from codas_agents.tools import check_convergence, run_discovery_round, set_target
+from codas.agents.agent import discovery_loop, reporting, root_agent
+from codas.agents.tools import check_convergence, run_discovery_round, set_target
 
 
 # --- a minimal stand-in for ADK's ToolContext (the tools use only .state and .actions.escalate) ---
@@ -137,7 +137,7 @@ def test_gapcheck_without_any_round_does_not_escalate():
 def test_tools_return_strict_json_on_missing_data(tmp_path):
     import json
 
-    from codas_agents.tools import _json_safe, preview_columns, profile_dataset
+    from codas.agents.tools import _json_safe, preview_columns, profile_dataset
 
     path = tmp_path / "missing.csv"
     # NaN and inf are exactly what broke the ADK -> Gemini tool-response payload on real datasets.
@@ -154,7 +154,7 @@ def test_tools_return_strict_json_on_missing_data(tmp_path):
 def test_session_factory_defaults_to_memory_and_falls_back_safely(monkeypatch):
     from google.adk.sessions import InMemorySessionService
 
-    from codas_agents.runtime import new_session_service
+    from codas.agents.runtime import new_session_service
 
     monkeypatch.delenv("CODAS_SESSION_BACKEND", raising=False)
     assert isinstance(new_session_service(), InMemorySessionService)
@@ -167,7 +167,7 @@ def test_session_factory_defaults_to_memory_and_falls_back_safely(monkeypatch):
 def test_grounding_guardrail_flags_fabricated_figures():
     import logging
 
-    from codas_agents.callbacks import LOGGER, report_grounding_audit
+    from codas.agents.callbacks import LOGGER, report_grounding_audit
 
     class _Ctx:
         def __init__(self, state):

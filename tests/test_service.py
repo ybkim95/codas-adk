@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from codas_service.app import app
+from codas.service.app import app
 
 client = TestClient(app)
 CSV = (Path(__file__).resolve().parents[1] / "examples" / "sample_dataset.csv").read_text()
@@ -60,12 +60,12 @@ class _FakeResult:
 
 
 def _force_gemini_configured(monkeypatch):
-    from codas_core import gemini
+    from codas.core import gemini
     monkeypatch.setattr(gemini, "configured", lambda: True)
 
 
 def test_agent_transient_llm_error_retries_then_returns_503(monkeypatch):
-    import codas_agents.runtime as rt
+    import codas.agents.runtime as rt
     _force_gemini_configured(monkeypatch)
     calls = {"n": 0}
 
@@ -75,7 +75,7 @@ def test_agent_transient_llm_error_retries_then_returns_503(monkeypatch):
 
     monkeypatch.setattr(rt, "run_adk_agent_text", boom)
     monkeypatch.setenv("CODAS_AGENT_RETRIES", "1")
-    import codas_service.app as appmod
+    import codas.service.app as appmod
     monkeypatch.setattr(appmod, "_AGENT_RETRIES", 1)
     r = client.post("/v1/agent", headers=HEADERS, json={"csv": CSV, "query": "find predictors"})
     assert r.status_code == 503, r.text          # retryable, not a 500
@@ -83,7 +83,7 @@ def test_agent_transient_llm_error_retries_then_returns_503(monkeypatch):
 
 
 def test_agent_retries_then_succeeds(monkeypatch):
-    import codas_agents.runtime as rt
+    import codas.agents.runtime as rt
     _force_gemini_configured(monkeypatch)
     seq = [RuntimeError("503 high demand"), _FakeResult()]
 
@@ -99,7 +99,7 @@ def test_agent_retries_then_succeeds(monkeypatch):
 
 
 def test_agent_non_transient_error_is_not_swallowed(monkeypatch):
-    import codas_agents.runtime as rt
+    import codas.agents.runtime as rt
     _force_gemini_configured(monkeypatch)
 
     def real_bug(*a, **k):
@@ -116,7 +116,7 @@ def test_old_uploads_are_pruned(tmp_path, monkeypatch):
     import os
     import time as _time
 
-    import codas_service.app as appmod
+    import codas.service.app as appmod
     monkeypatch.setattr(appmod, "_AGENT_UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(appmod, "_UPLOAD_TTL_SECONDS", 100)
     old = tmp_path / "old.csv"; old.write_text("x")

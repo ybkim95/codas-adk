@@ -8,9 +8,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from codas_core.data import _clock_hour_feature
-from codas_core.discovery import DiscoveryRequest, run_discovery
-from codas_core.validation import _infer_cyclic_period
+from codas.core.data import _clock_hour_feature
+from codas.core.discovery import DiscoveryRequest, run_discovery
+from codas.core.validation import _infer_cyclic_period
 
 
 def test_clock_hour_is_decided_from_values_not_names():

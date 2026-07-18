@@ -6,7 +6,7 @@ network benchmark (penguins, wine, mpg, pima, ...) lives in scripts/benchmark_da
 
 import pytest
 
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 sklearn_datasets = pytest.importorskip("sklearn.datasets")
 

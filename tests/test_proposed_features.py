@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from codas_core.data import build_analysis_frame
-from codas_core.discovery import DiscoveryRequest, _materialize_proposed_features, run_discovery
+from codas.core.data import build_analysis_frame
+from codas.core.discovery import DiscoveryRequest, _materialize_proposed_features, run_discovery
 
 
 def test_materialize_supports_the_four_safe_ops():
@@ -94,7 +94,7 @@ class _Ctx:
 
 
 def test_propose_feature_tool_registers_and_validates_op():
-    from codas_agents.tools import propose_feature
+    from codas.agents.tools import propose_feature
     ctx = _Ctx()
     bad = propose_feature("power", "a", "b", ctx)
     assert "error" in bad and ctx.state.get("proposed_features") in (None, [])

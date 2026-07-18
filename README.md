@@ -28,8 +28,8 @@ The agents read the schema, choose the target and roles, iterate the discovery l
 For the deterministic engine on its own, name the target and skip the API key.
 
 ```python
-from codas_core.data import read_csv_dataset
-from codas_core.discovery import run_discovery, DiscoveryRequest
+from codas.core.data import read_csv_dataset
+from codas.core.discovery import run_discovery, DiscoveryRequest
 
 df = read_csv_dataset("your_table.csv")
 report = run_discovery(df, DiscoveryRequest(target_column="outcome"))
@@ -63,9 +63,9 @@ The orchestrator runs six phases over one shared memory and one deterministic to
    an auditable report, with optional human feedback for another pass
 ```
 
-The graph is built with [google-adk](https://google.github.io/adk-docs/). Each phase is a `SequentialAgent`, the loop is a `LoopAgent`, and the two interpreters run in a `ParallelAgent`, all sharing one `session.state`. To customize it, edit `codas_agents/agent.py`, where the two Gemini tiers and the loop depth are set (or override them with the `CODAS_*` environment variables in `.env.example`).
+The graph is built with [google-adk](https://google.github.io/adk-docs/). Each phase is a `SequentialAgent`, the loop is a `LoopAgent`, and the two interpreters run in a `ParallelAgent`, all sharing one `session.state`. To customize it, edit `codas/agents/agent.py`, where the two Gemini tiers and the loop depth are set (or override them with the `CODAS_*` environment variables in `.env.example`).
 
-Every reportable number comes from the engine, and `tests/test_validation_golden.py` pins the whole pipeline output by hash so a refactor cannot quietly change a verdict. The engine (`codas_core`) is plain numpy, pandas, scipy, and scikit-learn with no LLM and no network. It screens univariate and engineered features with Spearman correlation under Benjamini-Hochberg FDR control, then puts each candidate through a validation battery covering replication, stability, robustness, and discriminative power. Leakage guards drop the target and its declared proxies before screening and demote features that duplicate a stronger one.
+Every reportable number comes from the engine, and `tests/test_validation_golden.py` pins the whole pipeline output by hash so a refactor cannot quietly change a verdict. The engine (`codas.core`) is plain numpy, pandas, scipy, and scikit-learn with no LLM and no network. It screens univariate and engineered features with Spearman correlation under Benjamini-Hochberg FDR control, then puts each candidate through a validation battery covering replication, stability, robustness, and discriminative power. Leakage guards drop the target and its declared proxies before screening and demote features that duplicate a stronger one.
 
 ## Reproducing the reported effects
 

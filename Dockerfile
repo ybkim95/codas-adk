@@ -10,9 +10,9 @@ RUN useradd --create-home --uid 10001 codas
 
 # Install only the importable packages and their deps. examples/ and tests/ are not shipped.
 COPY --chown=codas:codas pyproject.toml README.md ./
-COPY --chown=codas:codas codas_core ./codas_core
-COPY --chown=codas:codas codas_agents ./codas_agents
-COPY --chown=codas:codas codas_service ./codas_service
+COPY --chown=codas:codas codas.core ./codas.core
+COPY --chown=codas:codas codas.agents ./codas.agents
+COPY --chown=codas:codas codas.service ./codas.service
 RUN pip install --no-cache-dir ".[service,agent]"
 
 # Create the uploads directory and set ownership so the non-root user can write to it.
@@ -23,4 +23,4 @@ USER codas
 # Cloud Run injects $PORT (defaults to 8080). Shell form so it expands.
 ENV PORT=8080
 EXPOSE 8080
-CMD ["sh", "-c", "uvicorn codas_service.app:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "uvicorn codas.service.app:app --host 0.0.0.0 --port ${PORT:-8080}"]

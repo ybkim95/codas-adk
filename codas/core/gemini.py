@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any
 
-from codas_core.settings import load_local_env
+from codas.core.settings import load_local_env
 
 
 load_local_env()

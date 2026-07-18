@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from codas_agents.numeric_audit import verify_and_correct
+from codas.agents.numeric_audit import verify_and_correct
 
 _FS = {"rows": 7497, "candidate_features_screened": 228, "internal_battery_passing_variants": 12}
 
@@ -49,7 +49,7 @@ class _FakeContext:
 
 
 def test_report_callback_corrects_and_writes_audit_file(tmp_path, monkeypatch):
-    from codas_agents.callbacks import report_grounding_audit
+    from codas.agents.callbacks import report_grounding_audit
 
     monkeypatch.setenv("CODAS_AUDIT_DIR", str(tmp_path))
     ctx = _FakeContext({

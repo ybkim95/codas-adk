@@ -10,10 +10,10 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from codas_core.discovery import DiscoveryRequest, run_discovery
-from codas_core.models import Candidate
-from codas_core.statistics import safe_spearman
-from codas_core.validation import (
+from codas.core.discovery import DiscoveryRequest, run_discovery
+from codas.core.models import Candidate
+from codas.core.statistics import safe_spearman
+from codas.core.validation import (
     ValidationConfig,
     _construct_validity_test,
     _leave_one_out_test,

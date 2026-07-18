@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from codas_core.models import Candidate
-from codas_core.quality_gates import (
+from codas.core.models import Candidate
+from codas.core.quality_gates import (
     DEDUP_R,
     OVERFIT_RATIO,
     VIF_MAX,

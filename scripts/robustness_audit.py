@@ -21,8 +21,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 warnings.filterwarnings("ignore")
 
-from codas_core.data import InsufficientDataError
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.data import InsufficientDataError
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 
 def _run(df: pd.DataFrame, target: str, **kw):
@@ -206,7 +206,7 @@ def audit_r6_service() -> tuple[int, int, list[str]]:
     os.environ["CODAS_AGENT_API_KEYS"] = "audit-key"
     from fastapi.testclient import TestClient
 
-    from codas_service.app import app
+    from codas.service.app import app
     client = TestClient(app)
     H = {"X-CoDaS-Agent-Key": "audit-key"}
     good_csv = "x1,y\n" + "\n".join(f"{i},{2*i}" for i in range(40))
@@ -224,7 +224,7 @@ def audit_r6_service() -> tuple[int, int, list[str]]:
             json={"csv": good_csv, "target_column": "y", "validation_resamples": 100}).status_code == 200),
     ]
     # path sandbox: the ADK tool guardrail must block a read outside the allowed roots
-    from codas_agents.callbacks import before_tool_guardrail
+    from codas.agents.callbacks import before_tool_guardrail
 
     class _T: name = "profile_dataset"
     blocked = before_tool_guardrail(_T(), {"csv_path": "/etc/passwd"}, None)

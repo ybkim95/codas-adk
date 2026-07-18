@@ -21,7 +21,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 warnings.filterwarnings("ignore")
 
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 
 def _run(df, target, **kw):

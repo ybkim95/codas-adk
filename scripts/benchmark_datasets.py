@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from codas_core.data import InsufficientDataError, read_csv_dataset
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.data import InsufficientDataError, read_csv_dataset
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 CACHE = Path(__file__).resolve().parents[1] / ".cache"
 CACHE.mkdir(exist_ok=True)

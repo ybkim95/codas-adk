@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that the headline biomarker effects reproduce with this deterministic engine.
 
-This runs the deterministic engine (``codas_core``) on each cohort table and checks that a set of
+This runs the deterministic engine (``codas.core``) on each cohort table and checks that a set of
 named candidate biomarkers reproduce their reference Spearman effect sizes, so the reported statistics
 are genuine and computable from this code rather than taken on faith.
 
@@ -11,11 +11,11 @@ What reproduces exactly (engine-computed Spearman ρ on the participant-level an
   * WEAR-ME (HOMA-IR):    HDL cholesterol                            ρ ≈ −0.380
   * WEAR-ME (HOMA-IR):    cardiovascular-fitness index (steps/RHR)   ρ ≈ −0.374
 
-Honest scope. This is the deterministic ``codas_core`` path — it screens univariate features and a
+Honest scope. This is the deterministic ``codas.core`` path — it screens univariate features and a
 bounded family of engineered ratio features, then runs the internal validation battery. The exact
 set of *validated* candidates and the agent-constructed composites (e.g. the night-to-day social
 media ratio, or a bespoke steps/RHR fitness index) depend on the full agent loop, which proposes
-transformations for the engine to evaluate (see ``codas_agents``). Effect sizes reproduce exactly on
+transformations for the engine to evaluate (see ``codas.agents``). Effect sizes reproduce exactly on
 the analysis tables; validated-candidate *counts* are configuration-sensitive and are reported as
 such — never as a fixed number.
 
@@ -40,9 +40,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from codas_core.data import read_csv_dataset
-from codas_core.discovery import DiscoveryRequest, run_discovery
-from codas_core.statistics import safe_spearman
+from codas.core.data import read_csv_dataset
+from codas.core.discovery import DiscoveryRequest, run_discovery
+from codas.core.statistics import safe_spearman
 
 
 def _run_cohort(name: str, cfg: dict) -> None:

@@ -11,7 +11,7 @@ deterministic ground truth in the Fact Sheet and:
 
 This upgrades the report guardrail from "detect and warn" to "detect and fix", bounding
 hallucinated counts to values the engine actually produced. Effect sizes and p-values are handled by
-the grounding audit (``codas_agents.grounding``); this module deliberately does not rewrite them,
+the grounding audit (``codas.agents.grounding``); this module deliberately does not rewrite them,
 since a legitimately rounded ρ is not a hallucination.
 """
 

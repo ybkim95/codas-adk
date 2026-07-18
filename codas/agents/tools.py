@@ -1,6 +1,6 @@
 """Deterministic tools for the CoDaS ADK agents.
 
-Every reportable number is produced here, by the deterministic Python engine in ``codas_core``.
+Every reportable number is produced here, by the deterministic Python engine in ``codas.core``.
 The agents may plan, profile, choose the target/roles, interpret, debate, and decide when to stop,
 but they never invent statistics: a statistic exists only if one of these tools computed it.
 
@@ -26,10 +26,10 @@ from typing import Any
 import pandas as pd
 from google.adk.tools import ToolContext
 
-from codas_core import gemini
-from codas_core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
-from codas_core.discovery import DiscoveryRequest, run_discovery_from_csv
-from codas_core.statistics import safe_spearman
+from codas.core import gemini
+from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
+from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
+from codas.core.statistics import safe_spearman
 
 _PROPOSE_OPS = ("ratio", "product", "difference", "sum")
 

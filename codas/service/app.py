@@ -2,16 +2,16 @@
 
 Two layers are exposed:
 
-* ``/v1/discover`` | ``/v1/profile`` — the deterministic engine (``codas_core``). Stateless, fast,
+* ``/v1/discover`` | ``/v1/profile`` — the deterministic engine (``codas.core``). Stateless, fast,
   reproducible; identical numbers for identical input. No LLM required. The caller specifies the
   target column explicitly: the engine makes NO assumption about column names or problem domain.
-* ``/v1/agent`` (+ ``/v1/agent/feedback``) — the google-adk Orchestrator (``codas_agents``) running
+* ``/v1/agent`` (+ ``/v1/agent/feedback``) — the google-adk Orchestrator (``codas.agents``) running
   the six-phase pipeline over the same deterministic tools with Gemini. Here the LLM chooses
   the target/roles from the schema and the task, iterates a deepening search loop, and writes the
   report; ``/v1/agent/feedback`` resumes the SAME session so a domain expert can steer an optional
   next iteration. Requires a Gemini API key; degrades to 503 without one.
 
-Auth is server-to-server API key (see ``codas_service.auth``). There is no browser/Firebase auth and
+Auth is server-to-server API key (see ``codas.service.auth``). There is no browser/Firebase auth and
 no local dataset registry: callers hand the data over inline, keeping the service stateless.
 """
 
@@ -29,17 +29,17 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from codas_core import gemini
-from codas_core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
-from codas_core.discovery import DiscoveryRequest, run_discovery
-from codas_service.auth import require_api_key
+from codas.core import gemini
+from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
+from codas.core.discovery import DiscoveryRequest, run_discovery
+from codas.service.auth import require_api_key
 
 _MAX_INLINE_CSV_BYTES = int(os.getenv("CODAS_AGENT_MAX_INLINE_CSV_MB", "50")) * 1024 * 1024
 _MIN_RESAMPLES = int(os.getenv("CODAS_AGENT_MIN_RESAMPLES", "100"))
 # ADK tools are guardrailed to read only under these roots; write inline CSV here for /v1/agent.
 # The file is keyed by session id and kept for the session's lifetime so a feedback turn can re-read
 # it. (In multi-instance production, back this with object storage and a TTL instead of local disk.)
-_AGENT_UPLOAD_DIR = Path(__file__).resolve().parents[1] / ".codas_runs" / "agent_uploads"
+_AGENT_UPLOAD_DIR = Path(__file__).resolve().parents[2] / ".codas_runs" / "agent_uploads"
 _AGENT_APP_NAME = "codas"
 # Bound disk: agent upload CSVs are kept for feedback re-entry, then pruned past this TTL so a
 # long-running instance does not accumulate them without limit.
@@ -199,7 +199,7 @@ _AGENT_SESSIONS = None
 def _agent_sessions():
     global _AGENT_SESSIONS
     if _AGENT_SESSIONS is None:
-        from codas_agents.runtime import new_session_service
+        from codas.agents.runtime import new_session_service
 
         _AGENT_SESSIONS = new_session_service()
     return _AGENT_SESSIONS
@@ -232,8 +232,8 @@ def agent(payload: AgentPayload, request: Request) -> dict[str, Any]:
     if not gemini.configured():
         raise HTTPException(status_code=503, detail="Gemini is not configured; set GOOGLE_API_KEY to use /v1/agent.")
 
-    from codas_agents.agent import root_agent  # lazy: engine endpoints work without google-adk installed
-    from codas_agents.runtime import run_adk_agent_text
+    from codas.agents.agent import root_agent  # lazy: engine endpoints work without google-adk installed
+    from codas.agents.runtime import run_adk_agent_text
 
     text = _decode_csv_text(payload)
     _AGENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -282,8 +282,8 @@ def agent_feedback(payload: AgentFeedbackPayload, request: Request) -> dict[str,
     if not (_AGENT_UPLOAD_DIR / f"{payload.session_id}.csv").exists():
         raise HTTPException(status_code=404, detail="Unknown or expired session_id; start a new /v1/agent run.")
 
-    from codas_agents.agent import root_agent
-    from codas_agents.runtime import run_adk_agent_text
+    from codas.agents.agent import root_agent
+    from codas.agents.runtime import run_adk_agent_text
 
     prompt = (
         "Domain-expert feedback on the discovery so far. Incorporate it, and if it calls for more evidence "

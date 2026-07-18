@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from codas_core.data import InsufficientDataError
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.data import InsufficientDataError
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 RNG = np.random.default_rng(7)
 

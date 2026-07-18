@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from codas_service.app import app
+from codas.service.app import app
 
 client = TestClient(app)
 H = {"X-CoDaS-Agent-Key": "loadtest-key"}

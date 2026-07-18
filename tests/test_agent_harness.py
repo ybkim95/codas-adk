@@ -10,10 +10,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from codas_agents.agent import preview_columns, profile_dataset
-from codas_agents.agent import run_discovery as run_discovery_tool
-from codas_agents.callbacks import before_tool_guardrail
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.agents.agent import preview_columns, profile_dataset
+from codas.agents.agent import run_discovery as run_discovery_tool
+from codas.agents.callbacks import before_tool_guardrail
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "sample_dataset.csv"
 

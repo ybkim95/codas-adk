@@ -17,7 +17,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from codas_core.discovery import DiscoveryRequest, run_discovery
+from codas.core.discovery import DiscoveryRequest, run_discovery
 
 _EXPECTED_SHA = "2db56e0b2b9256ef710482b627e4f46c1a3316f8c1bfafc61a0b4fd4fcb015a4"
 # Full-report fingerprint (fact sheet + warnings + audit log + candidates) — pins the WHOLE discovery

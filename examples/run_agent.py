@@ -30,7 +30,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from codas_agents.agent import root_agent
+from codas.agents.agent import root_agent
 
 SAMPLE = Path(__file__).resolve().parent / "sample_dataset.csv"
 DEFAULT_GOAL = (
