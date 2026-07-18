@@ -209,7 +209,13 @@ def _split_holdout(
         if len(ids) < 5:
             return subset.iloc[0:0]
         _, test_ids = train_test_split(ids, test_size=0.2, random_state=random_state)
-        return subset[subset[participant_id_column].isin(list(test_ids))]
+        held = subset[subset[participant_id_column].isin(list(test_ids))]
+        # Repeated measures: keep one randomly selected observation per held-out participant, so the
+        # confirmation Spearman is computed on fully independent rows rather than pseudo-replicated ones.
+        if held[participant_id_column].duplicated().any():
+            held = held.groupby(participant_id_column, group_keys=False, sort=False).sample(
+                n=1, random_state=random_state)
+        return held
     if len(subset) < 25:
         return subset.iloc[0:0]
     _, test = train_test_split(subset, test_size=0.2, random_state=random_state)
@@ -291,92 +297,104 @@ def _permutation_p_value(
     return float((ge + 1) / (total + 1))
 
 
-def _confounder_tests(frame, subset, x, y, candidate, confounder_columns, config):
-    """Confounder-adjustment dimension: partial Spearman given the usable confounders, plus a
-    hard gate that fails a feature whose association does not survive adjustment (sign flip,
-    >=75% magnitude collapse, or a non-significant partial at n>=50). Returns the dimension's
-    test result(s). Extracted verbatim from validate_candidate (behaviour pinned by the golden test)."""
+def _confounder_tests(frame, subset, x, y, candidate, confounder_columns, config, prior_validated_columns=None):
+    """Causal-robustness dimension (paper 2.6-8): partial Spearman controlling for the caller's
+    confounders AND any previously validated biomarkers, so a candidate must add signal beyond what is
+    already established. A hard gate additionally fails a feature whose association does not survive
+    adjustment for the caller's confounders (sign flip, >=75% magnitude collapse, or a non-significant
+    partial at n>=50). The previously-validated biomarkers inform only the counted robustness check,
+    never the auto-reject gate, so incremental-validity control can lower a pass rate but cannot
+    over-adjust a genuine independent marker into rejection."""
     results: list[ValidationTestResult] = []
     usable_confounders = [
         column
         for column in confounder_columns
         if column in frame.columns and _is_adjustable_confounder(frame[column])
     ]
-    if usable_confounders:
-        covariates = _confounder_covariate_matrix(frame, usable_confounders, subset.index)
-        partial_rho, partial_p, partial_n = partial_spearman(x, y, covariates)
-        confounder_adjusted_passed = same_sign(candidate.rho, partial_rho) and partial_p <= config.alpha
-        results.append(ValidationTestResult(
-            name="confounder_adjusted_robustness",
-            dimension="robustness",
-            passed=confounder_adjusted_passed,
-            metric=partial_rho,
-            p_value=partial_p,
-            details=f"partial_spearman_n={partial_n}, covariates={usable_confounders}",
-        ))
-        # HARD GATE: if the association does not SURVIVE adjustment for the supplied
-        # confounders, the feature is confounded, not an independent predictor, and must
-        # not be promoted to "validated". Three independent criteria for confounding:
-        #   (a) Sign flip after adjustment — the "predictor" reverses direction.
-        #   (b) Effect collapses to <25% of the raw effect (magnitude attenuation ≥75%).
-        #   (c) Partial effect is statistically non-significant (p>α) while still having a
-        #       substantial raw effect (|raw_rho|>0.25). This is the key case for masking
-        #       confounded associations: the partial correlation may retain the correct sign
-        #       but be explicable entirely by the confounder.
-        # Low-power samples (n<50) are exempted from (c) to avoid false downgrades when the
-        # partial test simply lacks power.
-        severe_sign_flip = (
-            np.isfinite(partial_rho) and np.isfinite(candidate.rho)
-            and abs(candidate.rho) > 1e-9
-            and not same_sign(candidate.rho, partial_rho)
-        )
-        severe_collapse = (
-            np.isfinite(partial_rho) and np.isfinite(candidate.rho)
-            and abs(candidate.rho) > 1e-9
-            and abs(partial_rho) < 0.25 * abs(candidate.rho)
-        )
-        severe_nonsig = (
-            partial_n >= 50
-            and np.isfinite(partial_rho) and np.isfinite(candidate.rho)
-            and abs(candidate.rho) > 0.25           # meaningful raw effect
-            and partial_p > config.alpha             # but partial is non-significant
-        )
-        severely_confounded = partial_n >= 50 and (severe_sign_flip or severe_collapse or severe_nonsig)
-        if severely_confounded:
-            _reason = (
-                "sign flip after confounder adjustment" if severe_sign_flip
-                else f"effect magnitude collapses to {abs(partial_rho):.3f} (raw={abs(candidate.rho):.3f}, attenuation≥75%)" if severe_collapse
-                else f"partial effect non-significant after adjustment (partial_p={partial_p:.3g}>α={config.alpha}, partial_rho={partial_rho:.3f})"
-            )
-            _conf_msg = (
-                f"raw_rho={candidate.rho:.3f}, partial_rho={partial_rho:.3f} given {usable_confounders}: "
-                f"confounded — {_reason}. "
-                f"The raw association appears to be driven by {usable_confounders} rather than an "
-                f"independent relationship with the target."
-            )
-        else:
-            _conf_msg = (
-                f"raw_rho={candidate.rho:.3f}, partial_rho={partial_rho:.3f} given {usable_confounders}: "
-                f"survives confounder adjustment"
-            )
-        results.append(ValidationTestResult(
-            name="confounder_independence_hard_gate",
-            dimension="robustness",
-            passed=not severely_confounded,
-            hard_gate=True,
-            applicable=True,
-            metric=partial_rho,
-            p_value=partial_p,
-            details=_conf_msg,
-        ))
-    else:
+    usable_prior = [
+        column
+        for column in (prior_validated_columns or [])
+        if column in frame.columns and column != candidate.feature
+        and column not in usable_confounders and _is_adjustable_confounder(frame[column])
+    ]
+    check_columns = usable_confounders + usable_prior
+    if not check_columns:
         results.append(ValidationTestResult(
             name="confounder_adjusted_robustness",
             dimension="robustness",
             passed=False,
             applicable=False,
-            details="no numeric confounders supplied",
+            details="no numeric confounders or prior validated biomarkers supplied",
         ))
+        return results
+
+    covariates = _confounder_covariate_matrix(frame, check_columns, subset.index)
+    partial_rho, partial_p, partial_n = partial_spearman(x, y, covariates)
+    results.append(ValidationTestResult(
+        name="confounder_adjusted_robustness",
+        dimension="robustness",
+        passed=same_sign(candidate.rho, partial_rho) and partial_p <= config.alpha,
+        metric=partial_rho,
+        p_value=partial_p,
+        details=f"partial_spearman_n={partial_n}, covariates={check_columns}",
+    ))
+
+    # HARD GATE on the caller's confounders only (the demographic controls). A candidate that fails only
+    # against a prior biomarker is redundant, not confounded, so it is not auto-rejected here. Three
+    # independent criteria for confounding: (a) sign flip after adjustment; (b) effect collapses to <25%
+    # of the raw effect (>=75% attenuation); (c) partial non-significant (p>alpha) with a substantial raw
+    # effect (|raw_rho|>0.25). Low-power samples (n<50) are exempted from (c).
+    if not usable_confounders:
+        return results
+    if check_columns == usable_confounders:
+        hard_rho, hard_p, hard_n = partial_rho, partial_p, partial_n
+    else:
+        hard_rho, hard_p, hard_n = partial_spearman(
+            x, y, _confounder_covariate_matrix(frame, usable_confounders, subset.index))
+    severe_sign_flip = (
+        np.isfinite(hard_rho) and np.isfinite(candidate.rho)
+        and abs(candidate.rho) > 1e-9
+        and not same_sign(candidate.rho, hard_rho)
+    )
+    severe_collapse = (
+        np.isfinite(hard_rho) and np.isfinite(candidate.rho)
+        and abs(candidate.rho) > 1e-9
+        and abs(hard_rho) < 0.25 * abs(candidate.rho)
+    )
+    severe_nonsig = (
+        hard_n >= 50
+        and np.isfinite(hard_rho) and np.isfinite(candidate.rho)
+        and abs(candidate.rho) > 0.25           # meaningful raw effect
+        and hard_p > config.alpha                # but partial is non-significant
+    )
+    severely_confounded = hard_n >= 50 and (severe_sign_flip or severe_collapse or severe_nonsig)
+    if severely_confounded:
+        _reason = (
+            "sign flip after confounder adjustment" if severe_sign_flip
+            else f"effect magnitude collapses to {abs(hard_rho):.3f} (raw={abs(candidate.rho):.3f}, attenuation≥75%)" if severe_collapse
+            else f"partial effect non-significant after adjustment (partial_p={hard_p:.3g}>α={config.alpha}, partial_rho={hard_rho:.3f})"
+        )
+        _conf_msg = (
+            f"raw_rho={candidate.rho:.3f}, partial_rho={hard_rho:.3f} given {usable_confounders}: "
+            f"confounded — {_reason}. "
+            f"The raw association appears to be driven by {usable_confounders} rather than an "
+            f"independent relationship with the target."
+        )
+    else:
+        _conf_msg = (
+            f"raw_rho={candidate.rho:.3f}, partial_rho={hard_rho:.3f} given {usable_confounders}: "
+            f"survives confounder adjustment"
+        )
+    results.append(ValidationTestResult(
+        name="confounder_independence_hard_gate",
+        dimension="robustness",
+        passed=not severely_confounded,
+        hard_gate=True,
+        applicable=True,
+        metric=hard_rho,
+        p_value=hard_p,
+        details=_conf_msg,
+    ))
     return results
 
 
@@ -426,26 +444,32 @@ def _sequential_split_test(subset, feature, target_column, candidate):
     return results
 
 
-def _leave_one_out_test(x, y, candidate, config):
+def _leave_one_out_test(x, y, candidate, config, groups=None):
     results: list[ValidationTestResult] = []
-    loo_indices = np.arange(len(x))
-    if len(loo_indices) > config.max_loo_checks:
+    n = len(x)
+    # Repeated measures: leave out one PARTICIPANT (all their rows) at a time, the unit of independence
+    # the paper specifies. Cross-sectional data (no groups, or one row per participant) leaves out one row.
+    participant_level = groups is not None and 2 <= len(np.unique(groups)) < n
+    units = np.unique(groups) if participant_level else np.arange(n)
+    unit = "participant" if participant_level else "row"
+    if len(units) > config.max_loo_checks:
         rng = np.random.default_rng(config.random_state)
-        loo_indices = np.sort(rng.choice(loo_indices, config.max_loo_checks, replace=False))
+        units = np.sort(rng.choice(units, config.max_loo_checks, replace=False))
     sign_flips = 0
-    for idx in loo_indices:
-        mask = np.ones(len(x), dtype=bool)
-        mask[idx] = False
+    checked = 0
+    for u in units:
+        mask = (groups != u) if participant_level else (np.arange(n) != u)
         rho, _, _ = safe_spearman(x[mask], y[mask])
+        checked += 1
         if not same_sign(candidate.rho, rho):
             sign_flips += 1
             break
     results.append(ValidationTestResult(
         name="leave_one_out_influence",
         dimension="stability",
-        passed=sign_flips == 0 and len(loo_indices) > 0,
+        passed=sign_flips == 0 and checked > 0,
         metric=float(sign_flips),
-        details=f"checked={len(loo_indices)}",
+        details=f"checked={checked} {unit}(s)",
     ))
 
     return results
@@ -522,12 +546,18 @@ def _construct_validity_test(x, y, candidate, config):
         (np.isfinite(construct_auc) and max(construct_auc, 1.0 - construct_auc) >= 0.99)
         or _near_deterministic_of_target(x, y)  # multiclass-aware (binary AUC undefined for >2 classes)
     )
+    # Adaptive threshold: rho is noisier on a smaller sample, so only a more extreme correlation is
+    # implausibly strong (tautological). The cutoff is the base for N>30 and rises toward ~0.98 as N
+    # shrinks to 10; below N=10 there is too little data to judge and the gate is off. Matches the
+    # paper's "|rho|>0.85 for N>30; adaptive thresholds for smaller samples".
+    if candidate.n > 30:
+        threshold = config.construct_threshold
+    else:
+        threshold = min(0.98, config.construct_threshold + (0.98 - config.construct_threshold) * (30 - candidate.n) / 20.0)
+    rho_leak = np.isfinite(candidate.rho) and abs(candidate.rho) > threshold
     construct_passed = not (
-        candidate.n > 30
-        and (
-            (np.isfinite(candidate.rho) and abs(candidate.rho) > config.construct_threshold)
-            or near_perfect_separator
-        )
+        candidate.n >= 10
+        and (rho_leak or (candidate.n > 30 and near_perfect_separator))
     )
     results.append(ValidationTestResult(
         name="construct_validity_hard_gate",
@@ -535,7 +565,7 @@ def _construct_validity_test(x, y, candidate, config):
         passed=construct_passed,
         hard_gate=True,
         metric=abs(candidate.rho),
-        details=f"threshold={config.construct_threshold}, auc={construct_auc:.4g} (near_perfect_separator={near_perfect_separator})",
+        details=f"threshold={threshold:.3f}, auc={construct_auc:.4g} (near_perfect_separator={near_perfect_separator})",
     ))
 
     return results
@@ -582,6 +612,7 @@ def validate_candidate(
     excluded_columns: list[str],
     feature_components: dict[str, list[str]],
     config: ValidationConfig | None = None,
+    prior_validated_columns: list[str] | None = None,
 ) -> Candidate:
     config = config or ValidationConfig()
     feature = candidate.feature
@@ -626,13 +657,18 @@ def validate_candidate(
             details="insufficient valid bootstrap resamples",
         ))
 
-    tests.extend(_leave_one_out_test(x, y, candidate, config))
+    loo_groups = (
+        frame.loc[subset.index, participant_id_column].to_numpy()
+        if participant_id_column and participant_id_column in frame.columns else None
+    )
+    tests.extend(_leave_one_out_test(x, y, candidate, config, groups=loo_groups))
     tests.extend(_subgroup_consistency_test(y, subset, feature, target_column, candidate))
     tests.extend(_sequential_split_test(subset, feature, target_column, candidate))
 
     tests.extend(_method_triangulation_test(x, y, candidate, config))
     tests.extend(_construct_validity_test(x, y, candidate, config))
-    tests.extend(_confounder_tests(frame, subset, x, y, candidate, confounder_columns, config))
+    tests.extend(_confounder_tests(frame, subset, x, y, candidate, confounder_columns, config,
+                                   prior_validated_columns=prior_validated_columns))
 
     independence_failures = []
     components = feature_components.get(feature, [feature])

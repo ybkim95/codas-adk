@@ -400,7 +400,8 @@ def _materialize_proposed_features(df: pd.DataFrame, proposed: list[dict], warni
     return out
 
 
-_COLLINEAR_THRESHOLD = 0.90  # |inter-feature rho| above this => same signal (e.g. PPG vs ECG HRV)
+_COLLINEAR_THRESHOLD = 0.85  # |inter-feature rho| above this => same construct, reported but not
+# double-counted (paper 2.5-6 intra-cluster overlap gate). Matches the construct-overlap hard gate.
 
 
 def _demote_collinear(candidates: list[Candidate], frame: pd.DataFrame) -> list[str]:
@@ -1121,7 +1122,11 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     # a wall-clock budget is hit, finalizing gracefully with whatever passed. Together with
     # the row cap above and the per-candidate LOO cap, this is the hard guarantee that the
     # UI can never hang on "Running" waiting for a request the platform will kill.
-    work_budget = int(os.getenv("CODAS_VALIDATION_WORK_BUDGET", "3000000"))
+    # The battery runs the requested resamples (1,000 by default, matching the paper's permutation and
+    # bootstrap counts). The work budget only clamps pathologically large frames so a run still finishes
+    # within the interactive timeout; at 8M it preserves the full 1,000 for cohorts up to ~8k rows
+    # (every cohort in the paper) and only reduces beyond that.
+    work_budget = int(os.getenv("CODAS_VALIDATION_WORK_BUDGET", "8000000"))
     eff_resamples = max(200, min(request.validation_resamples, work_budget // max(1, len(analysis.frame))))
     config = ValidationConfig(
         n_resamples=eff_resamples,
@@ -1131,19 +1136,24 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     time_budget = float(os.getenv("CODAS_DISCOVERY_BUDGET_SECONDS", "300"))
     deadline = time.monotonic() + time_budget
     validated = []
+    # Candidates are validated strongest-first, so each is residualized (paper 2.6-8) against the
+    # biomarkers already validated ahead of it, requiring it to add signal beyond the established ones.
+    validated_features: list[str] = []
     for candidate in validation_pool:
-        validated.append(
-            validate_candidate(
-                frame=analysis.frame,
-                candidate=candidate,
-                target_column=analysis.target_column,
-                participant_id_column=analysis.participant_id_column,
-                confounder_columns=analysis.confounder_columns,
-                excluded_columns=analysis.excluded_columns,
-                feature_components=analysis.feature_components,
-                config=config,
-            )
+        result = validate_candidate(
+            frame=analysis.frame,
+            candidate=candidate,
+            target_column=analysis.target_column,
+            participant_id_column=analysis.participant_id_column,
+            confounder_columns=analysis.confounder_columns,
+            excluded_columns=analysis.excluded_columns,
+            feature_components=analysis.feature_components,
+            config=config,
+            prior_validated_columns=validated_features,
         )
+        validated.append(result)
+        if result.verdict == "validated":
+            validated_features.append(result.feature)
         if time.monotonic() > deadline:
             warnings.append(
                 f"Validation time budget ({int(time_budget)}s) reached; validated "
