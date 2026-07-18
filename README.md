@@ -75,7 +75,7 @@ The reported effect sizes are recomputed by the engine from the participant-leve
 python scripts/reproduce_paper_biomarkers.py --config scripts/paper_cohorts.example.json
 ```
 
-Run against the analysis tables, the engine returns the reported effect sizes to three decimals.
+On the analysis tables the engine returns the reported effect sizes to three decimals.
 
 | Finding | Spearman rho |
 |---|---|
@@ -90,7 +90,7 @@ The count of validated candidates depends on the declared exclusions and thresho
 ```bibtex
 @article{kim2026codas,
   title={CoDaS: AI Co-Data-Scientist for Biomarker Discovery via Wearable Sensors},
-  author={Kim, Yubin and Rahman, Salman and Schmidgall, Samuel and Park, Chunjong and Heydari, A. Ali and Metwally, Ahmed A. and McDuff, Daniel},
+  author={Kim, Yubin and others},
   journal={arXiv preprint arXiv:2604.14615},
   year={2026}
 }
