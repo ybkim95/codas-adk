@@ -397,7 +397,7 @@ def _aggregate_longitudinal(
     for column in list(work.columns):
         if column in reserved or column in excluded_columns:
             continue
-        clock_feature = _clock_hour_feature(work[column], str(column))
+        clock_feature = _clock_hour_feature(work[column])
         if clock_feature is not None:
             work[f"{column}_clock_hour"] = clock_feature
 
@@ -499,26 +499,29 @@ def _aggregate_longitudinal(
     return merged
 
 
-def _clock_hour_feature(series: pd.Series, column_name: str) -> pd.Series | None:
-    """Extract a time-of-day hour feature from sleep/wake timestamp columns."""
-    name = column_name.lower()
-    if not any(token in name for token in ("sleep", "bed", "wake", "start", "end", "left", "entered")):
-        return None
-    if not any(token in name for token in ("time", "datetime", "timestamp")):
-        return None
+def _clock_hour_feature(series: pd.Series) -> pd.Series | None:
+    """Derive a time-of-day feature (hour in 0..24) from any timestamp-valued column.
+
+    The decision is made from the VALUES, never the column name, so this generalises to any dataset.
+    A non-numeric column whose sampled values parse as datetimes and carry a real time-of-day
+    component becomes a clock-hour feature; a numeric column, a date-only column (every hour is 0, a
+    constant), or a non-temporal column returns None.
+    """
     if pd.api.types.is_numeric_dtype(series):
         return None
     sample = series.dropna().astype(str).head(40)
     if sample.empty:
         return None
-    # Suppress pandas' per-call "Could not infer format" UserWarning. On ULTRA-WIDE files
-    # (GLOBEM: 5,529 cols, many object "..._sleep_..._starttime_..." columns pass the name gate)
-    # this function is called per column, and emitting+formatting thousands of identical warnings to
-    # stderr is itself an I/O bottleneck that stalled discovery (>9 min). Parsing stays correct.
+    # Suppress pandas' per-call "Could not infer format" UserWarning. On ultra-wide files this runs
+    # once per object column, and formatting thousands of identical warnings to stderr is itself an
+    # I/O bottleneck that stalls discovery. Parsing stays correct; only the warning noise is dropped.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        parsed = pd.to_datetime(sample, errors="coerce")
-        if parsed.notna().mean() < 0.65:
+        parsed_sample = pd.to_datetime(sample, errors="coerce")
+        if parsed_sample.notna().mean() < 0.65:
+            return None
+        hours_sample = parsed_sample.dt.hour + parsed_sample.dt.minute / 60.0 + parsed_sample.dt.second / 3600.0
+        if hours_sample.dropna().nunique() <= 1:  # date-only or single-timestamp column carries no signal
             return None
         parsed_all = pd.to_datetime(series.astype("string"), errors="coerce")
     return parsed_all.dt.hour + parsed_all.dt.minute / 60.0 + parsed_all.dt.second / 3600.0

@@ -82,19 +82,29 @@ def _near_deterministic_of_target(x, y, threshold: float = 0.97) -> bool:
     return (correct / n) >= threshold
 
 
-def _cyclic_confounder_period(name: str) -> float | None:
-    """Period (raw units) for a high-cardinality CYCLIC time confounder, so a circadian/seasonal
-    rhythm can be adjusted with Fourier (sin/cos) terms. Hour-of-day is cyclic (0 ≈ 23) and its
-    effect is sinusoidal: a linear adjustment leaves the circadian confound intact, which would
-    let a time-of-day rhythm masquerade as a stress/mechanism predictor. Low-cardinality cyclics
-    (month, weekday) fall through to one-hot, which is more flexible within the cap."""
-    low = str(name).lower()
-    if "hour" in low:
-        return 24.0
-    if "minute" in low:
-        return 60.0
-    if "dayofyear" in low or "day_of_year" in low or low == "doy":
-        return 365.0
+_CYCLIC_PERIODS = (7, 12, 24, 60, 365)  # weekday, month, hour-of-day, minute, day-of-year
+
+
+def _infer_cyclic_period(series: pd.Series) -> float | None:
+    """Period (raw units) for a CYCLIC time confounder, inferred from its VALUES rather than its
+    column name, so a circadian or seasonal rhythm can be adjusted with Fourier (sin/cos) terms
+    on any dataset. A cyclic index is integer-valued, starts at 0 or 1, and its range fills a known
+    cycle length densely (hour 0..23, weekday 0..6, month 1..12, minute 0..59, day-of-year 1..365).
+    A linear adjustment would leave such a confound intact (0 ≈ 23 for hour-of-day). Everything else
+    (a continuous covariate, an unbounded integer such as age) returns None and is handled by the
+    one-hot or linear path. No column name is consulted."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return None
+    v = s.to_numpy(dtype=float)
+    if not bool(np.all(np.mod(v, 1.0) == 0.0)):  # integer-valued only
+        return None
+    lo, hi, nun = float(v.min()), float(v.max()), int(s.nunique())
+    if lo not in (0.0, 1.0):
+        return None
+    for period in _CYCLIC_PERIODS:
+        if hi in (period - 1.0, float(period)) and nun >= max(4, period // 2):
+            return float(period)
     return None
 
 
@@ -140,7 +150,7 @@ def _confounder_covariate_matrix(frame: pd.DataFrame, confounders: list[str], in
         if len(non_na) == 0:
             blocks.append(s.to_numpy(dtype=float).reshape(-1, 1))
             continue
-        period = _cyclic_confounder_period(col)
+        period = _infer_cyclic_period(s)
         if period is not None:
             v = s.to_numpy(dtype=float)
             block = np.column_stack([np.sin(2 * np.pi * v / period), np.cos(2 * np.pi * v / period)])
@@ -443,9 +453,15 @@ def _leave_one_out_test(x, y, candidate, config):
 
 def _subgroup_consistency_test(y, subset, feature, target_column, candidate):
     results: list[ValidationTestResult] = []
-    median = np.nanmedian(y)
-    lower = subset[subset[target_column] <= median]
-    upper = subset[subset[target_column] > median]
+    # Regression: split the cohort at the TARGET median, so the association must hold in the low- and
+    # high-target halves (Simpson's-paradox guard). Classification: a target-median split collapses one
+    # half to a single class (constant target -> undefined correlation), so split at the FEATURE median
+    # instead and require the feature-to-class association to keep its sign across the feature's range.
+    binary = int(pd.Series(y).dropna().nunique()) == 2
+    split_series = pd.to_numeric(subset[feature] if binary else subset[target_column], errors="coerce")
+    split_at = float(np.nanmedian(split_series.to_numpy(dtype=float)))
+    lower = subset[split_series <= split_at]
+    upper = subset[split_series > split_at]
     if len(lower) >= 10 and len(upper) >= 10:
         lower_rho, lower_p, _ = safe_spearman(lower[feature], lower[target_column])
         upper_rho, upper_p, _ = safe_spearman(upper[feature], upper[target_column])
@@ -456,7 +472,7 @@ def _subgroup_consistency_test(y, subset, feature, target_column, candidate):
             passed=passed,
             metric=float(min(abs(lower_rho), abs(upper_rho))),
             p_value=float(max(lower_p, upper_p)),
-            details=f"median_split=({len(lower)}, {len(upper)})",
+            details=f"{'feature' if binary else 'target'}_median_split=({len(lower)}, {len(upper)})",
         ))
     else:
         results.append(ValidationTestResult(
