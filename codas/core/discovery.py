@@ -32,7 +32,7 @@ from .data import (
 from .models import Candidate, DiscoveryReport
 from .quality_gates import evaluate_quality_gates
 from .reporting import build_fact_sheet, build_markdown_report
-from .statistics import autocorr_effective_n, benjamini_hochberg, cluster_effective_n, correlation_pvalue, intraclass_correlation, lag1_autocorr, safe_spearman, signed_direction, within_subject_two_stage
+from .statistics import auc_against_target, autocorr_effective_n, benjamini_hochberg, cluster_effective_n, correlation_pvalue, intraclass_correlation, lag1_autocorr, safe_spearman, signed_direction, within_subject_two_stage
 from .validation import ValidationConfig, validate_candidate
 
 # Library logger: silent unless the host app configures handlers. Logs phase progress at INFO so a
@@ -540,25 +540,37 @@ def _combined_feature_attribution(candidates: list[Candidate], analysis) -> list
 
 def _construct_circularity_advisory(candidates: list[Candidate], analysis, request: "DiscoveryRequest") -> list[str]:
     """Advisory for a diagnostic (low-cardinality) target: a passing feature that is a caller-declared
-    concurrent test, OR that separates the classes near-perfectly (|rho| >= 0.80, below the exact-copy
-    hard gate), is likely (near-)concurrent with or downstream of the outcome, so its association is
-    circular. Detection is value-based + caller-declared (NOT name-based). Mutates candidate.evidence.
+    concurrent test, OR that separates the classes near-perfectly, is likely (near-)concurrent with or
+    downstream of the outcome, so its association is circular. Separation is judged on |rho|>=0.80 AND,
+    for a binary target, on AUC>=0.90 — Spearman saturates on a binary outcome (a feature separating the
+    classes at AUC 0.95 reads |rho|~0.78, under the 0.80 gate), so the AUC branch catches the near-copy
+    band the correlation gate misses. Detection is value-based + caller-declared (NOT name-based).
+    Mutates candidate.evidence.
     """
     observed = analysis.frame[analysis.target_column].dropna() if analysis.target_column in analysis.frame else pd.Series(dtype=float)
     if not (2 <= int(observed.nunique()) <= 10):
         return []
+    is_binary = int(observed.nunique()) == 2
+    target_arr = pd.to_numeric(analysis.frame[analysis.target_column], errors="coerce").to_numpy()
     declared = {str(c).strip().lower() for c in (request.concurrent_test_columns or []) if str(c).strip()}
     circular: list[tuple[Candidate, str]] = []
     for candidate in candidates:
         if candidate.verdict not in {"validated", "conditional"}:
             continue
         name = str(candidate.feature or "")
+        sep_auc = float("nan")
+        if is_binary and candidate.feature in analysis.frame.columns:
+            _a, _ = auc_against_target(target_arr, pd.to_numeric(analysis.frame[candidate.feature], errors="coerce").to_numpy())
+            sep_auc = max(_a, 1.0 - _a) if np.isfinite(_a) else float("nan")
         if name.strip().lower() in declared:
             kind = "declared CONCURRENT diagnostic test of the same condition"
         elif np.isfinite(candidate.rho) and abs(candidate.rho) >= 0.80:
-            kind = (f"separates the classes near-perfectly (|ρ|={abs(candidate.rho):.2f}, ~AUC≳0.93) — "
-                    "far stronger than a typical upstream factor, consistent with a concurrent test / "
-                    "post-outcome measurement")
+            kind = (f"separates the classes near-perfectly (|ρ|={abs(candidate.rho):.2f}) — far stronger "
+                    "than a typical upstream factor, consistent with a concurrent test / post-outcome measurement")
+        elif np.isfinite(sep_auc) and sep_auc >= 0.90:
+            kind = (f"separates the two classes very strongly (AUC={sep_auc:.2f}, below the exact-copy hard "
+                    "gate) — far stronger than a typical upstream factor and not caught by the |ρ| gate "
+                    "because Spearman saturates on a binary target; consistent with a concurrent test / co-measurement")
         else:
             continue
         circular.append((candidate, kind))

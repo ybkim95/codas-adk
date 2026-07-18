@@ -69,6 +69,22 @@ def test_undeclared_temporal_autocorrelation_is_warned():
     assert any("autocorrelated in row order" in w for w in report.warnings)
 
 
+def test_binary_near_copy_of_the_label_is_flagged_as_circular():
+    # A feature that agrees with a binary diagnostic label ~94% of the time (AUC ~0.95) reads Spearman
+    # ~0.78, under the |rho|>0.85 construct gate, so it validates. The AUC-aware advisory must still flag
+    # it as likely construct-circular / co-measured leakage rather than passing silently.
+    rng = np.random.default_rng(0)
+    n = 400
+    y = rng.integers(0, 2, n)
+    proxy = y.astype(float).copy()
+    flip = rng.choice(n, int(0.06 * n), replace=False)
+    proxy[flip] = 1 - proxy[flip]
+    proxy = proxy + rng.normal(0, 0.05, n)
+    df = pd.DataFrame({"proxy": proxy, "noise": rng.normal(size=n), "y": y})
+    report = run_discovery(df, DiscoveryRequest(target_column="y", validation_resamples=200))
+    assert any("CONSTRUCT-CIRCULARITY" in w or "circular" in w.lower() for w in report.warnings)
+
+
 def test_ordinary_low_cardinality_feature_is_not_mistaken_for_an_id():
     # A genuine integer feature that predicts a continuous target (target varies within its groups)
     # must NOT trigger the undeclared-id warning.

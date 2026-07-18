@@ -67,6 +67,10 @@ The graph is built with [google-adk](https://google.github.io/adk-docs/). Each p
 
 Every reportable number comes from the engine, and `tests/test_validation_golden.py` pins the whole pipeline output by hash so a refactor cannot quietly change a verdict. The engine (`codas.core`) is plain numpy, pandas, scipy, and scikit-learn with no LLM and no network. It screens univariate and engineered features with Spearman correlation under Benjamini-Hochberg FDR control, then puts each candidate through a validation battery covering replication, stability, robustness, and discriminative power. Leakage guards drop the target and its declared proxies before screening and demote features that duplicate a stronger one.
 
+## Scope
+
+CoDaS prioritizes candidate biomarkers as hypothesis-generating signals for expert review, not as validated clinical tools. It expects a participant-level table with a declared target and, for repeated measures, a declared participant or time column, which it uses to correct for clustering and temporal dependence. It warns when those roles look undeclared and flags a feature that separates the outcome implausibly strongly as possible leakage, but it does not infer roles from the data on its own.
+
 ## Reproducing the reported effects
 
 The reported effect sizes are recomputed by the engine from the participant-level analysis tables. The clinical cohorts are governed data and are not redistributed here, so edit the config to point at tables you already hold.
