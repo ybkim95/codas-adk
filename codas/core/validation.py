@@ -82,32 +82,6 @@ def _near_deterministic_of_target(x, y, threshold: float = 0.97) -> bool:
     return (correct / n) >= threshold
 
 
-_CYCLIC_PERIODS = (7, 12, 24, 60, 365)  # weekday, month, hour-of-day, minute, day-of-year
-
-
-def _infer_cyclic_period(series: pd.Series) -> float | None:
-    """Period (raw units) for a CYCLIC time confounder, inferred from its VALUES rather than its
-    column name, so a circadian or seasonal rhythm can be adjusted with Fourier (sin/cos) terms
-    on any dataset. A cyclic index is integer-valued, starts at 0 or 1, and its range fills a known
-    cycle length densely (hour 0..23, weekday 0..6, month 1..12, minute 0..59, day-of-year 1..365).
-    A linear adjustment would leave such a confound intact (0 ≈ 23 for hour-of-day). Everything else
-    (a continuous covariate, an unbounded integer such as age) returns None and is handled by the
-    one-hot or linear path. No column name is consulted."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.empty:
-        return None
-    v = s.to_numpy(dtype=float)
-    if not bool(np.all(np.mod(v, 1.0) == 0.0)):  # integer-valued only
-        return None
-    lo, hi, nun = float(v.min()), float(v.max()), int(s.nunique())
-    if lo not in (0.0, 1.0):
-        return None
-    for period in _CYCLIC_PERIODS:
-        if hi in (period - 1.0, float(period)) and nun >= max(4, period // 2):
-            return float(period)
-    return None
-
-
 def _is_adjustable_confounder(series: pd.Series) -> bool:
     """A confounder can be adjusted for if it is numeric, OR a low-cardinality categorical —
     including a STRING-coded one (a real multi-site study codes site as 'BWH'/'MGH', not 0/1/2).
@@ -120,9 +94,6 @@ def _is_adjustable_confounder(series: pd.Series) -> bool:
 def _confounder_covariate_matrix(frame: pd.DataFrame, confounders: list[str], index) -> np.ndarray:
     """Build the covariate matrix for partial-correlation confounder adjustment.
 
-    * CYCLIC time confounders (hour/minute/day-of-year) are expanded into sin/cos (Fourier)
-      terms so a circadian/seasonal rhythm is actually removed (linear/one-hot can't capture a
-      cyclic, high-cardinality confound — this is the classic "it's just time-of-day").
     * Multi-level categorical confounders (a site/batch code, 3-12 discrete levels) are one-hot
       encoded so a category-specific (step) confound is fully adjusted, not under-adjusted by a
       single linear term.
@@ -149,13 +120,6 @@ def _confounder_covariate_matrix(frame: pd.DataFrame, confounders: list[str], in
         non_na = s.dropna()
         if len(non_na) == 0:
             blocks.append(s.to_numpy(dtype=float).reshape(-1, 1))
-            continue
-        period = _infer_cyclic_period(s)
-        if period is not None:
-            v = s.to_numpy(dtype=float)
-            block = np.column_stack([np.sin(2 * np.pi * v / period), np.cos(2 * np.pi * v / period)])
-            block[s.isna().to_numpy(), :] = np.nan
-            blocks.append(block)
             continue
         nunique = int(non_na.nunique())
         is_integer_valued = bool(np.all(np.mod(non_na.to_numpy(dtype=float), 1.0) == 0.0))
@@ -239,7 +203,7 @@ def _bootstrap_distribution(
     values: list[float] = []
     n = len(x)
     if groups is not None:
-        unique = np.unique(groups)
+        unique = pd.Series(groups).dropna().unique()  # NaN-safe: a blank participant id must not crash
         if 3 <= len(unique) < n:
             idx_by_cluster = [np.flatnonzero(groups == g) for g in unique]
             k = len(unique)
@@ -449,8 +413,10 @@ def _leave_one_out_test(x, y, candidate, config, groups=None):
     n = len(x)
     # Repeated measures: leave out one PARTICIPANT (all their rows) at a time, the unit of independence
     # the paper specifies. Cross-sectional data (no groups, or one row per participant) leaves out one row.
-    participant_level = groups is not None and 2 <= len(np.unique(groups)) < n
-    units = np.unique(groups) if participant_level else np.arange(n)
+    # `dropna().unique()` is NaN-safe: a string id column with a blank cell would crash a raw np.unique.
+    uniq = pd.Series(groups).dropna().unique() if groups is not None else np.empty(0)
+    participant_level = groups is not None and 2 <= len(uniq) < n
+    units = uniq if participant_level else np.arange(n)
     unit = "participant" if participant_level else "row"
     if len(units) > config.max_loo_checks:
         rng = np.random.default_rng(config.random_state)
@@ -633,7 +599,7 @@ def validate_candidate(
     boot_groups = None
     if participant_id_column and participant_id_column in frame.columns:
         ids = frame.loc[subset.index, participant_id_column].to_numpy()
-        if 3 <= len(np.unique(ids)) < len(ids):
+        if 3 <= pd.Series(ids).nunique() < len(ids):  # nunique ignores NaN and never sorts mixed types
             boot_groups = ids
     boot = _bootstrap_distribution(x, y, config.n_resamples, config.random_state, groups=boot_groups)
     if len(boot) >= max(50, config.n_resamples // 10):

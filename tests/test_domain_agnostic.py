@@ -10,7 +10,7 @@ import pandas as pd
 
 from codas.core.data import _clock_hour_feature
 from codas.core.discovery import DiscoveryRequest, run_discovery
-from codas.core.validation import _infer_cyclic_period
+from codas.core.validation import _confounder_covariate_matrix
 
 
 def test_clock_hour_is_decided_from_values_not_names():
@@ -26,13 +26,14 @@ def test_clock_hour_is_decided_from_values_not_names():
     assert _clock_hour_feature(pd.Series(pd.date_range("2020-01-01", periods=60, freq="D").astype(str))) is None
 
 
-def test_cyclic_period_is_inferred_from_values_not_names():
-    assert _infer_cyclic_period(pd.Series(np.tile(np.arange(24), 6))) == 24.0     # hour of day
-    assert _infer_cyclic_period(pd.Series(np.tile(np.arange(7), 20))) == 7.0       # weekday
-    assert _infer_cyclic_period(pd.Series(np.tile(np.arange(1, 13), 10))) == 12.0  # month
-    # A continuous covariate and an unbounded integer (age) are not cyclic.
-    assert _infer_cyclic_period(pd.Series(np.random.default_rng(0).normal(size=400))) is None
-    assert _infer_cyclic_period(pd.Series(np.random.default_rng(0).integers(18, 91, 400))) is None
+def test_bounded_integer_confounder_is_not_cyclic_encoded():
+    # A count / likert confounder (0..6) must be adjusted as an ordinary covariate, never guessed to be
+    # a cyclic hour-of-day-like variable and expanded into sin/cos terms. Value ranges alone cannot tell
+    # a weekday from a child count, so the engine must not infer cyclicity at all.
+    n = 140
+    frame = pd.DataFrame({"likert": np.tile(np.arange(7), n // 7 + 1)[:n]})
+    cov = _confounder_covariate_matrix(frame, ["likert"], frame.index)
+    assert cov.shape[1] == 6  # one-hot of 7 integer levels (k-1), not a 2-column sin/cos Fourier pair
 
 
 def test_subgroup_consistency_does_not_degenerate_on_a_binary_target():

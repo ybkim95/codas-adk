@@ -6,6 +6,7 @@ import math
 from typing import Iterable
 
 import numpy as np
+import pandas as pd
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import roc_auc_score
@@ -75,8 +76,11 @@ def intraclass_correlation(values: Iterable[float], groups: Iterable) -> float:
     ICC ~ 1 => the variable is ~constant within a cluster (the rows are near-replicates).
     Used to size the design-effect deflation for clustered repeated measures."""
     v = np.asarray(list(values), dtype=float)
-    g = np.asarray(list(groups))
-    mask = np.isfinite(v)
+    g = np.asarray(list(groups), dtype=object)
+    # Drop rows with a missing value OR a missing group id. A string participant column with a blank
+    # cell yields an object array mixing str and NaN, on which np.unique would raise; masking the nulls
+    # first keeps the engine from crashing on a common export artefact (missing subject ids).
+    mask = np.isfinite(v) & pd.notna(g)
     v, g = v[mask], g[mask]
     if v.size < 3:
         return 0.0
@@ -154,7 +158,7 @@ def within_subject_two_stage(feature: Iterable[float], target: Iterable[float], 
     eff_pairs: list[int] = []
     within_ac: list[float] = []
     n_excluded_autocorr = 0
-    for u in np.unique(g):
+    for u in pd.Series(g).dropna().unique():  # NaN-safe: skip rows with a missing group id
         m = (g == u) & np.isfinite(f) & np.isfinite(t)
         if int(m.sum()) < min_pairs_per_subject:
             continue

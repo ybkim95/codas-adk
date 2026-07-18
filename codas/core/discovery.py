@@ -867,13 +867,13 @@ def _within_person_warnings(candidates, cluster_screen_info, analysis, request) 
         _ws_rows = cluster_screen_info.get("within_subject_associations", [])
         _sig_within = [
             r for r in _ws_rows
-            if float(r.get("q", 1)) < 0.10  # FDR corrected within-subject q
+            if float(r.get("q_value", 1)) < 0.10  # FDR corrected within-subject q
             and r.get("feature") not in (request.target_column,)
         ]
         if _sig_within:
             _within_summary = "; ".join(
                 f"'{r['feature']}' (within-person ρ={float(r.get('within_rho_median', 0)):.3f}, "
-                f"q={float(r.get('q', 1)):.2g})"
+                f"q={float(r.get('q_value', 1)):.2g})"
                 for r in _sig_within[:5]
             )
             results.append(
