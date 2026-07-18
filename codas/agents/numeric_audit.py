@@ -36,6 +36,17 @@ _COUNT_ANCHORS: list[tuple[str, str]] = [
 # transcription slip and corrected; a larger gap is left for the grounding audit to flag.
 _COUNT_REL_TOL = 0.05
 
+# Never rewrite a number written in a citation/comparison or explicit-subset context: "a prior study of
+# N=7,400" or "the top 2 of the validated biomarkers" are correct as written and must not be snapped to
+# this run's figures. When such a cue precedes the number, the value is left as-is (the grounding audit
+# still surfaces it if it is genuinely wrong).
+_SKIP_CUES = re.compile(
+    r"prior|previous|earlier|another|\bother\b|\bstud(?:y|ies)\b|et al|reference|compared|versus|\bvs\b|"
+    r"whereas|unlike|cohort of|largest|strongest|\btop\b|of the|subset|highlight|focus on|\bbest\b|"
+    r"leading|notable|only",
+    re.I,
+)
+
 
 def _as_int(text: str) -> int | None:
     try:
@@ -65,6 +76,9 @@ def verify_and_correct(report: str, fact_sheet: dict[str, Any] | None) -> tuple[
             claim = _as_int(token) if token else None
             if claim is None or not _near(claim, truth):
                 return match.group(0)
+            context = match.string[max(0, match.start() - 50):match.start()]
+            if _SKIP_CUES.search(context):
+                return match.group(0)  # citation/subset context: correct as written, leave untouched
             corrections.append({"key": key, "from": claim, "to": int(truth)})
             return match.group(0).replace(token, f"{truth:,}" if truth >= 1000 else str(truth))
 

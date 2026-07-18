@@ -104,6 +104,16 @@ def report_grounding_audit(callback_context: Any) -> None:
             if ungrounded:
                 LOGGER.warning("grounding: %d unverified figure(s) in the report (possible fabrication): %s",
                                len(ungrounded), ungrounded[:6])
+                # Surface the unverified figures IN the report, not only in a log the reader may never
+                # see, so a human reviewer cannot miss a statistic that did not come from the engine.
+                flagged = ", ".join(f"{kw} {val:g}" for kw, val in ungrounded[:8])
+                report = report + (
+                    "\n\n---\n**Numeric verification.** These figures could not be traced to a value the "
+                    f"deterministic engine produced and must be checked before use: {flagged}. Every "
+                    "reportable statistic should come from the Fact Sheet; the engine does not compute "
+                    "quantities such as hazard/odds ratios, sensitivity, or specificity."
+                )
+                state["report"] = report
 
         if corrections or total:
             _write_numeric_audit({

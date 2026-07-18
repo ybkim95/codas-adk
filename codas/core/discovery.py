@@ -1091,23 +1091,51 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
     # within-subject-varying targets (e.g. longitudinal UPDRS): the rows stayed un-aggregated and
     # screening ran at the inflated row count while the warning claimed otherwise.
     if (not effective_participant) and request.target_column in df.columns:
-        # No participant id found. Warn if the rows still look like un-keyed repeated measures
-        # (a string/categorical column clusters many rows) so the caller can set it.
+        # No participant id declared. Warn if the rows look like un-keyed repeated measures so the
+        # failure is loud, not silent (the correction still requires the caller to declare the id). A
+        # STRING column that clusters many rows is flagged on its repeat structure; a NUMERIC integer
+        # column is flagged only when the target is near-constant within its groups (a per-subject
+        # trait/outcome), so an ordinary low-cardinality integer feature is not mistaken for an id.
         _n = int(len(df))
+        _tgt_num = pd.to_numeric(df[request.target_column], errors="coerce")
         for _c in df.columns:
             if _c == request.target_column:
                 continue
             _s = df[_c]
-            if not pd.api.types.is_object_dtype(_s):
-                continue
             _k = int(_s.nunique(dropna=True))
-            if 2 < _k < _n / 3 and (_n / max(_k, 1)) >= 3:
-                warnings.append(
-                    f"Rows may be repeated measures: column '{_c}' has {_k} distinct values across "
-                    f"{_n:,} rows (~{_n / _k:.0f} rows each). If '{_c}' identifies participants/subjects, "
-                    f"set it as the participant id so per-row significance is not inflated (pseudo-replication)."
-                )
-                break
+            if not (2 < _k < _n / 3 and (_n / max(_k, 1)) >= 3):
+                continue
+            _is_object = pd.api.types.is_object_dtype(_s)
+            _is_int = (pd.api.types.is_numeric_dtype(_s)
+                       and bool(np.all(np.mod(_s.dropna().to_numpy(dtype=float), 1.0) == 0.0)))
+            if not (_is_object or _is_int):
+                continue
+            if _is_int and not _is_object:
+                try:
+                    _within = float(np.nanmedian(_tgt_num.groupby(_s).transform("std").to_numpy()))
+                    _overall = float(_tgt_num.std())
+                    if not (_overall > 0 and _within / _overall < 0.35):
+                        continue  # target varies within groups -> ordinary feature, not an id
+                except Exception:
+                    continue
+            warnings.append(
+                f"Rows may be repeated measures: column '{_c}' has {_k} distinct values across "
+                f"{_n:,} rows (~{_n / _k:.0f} rows each). If '{_c}' identifies participants/subjects, "
+                f"set it as the participant id so per-row significance is not inflated (pseudo-replication)."
+            )
+            break
+        # Undeclared temporal structure: with neither a participant nor a time column, a target that is
+        # strongly autocorrelated in row order signals a time series scored at the raw (inflated) n.
+        if not effective_time:
+            _tv = _tgt_num.dropna().to_numpy()
+            if _tv.size >= 20:
+                _r1 = lag1_autocorr(_tv)
+                if np.isfinite(_r1) and abs(_r1) > 0.3:
+                    warnings.append(
+                        f"The target is strongly autocorrelated in row order (lag-1 ρ={_r1:.2f}). If these "
+                        f"rows are a time series, set time_column so significance is deflated to the "
+                        f"autocorrelation-effective sample size (otherwise a spurious trend reads as significant)."
+                    )
     screen, _screen_warnings = _screen(df, request, effective_participant, effective_time)
     warnings.extend(_screen_warnings)
     analysis = screen.analysis

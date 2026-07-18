@@ -11,14 +11,26 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# A number immediately preceded by a statistic keyword is a "claim" we must be able to trace.
+# A number immediately preceded by a statistic keyword is a "claim" we must be able to trace. The list
+# spans what the engine produces (auc, rho, p, q, r2) AND the clinical metrics it deliberately does NOT
+# (hazard/odds ratios, sensitivity, specificity, F1, effect size): the engine never emits those, so any
+# such number in a report is by definition ungrounded and must be flagged. Short ambiguous abbreviations
+# (HR/OR/RR) are matched only when written as a statistic ("HR=4.2", "OR: 3.1") to avoid catching the
+# English words.
 STAT_CLAIM = re.compile(
-    r"(auc|r2|r²|r-squared|rho|ρ|spearman|p-value|p value|\bp\b|correlation|coefficient|variance|q-value|q=)"
+    r"(auroc|auprc|auc|r2|r²|r-squared|rho|ρ|spearman|pearson|kendall|"
+    r"p-?value|p value|\bp\b|q-?value|q=|correlation|coefficient|variance|"
+    r"hazard ratio|odds ratio|risk ratio|relative risk|"
+    r"sensitivity|specificity|\bppv\b|\bnpv\b|accuracy|precision|recall|\bf1\b|"
+    r"cohen'?s ?d|effect size|"
+    r"\b(?:hr|or|rr)\s*[=:])"
     r"[^\d\n]{0,18}([-+]?\d*\.?\d+)", re.I)
 
-# Benign non-engine numbers a report legitimately contains: years, and small structural integers
-# (phase counts, "6 phases", percentages like 90/95/100).
-_BENIGN_INTS = frozenset({0, 1, 2, 3, 4, 5, 6, 10, 90, 95, 100})
+# Benign non-engine numbers a report legitimately contains: years (handled separately) and small
+# structural integers (phase counts like "6 phases", "top 10"). 90/95/100 are deliberately NOT here:
+# a keyword-preceded 90/95/100 (e.g. "sensitivity 95%") is far more likely a fabricated metric than a
+# structural number, and a legitimate "95% CI" is not preceded by a captured keyword.
+_BENIGN_INTS = frozenset({0, 1, 2, 3, 4, 5, 6, 10})
 _MATCH_TOL = 0.011  # two-decimal rounding tolerance for matching a claim to an engine value
 
 
