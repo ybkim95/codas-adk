@@ -19,6 +19,9 @@ venv/
 *.log
 tmp_*
 
+# Local agent/session logs
+.claude/
+
 # OS
 .DS_Store
 .cache/
