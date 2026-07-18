@@ -1,4 +1,4 @@
-# CoDaS
+# CoDaS: An AI co-data-scientist
 
 CoDaS is an AI co-data-scientist that prioritizes candidate biomarkers from wearable and clinical data. Given a participant-level table and a clinical outcome, a team of Gemini agents profiles the data, grounds hypotheses in the literature, runs an iterative discovery loop, argues each candidate for and against, and drafts a report you can audit. A deterministic Python engine computes every statistic, so the agents decide what to test and when to stop while never inventing a number.
 
