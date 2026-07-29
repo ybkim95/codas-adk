@@ -65,7 +65,9 @@ _RATIO_FEATURES_STEP = int(os.getenv("CODAS_ROUND_RATIO_STEP", "12"))
 _RATIO_FEATURES_MAX = int(os.getenv("CODAS_ROUND_RATIO_MAX", "48"))
 _TOPK_BASE = int(os.getenv("CODAS_ROUND_TOPK_BASE", "10"))
 _TOPK_STEP = int(os.getenv("CODAS_ROUND_TOPK_STEP", "5"))
-_ROUND_RESAMPLES = int(os.getenv("CODAS_ROUND_RESAMPLES", "300"))
+# The battery is specified at 1,000 resamples, so a round runs at that depth by default rather than
+# reporting a verdict earned at a third of it. Lower it via the env var when iterating locally.
+_ROUND_RESAMPLES = int(os.getenv("CODAS_ROUND_RESAMPLES", "1000"))
 # GapChecker thresholds: a round "pays off" only if it validates a new candidate OR lifts the held-out
 # model metric by at least this much. Below that, deeper search is judged to have saturated.
 _MIN_METRIC_GAIN = float(os.getenv("CODAS_CONVERGENCE_MIN_METRIC_GAIN", "0.01"))
@@ -165,11 +167,20 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
     if reply.error or not reply.text:
         return {"grounded": False, "summary": "", "sources": [], "queries": [],
                 "note": f"Literature grounding failed: {reply.error or 'empty response'}. Do not fabricate citations."}
+    # `grounded` has to mean the search actually returned something, not merely that the model
+    # replied. A search-grounded call can come back fluent and confident with an empty source list,
+    # which is parametric recall wearing the costume of retrieval; reporting that as grounded is how
+    # an unsourced claim ends up in a report that says it was literature-anchored.
+    grounded = bool(reply.sources)
     return _json_safe({
-        "grounded": True,
+        "grounded": grounded,
         "summary": reply.text,
         "sources": reply.sources,
         "queries": reply.queries,
+        "note": None if grounded else
+        "The search returned no sources, so this summary is the model's own recall, not retrieved "
+        "literature. Treat it as a prior to be checked, attach no citations to it, and say in the "
+        "report that literature grounding was unavailable.",
     })
 
 

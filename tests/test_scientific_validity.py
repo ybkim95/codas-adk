@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from codas.core.discovery import DiscoveryRequest, run_discovery
 from codas.core.validation import _bootstrap_distribution
@@ -105,3 +106,58 @@ def test_within_subject_signal_surfaces_under_opposite_between_correlation():
     rep = run_discovery(df, DiscoveryRequest(target_column="y", participant_id_column="pid", validation_resamples=150))
     assert any("within-subject" in w.lower() or "within-person" in w.lower() for w in rep.warnings), \
         "the within-subject signal hidden by an opposite between-subject correlation must be surfaced"
+
+
+# --- the confounder arm: degrees of freedom, and the gate on small cohorts --------------------
+
+def test_partial_spearman_spends_the_degrees_of_freedom_the_covariates_consumed():
+    """A rank partial correlation has df = n - 2 - k, not the n - 2 of the raw residual correlation.
+
+    Reusing the uncorrected p is anti-conservative, and it errs toward calling a confounded feature
+    adjusted-and-surviving, so the corrected p must be strictly the larger of the two.
+    """
+    from scipy import stats as _stats
+
+    from codas.core.statistics import partial_spearman
+
+    rng = np.random.default_rng(11)
+    n, k = 60, 5
+    cov = rng.normal(size=(n, k))
+    x = cov @ rng.normal(size=k) + rng.normal(size=n)
+    y = cov @ rng.normal(size=k) + 0.35 * x + rng.normal(size=n)
+
+    rho, p_corrected, n_used = partial_spearman(x, y, cov)
+    assert np.isfinite(rho) and n_used == n
+
+    df_uncorrected = n_used - 2
+    t_unc = rho * np.sqrt(df_uncorrected / (1.0 - rho * rho))
+    p_uncorrected = float(2.0 * _stats.t.sf(abs(t_unc), df_uncorrected))
+    assert p_corrected > p_uncorrected, (p_corrected, p_uncorrected)
+
+    df_corrected = n_used - 2 - k
+    t_cor = rho * np.sqrt(df_corrected / (1.0 - rho * rho))
+    assert p_corrected == pytest.approx(float(2.0 * _stats.t.sf(abs(t_cor), df_corrected)))
+
+
+def test_confounder_hard_gate_fires_on_a_sign_flip_below_fifty_rows():
+    """A reversal under adjustment is unambiguous evidence of confounding at any sample size.
+
+    The gate used to be disabled wholesale below n=50, so on a small cohort a candidate whose
+    association flipped sign once the confounder was controlled was reported as if it had survived.
+    """
+    rng = np.random.default_rng(3)
+    n = 40
+    driver = rng.normal(0, 1, size=n)
+    frame = pd.DataFrame({
+        "driver": driver,
+        "artefact": 2.0 * driver + rng.normal(0, 0.25, size=n),
+        "noise": rng.normal(size=n),
+    })
+    # The outcome tracks the driver strongly and the artefact weakly in the OPPOSITE direction, so
+    # the raw association is driver-borne and reverses once the driver is partialled out.
+    frame["outcome"] = 3.0 * driver - 0.5 * frame["artefact"] + rng.normal(0, 0.25, size=n)
+
+    report = run_discovery(frame, DiscoveryRequest(
+        target_column="outcome", confounder_columns=["driver"], validation_resamples=150))
+    verdicts = {c.feature: c.verdict for c in report.candidates}
+    assert verdicts.get("artefact") == "rejected", verdicts

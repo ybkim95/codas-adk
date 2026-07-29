@@ -257,3 +257,33 @@ def test_declaring_the_confounder_flips_the_verdict(tmp_path):
     # signal survives rather than pinning the label the engine happens to prefer.
     survivors = [f for f, v in aware_verdicts.items() if v == "validated"]
     assert survivors and all("genuine" in f for f in survivors), aware_verdicts
+
+
+# --- "grounded" has to mean the search returned something ---------------------------------------
+
+def test_literature_summary_without_sources_is_not_reported_as_grounded(monkeypatch):
+    """A search-grounded call can answer fluently with an empty source list.
+
+    That is the model's own recall wearing the costume of retrieval. Reporting it as grounded is how
+    an unsourced claim reaches a report that says it was literature-anchored, so the flag follows the
+    sources, not the prose, and the caller is told to attach no citations.
+    """
+    from codas.core.gemini import GroundedResponse
+    from codas.agents import tools as tools_mod
+
+    def reply(_query, context=""):
+        return GroundedResponse(text="Sleep regularity is well established as a correlate of mood.",
+                                model="m", configured=True, sources=[], queries=[])
+
+    monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", reply)
+    out = tools_mod.search_literature("sleep regularity and mood")
+    assert out["grounded"] is False
+    assert out["summary"]                      # the recall is still passed through, clearly labelled
+    assert "no sources" in (out["note"] or "")
+
+    def sourced(_query, context=""):
+        return GroundedResponse(text="…", model="m", configured=True,
+                                sources=[{"title": "t", "uri": "u"}], queries=["q"])
+
+    monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", sourced)
+    assert tools_mod.search_literature("x")["grounded"] is True
