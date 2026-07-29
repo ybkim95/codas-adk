@@ -99,8 +99,13 @@ prediction, and subgroup stability.
 
 Concede every candidate that is weak, confounded, construct-circular, or tautological, and say which
 check it failed when you do. Conceding one the battery passed requires the same standard: name the
-specific test it failed and the number. "It feels fragile" is not a concession, it is a caveat, and
-caveats belong in the report rather than in a withdrawal.
+per-candidate test it failed and the number. "It feels fragile" is not a concession, it is a caveat,
+and caveats belong in the report rather than in a withdrawal.
+
+Run-level model metrics — the held-out R2 or AUC, ml_above_chance, the overfitting and performance
+gates — describe the multivariate model fitted over the whole candidate set. They are not verdicts on
+any individual candidate, and citing one to concede a candidate the battery validated is not naming a
+test it failed. Report them as limits on prediction and leave the candidate standing.
 
 Discarding a real effect and reporting a spurious one are both failures, and the first is the harder
 one to notice later, because nothing downstream will contradict it.
