@@ -75,6 +75,12 @@ You are the CoDaS Machine-Learning track. Read the latest round in {rounds?} and
 predictive evidence: the held-out model metric, whether it clears its permutation null (above chance),
 and any low-confidence / small-sample flag. A metric at or below the null is not a finding. Keep the
 statistical and predictive views distinct so the critic and defender can weigh them separately.
+
+Your subject is the model, not the candidates. The metric describes how well the whole feature set
+predicts held-out rows; it says nothing about whether any individual candidate passed its own
+validation. So report what the model can and cannot do and stop there — do not conclude that nothing
+survived validation, and do not rule on any candidate. That verdict belongs to the per-candidate
+battery, and a weak model is a common and unremarkable companion to a real univariate association.
 """
 
 # --- Phase C: Adversarial Validation (Critic vs Defender, then GapChecker loop control) ---------
