@@ -307,7 +307,8 @@ def _confounder_tests(frame, subset, x, y, candidate, confounder_columns, config
     # against a prior biomarker is redundant, not confounded, so it is not auto-rejected here. Three
     # independent criteria for confounding: (a) sign flip after adjustment; (b) effect collapses to <25%
     # of the raw effect (>=75% attenuation); (c) partial non-significant (p>alpha) with a substantial raw
-    # effect (|raw_rho|>0.25). Low-power samples (n<50) are exempted from (c).
+    # effect (|raw_rho|>0.25). Only (c) is exempted on low-power samples (n<50), since a non-significant
+    # partial there is as likely to be missing power as missing effect; (a) and (b) fire at any n.
     if not usable_confounders:
         return results
     if check_columns == usable_confounders:
@@ -331,7 +332,11 @@ def _confounder_tests(frame, subset, x, y, candidate, confounder_columns, config
         and abs(candidate.rho) > 0.25           # meaningful raw effect
         and hard_p > config.alpha                # but partial is non-significant
     )
-    severely_confounded = hard_n >= 50 and (severe_sign_flip or severe_collapse or severe_nonsig)
+    # Only (c) is power-gated, and it carries its own n>=50 guard above. Gating the whole rule on
+    # n>=50 disabled the gate outright on small cohorts, so a candidate whose association reversed
+    # sign under adjustment — the least ambiguous evidence of confounding there is, and no less
+    # certain at n=40 than at n=400 — was reported as if it had survived.
+    severely_confounded = severe_sign_flip or severe_collapse or severe_nonsig
     if severely_confounded:
         _reason = (
             "sign flip after confounder adjustment" if severe_sign_flip

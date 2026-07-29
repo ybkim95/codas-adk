@@ -98,7 +98,10 @@ class DiscoverPayload(_InlineData):
     excluded_columns: list[str] = Field(default_factory=list)
     confounder_columns: list[str] = Field(default_factory=list)
     top_k: int = 15
-    validation_resamples: int = 300
+    # 1,000 is the depth the validation battery is specified at, so an external caller that says
+    # nothing gets the full-strength test rather than a quiet fast approximation. A caller that
+    # wants a cheaper run can still ask for fewer; `_MIN_RESAMPLES` is the floor.
+    validation_resamples: int = 1000
 
 
 class AgentPayload(_InlineData):

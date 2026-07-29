@@ -65,7 +65,9 @@ _RATIO_FEATURES_STEP = int(os.getenv("CODAS_ROUND_RATIO_STEP", "12"))
 _RATIO_FEATURES_MAX = int(os.getenv("CODAS_ROUND_RATIO_MAX", "48"))
 _TOPK_BASE = int(os.getenv("CODAS_ROUND_TOPK_BASE", "10"))
 _TOPK_STEP = int(os.getenv("CODAS_ROUND_TOPK_STEP", "5"))
-_ROUND_RESAMPLES = int(os.getenv("CODAS_ROUND_RESAMPLES", "300"))
+# The battery is specified at 1,000 resamples, so a round runs at that depth by default rather than
+# reporting a verdict earned at a third of it. Lower it via the env var when iterating locally.
+_ROUND_RESAMPLES = int(os.getenv("CODAS_ROUND_RESAMPLES", "1000"))
 # GapChecker thresholds: a round "pays off" only if it validates a new candidate OR lifts the held-out
 # model metric by at least this much. Below that, deeper search is judged to have saturated.
 _MIN_METRIC_GAIN = float(os.getenv("CODAS_CONVERGENCE_MIN_METRIC_GAIN", "0.01"))
@@ -165,11 +167,20 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
     if reply.error or not reply.text:
         return {"grounded": False, "summary": "", "sources": [], "queries": [],
                 "note": f"Literature grounding failed: {reply.error or 'empty response'}. Do not fabricate citations."}
+    # `grounded` has to mean the search actually returned something, not merely that the model
+    # replied. A search-grounded call can come back fluent and confident with an empty source list,
+    # which is parametric recall wearing the costume of retrieval; reporting that as grounded is how
+    # an unsourced claim ends up in a report that says it was literature-anchored.
+    grounded = bool(reply.sources)
     return _json_safe({
-        "grounded": True,
+        "grounded": grounded,
         "summary": reply.text,
         "sources": reply.sources,
         "queries": reply.queries,
+        "note": None if grounded else
+        "The search returned no sources, so this summary is the model's own recall, not retrieved "
+        "literature. Treat it as a prior to be checked, attach no citations to it, and say in the "
+        "report that literature grounding was unavailable.",
     })
 
 
@@ -198,6 +209,64 @@ def set_target(
         "excluded_columns": _split_csv(excluded_columns_csv),
         "confounder_columns": _split_csv(confounder_columns_csv),
         "note": "Analysis design recorded in shared memory. Run the first discovery round next.",
+    }
+
+
+def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Add confounders to the recorded analysis design, without disturbing the rest of it.
+
+    A confounder is a column that plausibly causes BOTH a candidate feature and the outcome, so a
+    feature that merely tracks it looks predictive while explaining nothing. Naming one here makes
+    every later round residualise candidates against it before judging them, which is what separates
+    a genuine predictor from an artefact of the confounder.
+
+    Recognising a confounder is a judgement about the world, not about the schema, so it belongs to
+    the agent that reasons over domain knowledge rather than to the Scout, which is deliberately
+    restricted to what the profile shows. Unlike ``set_target`` this merges: it keeps the target and
+    the participant/time/excluded roles already recorded, and adds to any confounders already there.
+
+    Names that are not columns, or that are already serving as the target or the participant/time
+    column, are ignored and reported back rather than silently dropped.
+    """
+    if not str(tool_context.state.get("target_column") or "").strip():
+        return {"error": "Call set_target first; there is no analysis design to add confounders to."}
+
+    requested = _split_csv(confounder_columns_csv)
+    if not requested:
+        return {"error": "declare_confounders needs at least one column name."}
+
+    reserved = {
+        str(tool_context.state.get("target_column") or "").strip(),
+        str(tool_context.state.get("participant_id_column") or "").strip(),
+        str(tool_context.state.get("time_column") or "").strip(),
+    }
+    reserved.discard("")
+
+    columns: set[str] | None = None
+    path = _resolve_csv_path(tool_context.state.get("csv_path"), "")
+    if path is not None:
+        try:
+            columns = {str(c) for c in read_csv_dataset(path).columns}
+        except Exception:
+            columns = None  # fall through: record the names rather than lose a correct one
+
+    accepted = list(tool_context.state.get("confounder_columns") or [])
+    ignored: list[str] = []
+    for name in requested:
+        if name in accepted:
+            continue
+        if name in reserved or (columns is not None and name not in columns):
+            ignored.append(name)
+            continue
+        accepted.append(name)
+    tool_context.state["confounder_columns"] = accepted
+
+    return {
+        "confounder_columns": accepted,
+        "ignored": ignored,
+        "note": "Recorded. Every later discovery round residualises candidates against these before "
+                "assigning a verdict; a candidate that survives only because it tracks a confounder "
+                "will now be rejected.",
     }
 
 

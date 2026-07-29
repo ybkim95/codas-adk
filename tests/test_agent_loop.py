@@ -16,7 +16,7 @@ import pytest
 from google.adk.agents import LoopAgent, ParallelAgent, SequentialAgent
 
 from codas.agents.agent import discovery_loop, reporting, root_agent
-from codas.agents.tools import check_convergence, run_discovery_round, set_target
+from codas.agents.tools import check_convergence, declare_confounders, run_discovery_round, set_target
 
 
 # --- a minimal stand-in for ADK's ToolContext (the tools use only .state and .actions.escalate) ---
@@ -195,3 +195,95 @@ def test_grounding_guardrail_flags_fabricated_figures():
         LOGGER.setLevel(prior_level)
     assert any("grounding: 2/2" in m for m in msgs), f"a grounded report should verify all figures: {msgs}"
     assert any("unverified figure" in m for m in msgs), f"a fabricated AUC must be flagged: {msgs}"
+
+
+# --- declaring a confounder must actually change what the engine validates ---------------------
+
+def _confounded_csv(path: Path, n: int = 400) -> Path:
+    """`driver` causes both `artefact` and the outcome; `genuine` has a real, independent effect."""
+    rng = np.random.default_rng(7)
+    driver = rng.normal(45, 12, size=n)
+    frame = {
+        "driver": driver,
+        "artefact": 80 - 0.7 * driver + rng.normal(0, 6, size=n),
+        "genuine": rng.normal(size=n),
+        "noise": rng.normal(size=n),
+    }
+    frame["outcome"] = 50 - 0.45 * driver + 3.2 * frame["genuine"] + rng.normal(0, 5, size=n)
+    pd.DataFrame(frame).to_csv(path, index=False)
+    return path
+
+
+def test_declare_confounders_merges_without_clearing_the_design(tmp_path):
+    ctx = _Ctx({"csv_path": str(_confounded_csv(tmp_path / "c.csv"))})
+    set_target("outcome", ctx, excluded_columns_csv="noise")
+    out = declare_confounders("driver", ctx)
+    assert out["confounder_columns"] == ["driver"]
+    assert ctx.state["target_column"] == "outcome"      # the rest of the design survives
+    assert ctx.state["excluded_columns"] == ["noise"]
+    # merging, not replacing; unknown names and the target itself are reported, not recorded
+    out = declare_confounders("genuine, not_a_column, outcome", ctx)
+    assert out["confounder_columns"] == ["driver", "genuine"]
+    assert set(out["ignored"]) == {"not_a_column", "outcome"}
+
+
+def test_declare_confounders_requires_a_design_first(tmp_path):
+    assert "error" in declare_confounders("driver", _Ctx({}))
+
+
+def test_declaring_the_confounder_flips_the_verdict(tmp_path):
+    """Without the declaration the confounded artefact validates; with it, it is rejected.
+
+    This is the whole reason the tool exists: the domain judgement that `driver` is a common cause
+    has to reach the engine, or the pipeline reports a feature that explains nothing.
+    """
+    csv = str(_confounded_csv(tmp_path / "c.csv"))
+
+    def verdicts_for(ctx) -> dict[str, str]:
+        run_discovery_round(ctx)
+        return {c["feature"]: c["verdict"] for c in ctx.state["latest_report"]["candidates"]}
+
+    blind = _Ctx({"csv_path": csv})
+    set_target("outcome", blind)
+    assert verdicts_for(blind).get("artefact") == "validated"
+
+    aware = _Ctx({"csv_path": csv})
+    set_target("outcome", aware)
+    declare_confounders("driver", aware)
+    aware_verdicts = verdicts_for(aware)
+    assert aware_verdicts.get("artefact") == "rejected", aware_verdicts
+    # What survives is built on `genuine`. Which variant carries it is up to collinearity demotion —
+    # the bare column can be collapsed into an engineered ratio that ranks above it — so assert the
+    # signal survives rather than pinning the label the engine happens to prefer.
+    survivors = [f for f, v in aware_verdicts.items() if v == "validated"]
+    assert survivors and all("genuine" in f for f in survivors), aware_verdicts
+
+
+# --- "grounded" has to mean the search returned something ---------------------------------------
+
+def test_literature_summary_without_sources_is_not_reported_as_grounded(monkeypatch):
+    """A search-grounded call can answer fluently with an empty source list.
+
+    That is the model's own recall wearing the costume of retrieval. Reporting it as grounded is how
+    an unsourced claim reaches a report that says it was literature-anchored, so the flag follows the
+    sources, not the prose, and the caller is told to attach no citations.
+    """
+    from codas.core.gemini import GroundedResponse
+    from codas.agents import tools as tools_mod
+
+    def reply(_query, context=""):
+        return GroundedResponse(text="Sleep regularity is well established as a correlate of mood.",
+                                model="m", configured=True, sources=[], queries=[])
+
+    monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", reply)
+    out = tools_mod.search_literature("sleep regularity and mood")
+    assert out["grounded"] is False
+    assert out["summary"]                      # the recall is still passed through, clearly labelled
+    assert "no sources" in (out["note"] or "")
+
+    def sourced(_query, context=""):
+        return GroundedResponse(text="…", model="m", configured=True,
+                                sources=[{"title": "t", "uri": "u"}], queries=["q"])
+
+    monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", sourced)
+    assert tools_mod.search_literature("x")["grounded"] is True

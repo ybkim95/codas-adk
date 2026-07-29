@@ -43,6 +43,25 @@ def test_discover_rejects_unknown_target():
     assert r.status_code == 400
 
 
+def test_platform_iam_trust_is_off_by_default():
+    """Fail-closed: the bypass never engages unless it is switched on explicitly."""
+    assert client.get("/v1/health").status_code == 401
+
+
+def test_platform_iam_trust_admits_a_caller_with_no_codas_key(monkeypatch):
+    """The co-scientist case: a Cloud Run ID token, no `x-codas-agent-key`, IAM already checked.
+
+    Without the flag the ID token is read as a candidate key and rejected; with it, the request is
+    admitted because the deploy (no --allow-unauthenticated) is the access boundary.
+    """
+    id_token = {"Authorization": "Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImZha2UifQ.payload.sig"}
+    assert client.get("/v1/health", headers=id_token).status_code == 401
+
+    monkeypatch.setenv("CODAS_TRUST_CLOUD_RUN_IAM", "1")
+    assert client.get("/v1/health", headers=id_token).status_code == 200
+    assert client.get("/v1/health").status_code == 200
+
+
 def test_profile_is_structural_only():
     r = client.post("/v1/profile", headers=HEADERS, json={"csv": CSV})
     assert r.status_code == 200, r.text

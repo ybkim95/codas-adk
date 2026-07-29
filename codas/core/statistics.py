@@ -316,4 +316,16 @@ def partial_spearman(
     model_y = LinearRegression().fit(ranked_cov, ranked_y)
     resid_x = (ranked_x - model_x.predict(ranked_cov)).ravel()
     resid_y = (ranked_y - model_y.predict(ranked_cov)).ravel()
-    return safe_spearman(resid_x, resid_y)
+    rho, p_uncorrected, n = safe_spearman(resid_x, resid_y)
+    if not np.isfinite(rho):
+        return rho, p_uncorrected, n
+    # Spend the degrees of freedom the covariates consumed: a rank partial correlation has
+    # df = n - 2 - k, not the n - 2 that safe_spearman assumes on the residuals. Reusing the
+    # uncorrected p is anti-conservative, and it errs in the worst direction for this gate — it
+    # makes a confounded feature look like it survived adjustment.
+    k = int(cov.shape[1])
+    df = n - 2 - k
+    if df <= 0 or abs(rho) >= 1.0:
+        return float(rho), math.nan, int(n)
+    t_stat = rho * math.sqrt(df / (1.0 - rho * rho))
+    return float(rho), float(2.0 * stats.t.sf(abs(t_stat), df)), int(n)

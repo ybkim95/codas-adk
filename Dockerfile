@@ -10,9 +10,7 @@ RUN useradd --create-home --uid 10001 codas
 
 # Install only the importable packages and their deps. examples/ and tests/ are not shipped.
 COPY --chown=codas:codas pyproject.toml README.md ./
-COPY --chown=codas:codas codas.core ./codas.core
-COPY --chown=codas:codas codas.agents ./codas.agents
-COPY --chown=codas:codas codas.service ./codas.service
+COPY --chown=codas:codas codas ./codas
 RUN pip install --no-cache-dir ".[service,agent]"
 
 # Create the uploads directory and set ownership so the non-root user can write to it.
