@@ -51,6 +51,7 @@ from codas.agents.callbacks import (
 )
 from codas.agents.tools import (
     check_convergence,
+    declare_confounders,
     preview_columns,
     profile_dataset,
     propose_feature,
@@ -141,7 +142,7 @@ hypotheses_agent = _agent(
     "Grounds prior expectations in the scientific literature to orient the search (biological anchoring).",
     prompts.HYPOTHESES,
     model=REASONING_MODEL,
-    tools=[search_literature],
+    tools=[search_literature, declare_confounders],
     output_key="hypotheses",
 )
 data_understanding = SequentialAgent(

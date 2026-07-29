@@ -201,6 +201,64 @@ def set_target(
     }
 
 
+def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Add confounders to the recorded analysis design, without disturbing the rest of it.
+
+    A confounder is a column that plausibly causes BOTH a candidate feature and the outcome, so a
+    feature that merely tracks it looks predictive while explaining nothing. Naming one here makes
+    every later round residualise candidates against it before judging them, which is what separates
+    a genuine predictor from an artefact of the confounder.
+
+    Recognising a confounder is a judgement about the world, not about the schema, so it belongs to
+    the agent that reasons over domain knowledge rather than to the Scout, which is deliberately
+    restricted to what the profile shows. Unlike ``set_target`` this merges: it keeps the target and
+    the participant/time/excluded roles already recorded, and adds to any confounders already there.
+
+    Names that are not columns, or that are already serving as the target or the participant/time
+    column, are ignored and reported back rather than silently dropped.
+    """
+    if not str(tool_context.state.get("target_column") or "").strip():
+        return {"error": "Call set_target first; there is no analysis design to add confounders to."}
+
+    requested = _split_csv(confounder_columns_csv)
+    if not requested:
+        return {"error": "declare_confounders needs at least one column name."}
+
+    reserved = {
+        str(tool_context.state.get("target_column") or "").strip(),
+        str(tool_context.state.get("participant_id_column") or "").strip(),
+        str(tool_context.state.get("time_column") or "").strip(),
+    }
+    reserved.discard("")
+
+    columns: set[str] | None = None
+    path = _resolve_csv_path(tool_context.state.get("csv_path"), "")
+    if path is not None:
+        try:
+            columns = {str(c) for c in read_csv_dataset(path).columns}
+        except Exception:
+            columns = None  # fall through: record the names rather than lose a correct one
+
+    accepted = list(tool_context.state.get("confounder_columns") or [])
+    ignored: list[str] = []
+    for name in requested:
+        if name in accepted:
+            continue
+        if name in reserved or (columns is not None and name not in columns):
+            ignored.append(name)
+            continue
+        accepted.append(name)
+    tool_context.state["confounder_columns"] = accepted
+
+    return {
+        "confounder_columns": accepted,
+        "ignored": ignored,
+        "note": "Recorded. Every later discovery round residualises candidates against these before "
+                "assigning a verdict; a candidate that survives only because it tracks a confounder "
+                "will now be rejected.",
+    }
+
+
 def propose_feature(
     operation: str,
     feature_a: str,

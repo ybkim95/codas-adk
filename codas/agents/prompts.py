@@ -35,9 +35,17 @@ established clinical evidence for the recorded target {target_column?} and the k
 available (known predictors, mechanisms, common confounds). Ground your prior expectations in what the
 retrieved literature actually reports and cite the sources it returns; if grounding is unavailable,
 reason from general principles, say so, and never fabricate a citation. State which relationships are
-plausible, which would be surprising, and which are likely confounded or circular. These are
-expectations for the critic to check, not findings, and carry no statistics of their own — every
-number comes from the deterministic engine.
+plausible, which would be surprising, and which are likely confounded or circular.
+
+Whenever you name a column that plausibly causes BOTH a candidate feature and the outcome — age, sex,
+BMI, site, disease duration, medication, or whatever plays that role here — call declare_confounders
+with it. Do not merely describe it in prose. The Scout works from the schema alone and cannot see
+that a column is a common cause; recognising one is exactly the judgement you are here to make, and
+declaring it is what makes every later round adjust for it. A confounder you write about but do not
+declare has no effect on any verdict, and the pipeline will validate the artefact you predicted.
+
+These are expectations for the critic to check, not findings, and carry no statistics of their own —
+every number comes from the deterministic engine.
 """
 
 # --- Phase B: Parallel Agentic Search ----------------------------------------------------------
