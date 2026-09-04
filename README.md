@@ -27,7 +27,7 @@ python examples/run_agent.py your_table.csv "Discover candidate biomarkers for <
 
 The agents read the schema, choose the target and roles, iterate the discovery loop, and print a grounded report.
 
-`examples/sample_dataset.csv` is the bundled sample and the only data file in this repository. It is synthetic. Its schema, column semantics and value ranges match the production inputs, which is what lets the pipeline run on it end to end and what makes the golden test a real check, but the rows are not participants. The clinical cohorts are not redistributed here and nothing derived from them ships. `examples/DATA_MANIFEST.md` lists every file that carries data, with the command to reproduce the inventory.
+`examples/sample_dataset.csv` is the bundled sample, and the only file here that stands in for a participant table. It is synthetic. Its schema, column semantics and value ranges match the production inputs, which is what lets the pipeline run on it end to end and what makes the golden test a real check, but the rows are not participants. The clinical cohorts are not redistributed here and nothing derived from them ships. `examples/DATA_MANIFEST.md` lists every file that carries data, with the command to reproduce the inventory.
 
 For the deterministic engine on its own, name the target and skip the API key.
 
@@ -89,7 +89,7 @@ On the analysis tables the engine returns the reported effect sizes to three dec
 |---|---|
 | DWB, main sleep-duration variability vs PHQ-8 | +0.252 |
 | WEAR-ME, C-reactive protein vs HOMA-IR | +0.393 |
-| WEAR-ME, HDL cholesterol vs HOMA-IR | -0.380 |
+| WEAR-ME, HDL cholesterol vs HOMA-IR | -0.412 |
 
 The count of validated candidates depends on the declared exclusions and thresholds, so the script reports it as computed rather than as a fixed number.
 

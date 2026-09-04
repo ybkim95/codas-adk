@@ -22,7 +22,7 @@ The two are from the same analysis session.
 |---|---|
 | `validated_candidates.json` | Every candidate the discovery loop produced, with its verdict, the reason recorded for that verdict, and the per-test results from the validation battery. Rejected candidates are included with their rejection reason, which is the point of shipping it. |
 | `biomarker_proofs.json` | The per-candidate evidence assembled for each verdict. |
-| `feature_registry.json` | Feature generation history: every feature considered, how it was constructed, and which round introduced it. |
+| `feature_registry.json` | Every feature considered, with its category, its source columns and the formula used to construct it. It records how each feature was built, not which round introduced it. |
 | `full_stat_results_spearman.json` | The derived per-candidate statistics, effect sizes with p-values and confidence intervals. |
 | `numeric_verification_log.json` | The numeric verification pass. Records each correction the pass made to the drafted report, with the before and after value. |
 
