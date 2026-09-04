@@ -25,6 +25,8 @@ python examples/run_agent.py your_table.csv "Discover candidate biomarkers for <
 
 The agents read the schema, choose the target and roles, iterate the discovery loop, and print a grounded report.
 
+`examples/sample_dataset.csv` is the bundled sample and the only data file in this repository. It is synthetic. Its schema, column semantics and value ranges match the production inputs, which is what lets the pipeline run on it end to end and what makes the golden test a real check, but the rows are not participants. The clinical cohorts are not redistributed here and nothing derived from them ships. `examples/DATA_MANIFEST.md` lists every file that carries data, with the command to reproduce the inventory.
+
 For the deterministic engine on its own, name the target and skip the API key.
 
 ```python
