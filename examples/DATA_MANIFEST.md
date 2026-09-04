@@ -17,6 +17,21 @@ git ls-files | grep -Ei '\.(csv|tsv|parquet|json|xlsx|pkl|npy)$'
 | `examples/sample_dataset.csv` | 420 rows, 12 columns | Synthetic sample used by `examples/run_agent.py`, `examples/quickstart.py`, and the engine, service and golden-output tests | **None** |
 | `scripts/ci_smoke_cohorts.json` | config | Points the reproduction harness at the synthetic sample so CI proves the script runs end to end | **None** |
 | `scripts/paper_cohorts.example.json` | config | Example cohort config with placeholder paths and the published reference effect sizes | **None** |
+| `paper_artifacts/dwb/validated_candidates.json` | 33 candidates | Candidates with verdicts, reasons and per-test results, Digital Wellbeing run | **None**, per-candidate |
+| `paper_artifacts/dwb/biomarker_proofs.json` | 33 candidates | Per-candidate evidence behind each verdict | **None**, per-candidate |
+| `paper_artifacts/dwb/feature_registry.json` | 194 features | Feature generation history | **None**, per-feature |
+| `paper_artifacts/dwb/full_stat_results_spearman.json` | per-feature | Derived effect sizes with p-values and intervals | **None**, per-feature |
+| `paper_artifacts/dwb/numeric_verification_log.json` | 12 corrections | Numeric verification pass record | **None** |
+| `paper_artifacts/wearme/validated_candidates.json` | 23 candidates | As above, WEAR-ME run | **None**, per-candidate |
+| `paper_artifacts/wearme/biomarker_proofs.json` | 23 candidates | As above, WEAR-ME run | **None**, per-candidate |
+| `paper_artifacts/wearme/feature_registry.json` | 64 features | As above, WEAR-ME run | **None**, per-feature |
+| `paper_artifacts/wearme/full_stat_results_spearman.json` | per-feature | As above, WEAR-ME run | **None**, per-feature |
+| `paper_artifacts/wearme/numeric_verification_log.json` | 10 corrections | As above, WEAR-ME run | **None** |
+
+`paper_artifacts/` holds run outputs for the two cohorts whose participant-level data cannot be
+redistributed, so that a reader can check the reported numbers against the records that produced
+them. Every file is per-feature or per-candidate. `paper_artifacts/README.md` says what each one
+holds and what is deliberately absent.
 
 `examples/sample_dataset.csv` is synthetic. Its columns carry the same semantics as the
 production inputs, which is what allows the pipeline to run on it end to end and what makes

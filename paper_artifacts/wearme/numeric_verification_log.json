@@ -1,0 +1,31 @@
+{
+  "total_corrections": 10,
+  "sections": {
+    "abstract": [
+      "Sample size corrected: N=865 -> N=1078"
+    ],
+    "introduction": [
+      "Sample size corrected: N=865 -> N=1078"
+    ],
+    "related_work": [
+      "Sample size corrected: N=865 -> N=1078"
+    ],
+    "methods": [
+      "Sample size corrected: N=586 -> N=1078",
+      "Sample size corrected: N=865 -> N=1078",
+      "Feature count corrected: 22 -> 64"
+    ],
+    "experiments": [
+      "Sample size corrected: N=865 -> N=1078"
+    ],
+    "discussion": [
+      "Sample size corrected: N=865 -> N=1078"
+    ],
+    "conclusion": [
+      "Sample size corrected: N=865 -> N=1078"
+    ],
+    "limitations": [
+      "Sample size corrected: N=865 -> N=1078"
+    ]
+  }
+}

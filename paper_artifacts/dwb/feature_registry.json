@@ -1,0 +1,1554 @@
+[
+  {
+    "name": "steps_circadian_mesor",
+    "source_columns": [
+      "steps_circadian_mesor"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_circadian_amplitude",
+    "source_columns": [
+      "steps_circadian_amplitude"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_circadian_acrophase_hour",
+    "source_columns": [
+      "steps_circadian_acrophase_hour"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_circadian_r2",
+    "source_columns": [
+      "steps_circadian_r2"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_relative_amplitude",
+    "source_columns": [
+      "steps_relative_amplitude"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_L5_mean",
+    "source_columns": [
+      "steps_L5_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_M10_mean",
+    "source_columns": [
+      "steps_M10_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_intradaily_variability",
+    "source_columns": [
+      "steps_intradaily_variability"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_interdaily_stability",
+    "source_columns": [
+      "steps_interdaily_stability"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_circadian_mesor",
+    "source_columns": [
+      "unlocks_circadian_mesor"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_circadian_amplitude",
+    "source_columns": [
+      "unlocks_circadian_amplitude"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_circadian_acrophase_hour",
+    "source_columns": [
+      "unlocks_circadian_acrophase_hour"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_intradaily_variability",
+    "source_columns": [
+      "unlocks_intradaily_variability"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_unlocks_mean",
+    "source_columns": [
+      "presleep_1h_unlocks_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_unlocks_std",
+    "source_columns": [
+      "presleep_1h_unlocks_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_2h_unlocks_mean",
+    "source_columns": [
+      "presleep_2h_unlocks_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_screen_time_mean",
+    "source_columns": [
+      "presleep_1h_screen_time_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_screen_time_std",
+    "source_columns": [
+      "presleep_1h_screen_time_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_2h_screen_time_mean",
+    "source_columns": [
+      "presleep_2h_screen_time_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_social_app_mean",
+    "source_columns": [
+      "presleep_1h_social_app_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_2h_social_app_mean",
+    "source_columns": [
+      "presleep_2h_social_app_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_screen_time_weekday_mean",
+    "source_columns": [
+      "presleep_1h_screen_time_weekday_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_screen_time_weekend_mean",
+    "source_columns": [
+      "presleep_1h_screen_time_weekend_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_screen_time_weekend_delta",
+    "source_columns": [
+      "presleep_1h_screen_time_weekend_delta"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_social_app_weekday_mean",
+    "source_columns": [
+      "presleep_1h_social_app_weekday_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "presleep_1h_social_app_weekend_mean",
+    "source_columns": [
+      "presleep_1h_social_app_weekend_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "nocturnal_unlocks_mean",
+    "source_columns": [
+      "nocturnal_unlocks_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "night_day_unlock_ratio",
+    "source_columns": [
+      "night_day_unlock_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "nocturnal_screen_time_mean",
+    "source_columns": [
+      "nocturnal_screen_time_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "night_day_screen_ratio",
+    "source_columns": [
+      "night_day_screen_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "nocturnal_social_app_mean",
+    "source_columns": [
+      "nocturnal_social_app_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "night_day_social_ratio",
+    "source_columns": [
+      "night_day_social_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "pct_nights_with_phone_use",
+    "source_columns": [
+      "pct_nights_with_phone_use"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "app_diversity_entropy",
+    "source_columns": [
+      "app_diversity_entropy"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "communication_min_proportion",
+    "source_columns": [
+      "communication_min_proportion"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "social_min_proportion",
+    "source_columns": [
+      "social_min_proportion"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "entertainment_min_proportion",
+    "source_columns": [
+      "entertainment_min_proportion"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "health_and_fitness_min_proportion",
+    "source_columns": [
+      "health_and_fitness_min_proportion"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "productivity_min_proportion",
+    "source_columns": [
+      "productivity_min_proportion"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "hedonic_app_total",
+    "source_columns": [
+      "hedonic_app_total"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "productivity_app_total",
+    "source_columns": [
+      "productivity_app_total"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "hedonic_productivity_ratio",
+    "source_columns": [
+      "hedonic_productivity_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "social_app_total",
+    "source_columns": [
+      "social_app_total"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "social_app_proportion",
+    "source_columns": [
+      "social_app_proportion"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "health_app_total",
+    "source_columns": [
+      "health_app_total"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "late_night_doomscroll_mean",
+    "source_columns": [
+      "late_night_doomscroll_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "app_diversity_entropy_daily_mean",
+    "source_columns": [
+      "app_diversity_entropy_daily_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "app_diversity_entropy_daily_std",
+    "source_columns": [
+      "app_diversity_entropy_daily_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sedentariness_ratio",
+    "source_columns": [
+      "sedentariness_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "active_movement_ratio",
+    "source_columns": [
+      "active_movement_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "in_vehicle_ratio",
+    "source_columns": [
+      "in_vehicle_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "activity_type_entropy",
+    "source_columns": [
+      "activity_type_entropy"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "home_confinement_index",
+    "source_columns": [
+      "home_confinement_index"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "work_proportion",
+    "source_columns": [
+      "work_proportion"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "location_entropy",
+    "source_columns": [
+      "location_entropy"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_hourly_mean",
+    "source_columns": [
+      "steps_hourly_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_hourly_std",
+    "source_columns": [
+      "steps_hourly_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_hourly_median",
+    "source_columns": [
+      "steps_hourly_median"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_peak_hour",
+    "source_columns": [
+      "steps_peak_hour"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_trough_hour",
+    "source_columns": [
+      "steps_trough_hour"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_morning_evening_ratio",
+    "source_columns": [
+      "steps_morning_evening_ratio"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_autocorrelation_lag1",
+    "source_columns": [
+      "steps_autocorrelation_lag1"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_zero_hour_pct",
+    "source_columns": [
+      "steps_zero_hour_pct"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "daily_steps_mean",
+    "source_columns": [
+      "daily_steps_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "daily_steps_std",
+    "source_columns": [
+      "daily_steps_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "daily_steps_cv",
+    "source_columns": [
+      "daily_steps_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "daily_steps_trend",
+    "source_columns": [
+      "daily_steps_trend"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_hourly_mean",
+    "source_columns": [
+      "unlocks_hourly_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_hourly_std",
+    "source_columns": [
+      "unlocks_hourly_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_total",
+    "source_columns": [
+      "unlocks_total"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_peak_hour",
+    "source_columns": [
+      "unlocks_peak_hour"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "phone_first_use_hour_mean",
+    "source_columns": [
+      "phone_first_use_hour_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "phone_last_use_hour_mean",
+    "source_columns": [
+      "phone_last_use_hour_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "phone_active_span_hours_mean",
+    "source_columns": [
+      "phone_active_span_hours_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "screen_time_hourly_mean",
+    "source_columns": [
+      "screen_time_hourly_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "screen_time_hourly_std",
+    "source_columns": [
+      "screen_time_hourly_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "daily_screen_time_mean",
+    "source_columns": [
+      "daily_screen_time_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "daily_screen_time_std",
+    "source_columns": [
+      "daily_screen_time_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "daily_screen_time_cv",
+    "source_columns": [
+      "daily_screen_time_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_min_in_sleep_period_main_sleep_mean",
+    "source_columns": [
+      "sleep_min_in_sleep_period_main_sleep_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_min_in_sleep_period_main_sleep_std",
+    "source_columns": [
+      "sleep_min_in_sleep_period_main_sleep_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_min_in_sleep_period_main_sleep_cv",
+    "source_columns": [
+      "sleep_min_in_sleep_period_main_sleep_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_woken_up_count_main_sleep_mean",
+    "source_columns": [
+      "sleep_woken_up_count_main_sleep_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_woken_up_count_main_sleep_std",
+    "source_columns": [
+      "sleep_woken_up_count_main_sleep_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_woken_up_count_main_sleep_cv",
+    "source_columns": [
+      "sleep_woken_up_count_main_sleep_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_number_of_sleeps_mean",
+    "source_columns": [
+      "sleep_number_of_sleeps_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_number_of_sleeps_std",
+    "source_columns": [
+      "sleep_number_of_sleeps_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_number_of_sleeps_cv",
+    "source_columns": [
+      "sleep_number_of_sleeps_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_min_asleep_for_all_sleeps_mean",
+    "source_columns": [
+      "sleep_min_asleep_for_all_sleeps_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_min_asleep_for_all_sleeps_std",
+    "source_columns": [
+      "sleep_min_asleep_for_all_sleeps_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_min_asleep_for_all_sleeps_cv",
+    "source_columns": [
+      "sleep_min_asleep_for_all_sleeps_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_awake_count_main_sleep_mean",
+    "source_columns": [
+      "sleep_awake_count_main_sleep_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_awake_count_main_sleep_std",
+    "source_columns": [
+      "sleep_awake_count_main_sleep_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_awake_count_main_sleep_cv",
+    "source_columns": [
+      "sleep_awake_count_main_sleep_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_restless_count_main_sleep_mean",
+    "source_columns": [
+      "sleep_restless_count_main_sleep_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_restless_count_main_sleep_std",
+    "source_columns": [
+      "sleep_restless_count_main_sleep_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_restless_count_main_sleep_cv",
+    "source_columns": [
+      "sleep_restless_count_main_sleep_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_overall_score_mean",
+    "source_columns": [
+      "sleep_overall_score_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_overall_score_std",
+    "source_columns": [
+      "sleep_overall_score_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_overall_score_cv",
+    "source_columns": [
+      "sleep_overall_score_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_duration_score_mean",
+    "source_columns": [
+      "sleep_duration_score_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_duration_score_std",
+    "source_columns": [
+      "sleep_duration_score_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_duration_score_cv",
+    "source_columns": [
+      "sleep_duration_score_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_composition_score_mean",
+    "source_columns": [
+      "sleep_composition_score_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_composition_score_std",
+    "source_columns": [
+      "sleep_composition_score_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_composition_score_cv",
+    "source_columns": [
+      "sleep_composition_score_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_revitalization_score_mean",
+    "source_columns": [
+      "sleep_revitalization_score_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_revitalization_score_std",
+    "source_columns": [
+      "sleep_revitalization_score_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_revitalization_score_cv",
+    "source_columns": [
+      "sleep_revitalization_score_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_sleep_time_minutes_mean",
+    "source_columns": [
+      "sleep_sleep_time_minutes_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_sleep_time_minutes_std",
+    "source_columns": [
+      "sleep_sleep_time_minutes_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_sleep_time_minutes_cv",
+    "source_columns": [
+      "sleep_sleep_time_minutes_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_deep_sleep_minutes_mean",
+    "source_columns": [
+      "sleep_deep_sleep_minutes_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_deep_sleep_minutes_std",
+    "source_columns": [
+      "sleep_deep_sleep_minutes_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_deep_sleep_minutes_cv",
+    "source_columns": [
+      "sleep_deep_sleep_minutes_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_rem_sleep_percent_mean",
+    "source_columns": [
+      "sleep_rem_sleep_percent_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_rem_sleep_percent_std",
+    "source_columns": [
+      "sleep_rem_sleep_percent_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_rem_sleep_percent_cv",
+    "source_columns": [
+      "sleep_rem_sleep_percent_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_resting_heart_rate_mean",
+    "source_columns": [
+      "sleep_resting_heart_rate_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_resting_heart_rate_std",
+    "source_columns": [
+      "sleep_resting_heart_rate_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_resting_heart_rate_cv",
+    "source_columns": [
+      "sleep_resting_heart_rate_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_restlessness_mean",
+    "source_columns": [
+      "sleep_restlessness_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_restlessness_std",
+    "source_columns": [
+      "sleep_restlessness_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_restlessness_cv",
+    "source_columns": [
+      "sleep_restlessness_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_hr_below_resting_hr_mean",
+    "source_columns": [
+      "sleep_hr_below_resting_hr_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_hr_below_resting_hr_std",
+    "source_columns": [
+      "sleep_hr_below_resting_hr_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_hr_below_resting_hr_cv",
+    "source_columns": [
+      "sleep_hr_below_resting_hr_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_waso_count_long_wakes_mean",
+    "source_columns": [
+      "sleep_waso_count_long_wakes_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_waso_count_long_wakes_std",
+    "source_columns": [
+      "sleep_waso_count_long_wakes_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_waso_count_long_wakes_cv",
+    "source_columns": [
+      "sleep_waso_count_long_wakes_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_waso_count_all_wake_time_mean",
+    "source_columns": [
+      "sleep_waso_count_all_wake_time_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_waso_count_all_wake_time_std",
+    "source_columns": [
+      "sleep_waso_count_all_wake_time_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_waso_count_all_wake_time_cv",
+    "source_columns": [
+      "sleep_waso_count_all_wake_time_cv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "bedtime_hour_mean",
+    "source_columns": [
+      "bedtime_hour_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "bedtime_hour_std",
+    "source_columns": [
+      "bedtime_hour_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "wake_hour_mean",
+    "source_columns": [
+      "wake_hour_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "wake_hour_std",
+    "source_columns": [
+      "wake_hour_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_midpoint_hour_mean",
+    "source_columns": [
+      "sleep_midpoint_hour_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_midpoint_hour_std",
+    "source_columns": [
+      "sleep_midpoint_hour_std"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "polyphasic_sleep_pct",
+    "source_columns": [
+      "polyphasic_sleep_pct"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "weekend_sleep_recovery_min",
+    "source_columns": [
+      "weekend_sleep_recovery_min"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "social_jet_lag_proxy",
+    "source_columns": [
+      "social_jet_lag_proxy"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_weekday_mean",
+    "source_columns": [
+      "steps_weekday_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_weekend_mean",
+    "source_columns": [
+      "steps_weekend_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_weekend_delta",
+    "source_columns": [
+      "steps_weekend_delta"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_weekday_mean",
+    "source_columns": [
+      "unlocks_weekday_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_weekend_mean",
+    "source_columns": [
+      "unlocks_weekend_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "unlocks_weekend_delta",
+    "source_columns": [
+      "unlocks_weekend_delta"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "screen_weekday_mean",
+    "source_columns": [
+      "screen_weekday_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "screen_weekend_mean",
+    "source_columns": [
+      "screen_weekend_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "screen_weekend_delta",
+    "source_columns": [
+      "screen_weekend_delta"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "total_observation_hours",
+    "source_columns": [
+      "total_observation_hours"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "total_observation_days",
+    "source_columns": [
+      "total_observation_days"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "steps_compliance_rate",
+    "source_columns": [
+      "steps_compliance_rate"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "screen_compliance_rate",
+    "source_columns": [
+      "screen_compliance_rate"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "activity_compliance_rate",
+    "source_columns": [
+      "activity_compliance_rate"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "location_compliance_rate",
+    "source_columns": [
+      "location_compliance_rate"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "activity_coverage_mean",
+    "source_columns": [
+      "activity_coverage_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "pct_partial_activity_hours",
+    "source_columns": [
+      "pct_partial_activity_hours"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "location_coverage_mean",
+    "source_columns": [
+      "location_coverage_mean"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "pct_partial_location_hours",
+    "source_columns": [
+      "pct_partial_location_hours"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "pct_screen_time_capped_hours",
+    "source_columns": [
+      "pct_screen_time_capped_hours"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "gender_numeric",
+    "source_columns": [
+      "gender_numeric"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "education_ordinal",
+    "source_columns": [
+      "education_ordinal"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "lives_alone",
+    "source_columns": [
+      "lives_alone"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "is_married",
+    "source_columns": [
+      "is_married"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "has_disability",
+    "source_columns": [
+      "has_disability"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "is_hispanic",
+    "source_columns": [
+      "is_hispanic"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "financial_ordinal",
+    "source_columns": [
+      "financial_ordinal"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "extraversion_score",
+    "source_columns": [
+      "extraversion_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "agreeableness_score",
+    "source_columns": [
+      "agreeableness_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "conscientiousness_score",
+    "source_columns": [
+      "conscientiousness_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "neuroticism_score",
+    "source_columns": [
+      "neuroticism_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "openness_score",
+    "source_columns": [
+      "openness_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_disturbance_score",
+    "source_columns": [
+      "sleep_disturbance_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "restless_score",
+    "source_columns": [
+      "restless_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "satisfied_score",
+    "source_columns": [
+      "satisfied_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "refreshing_score",
+    "source_columns": [
+      "refreshing_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "trouble_falling_asleep_score",
+    "source_columns": [
+      "trouble_falling_asleep_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "trouble_staying_asleep_score",
+    "source_columns": [
+      "trouble_staying_asleep_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "trouble_sleeping_score",
+    "source_columns": [
+      "trouble_sleeping_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "enough_sleep_score",
+    "source_columns": [
+      "enough_sleep_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "quality_score",
+    "source_columns": [
+      "quality_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleep_impairment_score",
+    "source_columns": [
+      "sleep_impairment_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "trouble_productivity_score",
+    "source_columns": [
+      "trouble_productivity_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "alertness_score",
+    "source_columns": [
+      "alertness_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "tiredness_score",
+    "source_columns": [
+      "tiredness_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "problems_score",
+    "source_columns": [
+      "problems_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "trouble_concentrating_score",
+    "source_columns": [
+      "trouble_concentrating_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "irritability_score",
+    "source_columns": [
+      "irritability_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sleepy_during_daytime_score",
+    "source_columns": [
+      "sleepy_during_daytime_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "trouble_staying_awake_score",
+    "source_columns": [
+      "trouble_staying_awake_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "gad_score",
+    "source_columns": [
+      "gad_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "pss_score",
+    "source_columns": [
+      "pss_score"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  }
+]

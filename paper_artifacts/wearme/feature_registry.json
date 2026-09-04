@@ -1,0 +1,514 @@
+[
+  {
+    "name": "age",
+    "source_columns": [
+      "age"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "bmi",
+    "source_columns": [
+      "bmi"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "Resting Heart Rate (mean)",
+    "source_columns": [
+      "Resting Heart Rate (mean)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "Resting Heart Rate (median)",
+    "source_columns": [
+      "Resting Heart Rate (median)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "Resting Heart Rate (std)",
+    "source_columns": [
+      "Resting Heart Rate (std)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "HRV (mean)",
+    "source_columns": [
+      "HRV (mean)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "HRV (median)",
+    "source_columns": [
+      "HRV (median)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "HRV (std)",
+    "source_columns": [
+      "HRV (std)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "STEPS (mean)",
+    "source_columns": [
+      "STEPS (mean)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "STEPS (median)",
+    "source_columns": [
+      "STEPS (median)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "STEPS (std)",
+    "source_columns": [
+      "STEPS (std)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "SLEEP Duration (mean)",
+    "source_columns": [
+      "SLEEP Duration (mean)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "SLEEP Duration (median)",
+    "source_columns": [
+      "SLEEP Duration (median)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "SLEEP Duration (std)",
+    "source_columns": [
+      "SLEEP Duration (std)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "AZM Weekly (mean)",
+    "source_columns": [
+      "AZM Weekly (mean)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "AZM Weekly (median)",
+    "source_columns": [
+      "AZM Weekly (median)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "AZM Weekly (std)",
+    "source_columns": [
+      "AZM Weekly (std)"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "total cholesterol",
+    "source_columns": [
+      "total cholesterol"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "hdl",
+    "source_columns": [
+      "hdl"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "triglycerides",
+    "source_columns": [
+      "triglycerides"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "ldl",
+    "source_columns": [
+      "ldl"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "chol/hdl",
+    "source_columns": [
+      "chol/hdl"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "non hdl",
+    "source_columns": [
+      "non hdl"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "glucose",
+    "source_columns": [
+      "glucose"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "bun",
+    "source_columns": [
+      "bun"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "creatinine",
+    "source_columns": [
+      "creatinine"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "egfr",
+    "source_columns": [
+      "egfr"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "sodium",
+    "source_columns": [
+      "sodium"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "potassium",
+    "source_columns": [
+      "potassium"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "chloride",
+    "source_columns": [
+      "chloride"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "co2",
+    "source_columns": [
+      "co2"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "calcium",
+    "source_columns": [
+      "calcium"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "total protein",
+    "source_columns": [
+      "total protein"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "albumin",
+    "source_columns": [
+      "albumin"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "globulin",
+    "source_columns": [
+      "globulin"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "albumin/globulin",
+    "source_columns": [
+      "albumin/globulin"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "total bilirubin",
+    "source_columns": [
+      "total bilirubin"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "alp",
+    "source_columns": [
+      "alp"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "ast",
+    "source_columns": [
+      "ast"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "alt",
+    "source_columns": [
+      "alt"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "crp",
+    "source_columns": [
+      "crp"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "white_blood_cell",
+    "source_columns": [
+      "white_blood_cell"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "red_blood_cell",
+    "source_columns": [
+      "red_blood_cell"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "hb",
+    "source_columns": [
+      "hb"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "hematocrit",
+    "source_columns": [
+      "hematocrit"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "mcv",
+    "source_columns": [
+      "mcv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "mch",
+    "source_columns": [
+      "mch"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "mchc",
+    "source_columns": [
+      "mchc"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "rdw",
+    "source_columns": [
+      "rdw"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "platelet",
+    "source_columns": [
+      "platelet"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "mpv",
+    "source_columns": [
+      "mpv"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "absolute_neutrophils",
+    "source_columns": [
+      "absolute_neutrophils"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "absolute_lymphocytes",
+    "source_columns": [
+      "absolute_lymphocytes"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "absolute_monocytes",
+    "source_columns": [
+      "absolute_monocytes"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "absolute_eosinophils",
+    "source_columns": [
+      "absolute_eosinophils"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "absolute_basophils",
+    "source_columns": [
+      "absolute_basophils"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "neutrophils",
+    "source_columns": [
+      "neutrophils"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "lymphocytes",
+    "source_columns": [
+      "lymphocytes"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "monocytes",
+    "source_columns": [
+      "monocytes"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "eosinophils",
+    "source_columns": [
+      "eosinophils"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "basophils",
+    "source_columns": [
+      "basophils"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "ggt",
+    "source_columns": [
+      "ggt"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "total testosterone",
+    "source_columns": [
+      "total testosterone"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  },
+  {
+    "name": "True_hba1c",
+    "source_columns": [
+      "True_hba1c"
+    ],
+    "category": "raw_sensor",
+    "formula_description": "Original sensor measurement"
+  }
+]

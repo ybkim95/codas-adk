@@ -1,0 +1,2698 @@
+[
+  {
+    "feature": "sleep_min_in_sleep_period_main_sleep_std",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_min_in_sleep_period_main_sleep_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.2642191649178783,
+      "p_value": 2.3968782092782e-25,
+      "ci_lower": 0.21264372046101518,
+      "ci_upper": 0.3156702775000828,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 2.773432010095645e-84
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2642, p=0.0",
+          "rho": 0.2642191649178783,
+          "p_value": 2.3968782092782e-25
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.2126, 0.3157]",
+          "ci_lower": 0.21264372046101518,
+          "ci_upper": 0.3156702775000828
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3406",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.141 same; high_target: rho=0.145 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.246 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.264 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1652, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.16519468764330658,
+          "residual_p": 5.169143040010169e-47,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.257",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2642, CI=[0.2126, 0.3157], CI_mid=0.2642"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6219 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_min_in_sleep_period_main_sleep_cv",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_min_in_sleep_period_main_sleep_cv"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.2597132293301343,
+      "p_value": 1.623317182391129e-24,
+      "ci_lower": 0.20904713371376968,
+      "ci_upper": 0.30695585723401053,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 5.535201564839672e-81
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2597, p=0.0",
+          "rho": 0.2597132293301343,
+          "p_value": 1.623317182391129e-24
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.209, 0.307]",
+          "ci_lower": 0.20904713371376968,
+          "ci_upper": 0.30695585723401053
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3406",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.128 same; high_target: rho=0.148 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.223 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.26 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1647, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1647359170179413,
+          "residual_p": 9.28648746506272e-47,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.252",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2597, CI=[0.209, 0.307], CI_mid=0.258"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6206 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "nocturnal_social_app_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "nocturnal_social_app_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.27970269063993086,
+      "p_value": 2.5163364544139335e-28,
+      "ci_lower": 0.23554487326695903,
+      "ci_upper": 0.32553199340785605,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 5.222668346053416e-77
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2797, p=0.0",
+          "rho": 0.27970269063993086,
+          "p_value": 2.5163364544139335e-28
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.2355, 0.3255]",
+          "ci_lower": 0.23554487326695903,
+          "ci_upper": 0.32553199340785605
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=5375",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.129 same; high_target: rho=0.147 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.242 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.28 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1615, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1614691829956169,
+          "residual_p": 5.730508315313771e-45,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.246",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2797, CI=[0.2355, 0.3255], CI_mid=0.2805"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6193 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_resting_heart_rate_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_resting_heart_rate_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.17190104629764674,
+      "p_value": 2.1184161679794307e-11,
+      "ci_lower": 0.1244845820339511,
+      "ci_upper": 0.22071092612185716,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 2.838880341223804e-76
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1719, p=0.0",
+          "rho": 0.17190104629764674,
+          "p_value": 2.1184161679794307e-11
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1245, 0.2207]",
+          "ci_lower": 0.1244845820339511,
+          "ci_upper": 0.22071092612185716
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3406",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.117 same; high_target: rho=0.104 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.217 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.172 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1366, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.13655085050318969,
+          "residual_p": 1.5589214184468494e-32,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.23",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1719, CI=[0.1245, 0.2207], CI_mid=0.1726"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6127 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_sleep_time_minutes_cv",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_sleep_time_minutes_cv"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.22509054110368534,
+      "p_value": 1.1649184951720155e-18,
+      "ci_lower": 0.17821971736106387,
+      "ci_upper": 0.2745999951910669,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 1.1948218431145064e-73
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2251, p=0.0",
+          "rho": 0.22509054110368534,
+          "p_value": 1.1649184951720155e-18
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1782, 0.2746]",
+          "ci_lower": 0.17821971736106387,
+          "ci_upper": 0.2745999951910669
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=1154",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.127 same; high_target: rho=0.133 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.236 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.225 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.148, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1480258818869044,
+          "residual_p": 5.413918252705341e-38,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.24",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2251, CI=[0.1782, 0.2746], CI_mid=0.2264"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6118 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_sleep_time_minutes_std",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_sleep_time_minutes_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.21570863797474676,
+      "p_value": 3.1359607374476295e-17,
+      "ci_lower": 0.16719019678071437,
+      "ci_upper": 0.2656736807201826,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 5.695624957696254e-72
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2157, p=0.0",
+          "rho": 0.21570863797474676,
+          "p_value": 3.1359607374476295e-17
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1672, 0.2657]",
+          "ci_lower": 0.16719019678071437,
+          "ci_upper": 0.2656736807201826
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=1154",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.131 same; high_target: rho=0.126 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.237 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.216 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.145, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1449962600359408,
+          "residual_p": 1.6554096251701117e-36,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.237",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2157, CI=[0.1672, 0.2657], CI_mid=0.2164"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6091 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "bedtime_hour_std",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "bedtime_hour_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.24151934701326971,
+      "p_value": 2.526926407819483e-21,
+      "ci_lower": 0.18955581292359167,
+      "ci_upper": 0.29336278431178725,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 9.877294344777037e-70
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2415, p=0.0",
+          "rho": 0.24151934701326971,
+          "p_value": 2.526926407819483e-21
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1896, 0.2934]",
+          "ci_lower": 0.18955581292359167,
+          "ci_upper": 0.29336278431178725
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=1363",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.116 same; high_target: rho=0.141 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.225 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.242 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1547, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.15467428142444603,
+          "residual_p": 2.304023893225074e-41,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.232",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2415, CI=[0.1896, 0.2934], CI_mid=0.2415"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6118 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "night_day_social_ratio",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "night_day_social_ratio"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.24572171410608223,
+      "p_value": 4.876774903893957e-22,
+      "ci_lower": 0.19897402350966656,
+      "ci_upper": 0.29306532954796205,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 4.667341940839284e-64
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2457, p=0.0",
+          "rho": 0.24572171410608223,
+          "p_value": 4.876774903893957e-22
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.199, 0.2931]",
+          "ci_lower": 0.19897402350966656,
+          "ci_upper": 0.29306532954796205
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=6065",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.104 same; high_target: rho=0.157 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.209 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.246 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1467, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1467055969902799,
+          "residual_p": 2.425106805135929e-37,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.224",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2457, CI=[0.199, 0.2931], CI_mid=0.246"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6068 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "nocturnal_unlocks_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "nocturnal_unlocks_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.23821972992766774,
+      "p_value": 8.996157457946935e-21,
+      "ci_lower": 0.18445381613715844,
+      "ci_upper": 0.29139741323658375,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 1.0454272412646619e-61
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2382, p=0.0",
+          "rho": 0.23821972992766774,
+          "p_value": 8.996157457946935e-21
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1845, 0.2914]",
+          "ci_lower": 0.18445381613715844,
+          "ci_upper": 0.29139741323658375
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=5874",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.114 same; high_target: rho=0.148 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.21 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.238 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1644, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.16438515068442647,
+          "residual_p": 1.4517310569474024e-46,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.217",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2382, CI=[0.1845, 0.2914], CI_mid=0.2379"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6028 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "daily_steps_cv",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "daily_steps_cv"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.21634550180848097,
+      "p_value": 2.5197806710199388e-17,
+      "ci_lower": 0.1627722770208202,
+      "ci_upper": 0.26593015974053497,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 1.756678718753449e-57
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2163, p=0.0",
+          "rho": 0.21634550180848097,
+          "p_value": 2.5197806710199388e-17
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1628, 0.2659]",
+          "ci_lower": 0.1627722770208202,
+          "ci_upper": 0.26593015974053497
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=6065",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.107 same; high_target: rho=0.114 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.203 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.216 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1514, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1513695338514443,
+          "residual_p": 1.1410476329158309e-39,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.207",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2163, CI=[0.1628, 0.2659], CI_mid=0.2144"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6031 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "daily_steps_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "daily_steps_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": -0.241256048595021,
+      "p_value": 2.798364085222782e-21,
+      "ci_lower": -0.29781150666503053,
+      "ci_upper": -0.1859070090281642,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 2.693034082564325e-57
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=-0.2413, p=0.0",
+          "rho": -0.241256048595021,
+          "p_value": 2.798364085222782e-21
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[-0.2978, -0.1859]",
+          "ci_lower": -0.29781150666503053,
+          "ci_upper": -0.1859070090281642
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=7340",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=-0.147 same; high_target: rho=-0.109 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=-0.187 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.241 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=-0.1332, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": -0.13322733702366668,
+          "residual_p": 4.894101948665442e-31,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=-0.212",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=-0.2413, CI=[-0.2978, -0.1859], CI_mid=-0.2419"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5991 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "steps_hourly_std",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "steps_hourly_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": 1,
+      "discovery_method": "spearman",
+      "analysis_track": "construct_excluded"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": -0.21441050410713128,
+      "p_value": 4.8876384586310626e-17,
+      "ci_lower": -0.2668993039306576,
+      "ci_upper": -0.1679321447737988,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 8.679778720958056e-56
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=-0.2144, p=0.0",
+          "rho": -0.21441050410713128,
+          "p_value": 4.8876384586310626e-17
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[-0.2669, -0.1679]",
+          "ci_lower": -0.2668993039306576,
+          "ci_upper": -0.1679321447737988
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=4999",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=-0.141 same; high_target: rho=-0.111 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=-0.197 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.214 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=-0.1089, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": -0.10892339862641548,
+          "residual_p": 3.1468864144427175e-21,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=-0.204",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=-0.2144, CI=[-0.2669, -0.1679], CI_mid=-0.2174"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5945 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "night_day_unlock_ratio",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "night_day_unlock_ratio"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "reinv_nonlinear_check",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.22956871232003462,
+      "p_value": 2.2934444112052063e-19,
+      "ci_lower": 0.17782623894434255,
+      "ci_upper": 0.27926954173432733,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 1.566716182462716e-79
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2296, p=0.0",
+          "rho": 0.22956871232003462,
+          "p_value": 2.2934444112052063e-19
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1778, 0.2793]",
+          "ci_lower": 0.17782623894434255,
+          "ci_upper": 0.27926954173432733
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=7128",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.106 same; high_target: rho=0.175 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.202 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.23 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1428, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.14279474280696236,
+          "residual_p": 1.8985802834478755e-35,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.218",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2296, CI=[0.1778, 0.2793], CI_mid=0.2285"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.6001 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_midpoint_hour_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_midpoint_hour_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "reinv_partial_correlation",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.19531275835863157,
+      "p_value": 2.409522704458032e-14,
+      "ci_lower": 0.14109744578963843,
+      "ci_upper": 0.2448543487723077,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": 5.1710473580717206e-08
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1953, p=0.0",
+          "rho": 0.19531275835863157,
+          "p_value": 2.409522704458032e-14
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1411, 0.2449]",
+          "ci_lower": 0.14109744578963843,
+          "ci_upper": 0.2448543487723077
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3406",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.105 same; high_target: rho=0.136 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.185 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.195 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.127, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.127024839557278,
+          "residual_p": 2.4127024438987698e-28,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.198",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1953, CI=[0.1411, 0.2449], CI_mid=0.193"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5914 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "hedonic_productivity_ratio",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "hedonic_productivity_ratio"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.15992410697384554,
+      "p_value": 4.82664083721673e-10,
+      "ci_lower": 0.11498333010281668,
+      "ci_upper": 0.2069084410460569,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1599, p=0.0",
+          "rho": 0.15992410697384554,
+          "p_value": 4.82664083721673e-10
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.115, 0.2069]",
+          "ci_lower": 0.11498333010281668,
+          "ci_upper": 0.2069084410460569
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=6444",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.099 same; high_target: rho=0.09 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.133 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.16 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0824, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.08236444308578396,
+          "residual_p": 9.165398975291285e-13,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.153",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1599, CI=[0.115, 0.2069], CI_mid=0.1609"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5703 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "wake_hour_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "wake_hour_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.17465420443395038,
+      "p_value": 9.996443246672381e-12,
+      "ci_lower": 0.12869122920134957,
+      "ci_upper": 0.22865580991668705,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1747, p=0.0",
+          "rho": 0.17465420443395038,
+          "p_value": 9.996443246672381e-12
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1287, 0.2287]",
+          "ci_lower": 0.12869122920134957,
+          "ci_upper": 0.22865580991668705
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=5779",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.104 same; high_target: rho=0.125 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.18 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.175 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.123, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.12303339511911753,
+          "residual_p": 1.11265685258095e-26,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.18",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1747, CI=[0.1287, 0.2287], CI_mid=0.1787"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5813 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "polyphasic_sleep_pct",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "polyphasic_sleep_pct"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.22685387064242601,
+      "p_value": 6.168443079223463e-19,
+      "ci_lower": 0.1749242610421672,
+      "ci_upper": 0.2780805503632636,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.2269, p=0.0",
+          "rho": 0.22685387064242601,
+          "p_value": 6.168443079223463e-19
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1749, 0.2781]",
+          "ci_lower": 0.1749242610421672,
+          "ci_upper": 0.2780805503632636
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=6857",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.118 same; high_target: rho=0.089 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.178 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.227 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1249, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1248908404486488,
+          "residual_p": 1.9001290557185824e-27,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.195",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.2269, CI=[0.1749, 0.2781], CI_mid=0.2265"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5933 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_resting_heart_rate_std",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_resting_heart_rate_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.12195489167768794,
+      "p_value": 2.2026557201423235e-06,
+      "ci_lower": 0.07199018930632829,
+      "ci_upper": 0.17212829234054375,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.122, p=0.0",
+          "rho": 0.12195489167768794,
+          "p_value": 2.2026557201423235e-06
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.072, 0.1721]",
+          "ci_lower": 0.07199018930632829,
+          "ci_upper": 0.17212829234054375
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3347",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.06 same; high_target: rho=0.097 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.142 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.122 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.101, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.10101465023580586,
+          "residual_p": 1.8292097141252616e-18,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.145",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.122, CI=[0.072, 0.1721], CI_mid=0.1221"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5677 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "steps_circadian_acrophase_hour",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "steps_circadian_acrophase_hour"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.15142462603789078,
+      "p_value": 3.865690387872077e-09,
+      "ci_lower": 0.10010834087277638,
+      "ci_upper": 0.20088748667288034,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1514, p=0.0",
+          "rho": 0.15142462603789078,
+          "p_value": 3.865690387872077e-09
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1001, 0.2009]",
+          "ci_lower": 0.10010834087277638,
+          "ci_upper": 0.20088748667288034
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=6125",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.078 same; high_target: rho=0.074 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.108 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.151 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1104, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.11044180352956996,
+          "residual_p": 8.775898820433392e-22,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.132",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1514, CI=[0.1001, 0.2009], CI_mid=0.1505"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5634 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "social_min_proportion",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "social_min_proportion"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.14217886953354147,
+      "p_value": 3.2687798799277484e-08,
+      "ci_lower": 0.09359483353110212,
+      "ci_upper": 0.19112129650011325,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1422, p=0.0",
+          "rho": 0.14217886953354147,
+          "p_value": 3.2687798799277484e-08
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.0936, 0.1911]",
+          "ci_lower": 0.09359483353110212,
+          "ci_upper": 0.19112129650011325
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=5779",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.084 same; high_target: rho=0.009 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.098 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.142 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0597, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.059695886897774664,
+          "residual_p": 2.3094222472978868e-07,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.11",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1422, CI=[0.0936, 0.1911], CI_mid=0.1424"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5566 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_deep_sleep_minutes_std",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "sleep_deep_sleep_minutes_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.13097640093969312,
+      "p_value": 3.637571709795196e-07,
+      "ci_lower": 0.08203149838960706,
+      "ci_upper": 0.17822270562430428,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.131, p=0.0",
+          "rho": 0.13097640093969312,
+          "p_value": 3.637571709795196e-07
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.082, 0.1782]",
+          "ci_lower": 0.08203149838960706,
+          "ci_upper": 0.17822270562430428
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=699",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.055 same; high_target: rho=0.09 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.152 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.131 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1011, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.10109296768030522,
+          "residual_p": 1.7215044243975928e-18,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.152",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.131, CI=[0.082, 0.1782], CI_mid=0.1301"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5757 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "wake_hour_std",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "wake_hour_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.17125883869022399,
+      "p_value": 2.519605523416549e-11,
+      "ci_lower": 0.12217341337147486,
+      "ci_upper": 0.2237921640973438,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1713, p=0.0",
+          "rho": 0.17125883869022399,
+          "p_value": 2.519605523416549e-11
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1222, 0.2238]",
+          "ci_lower": 0.12217341337147486,
+          "ci_upper": 0.2237921640973438
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=4698",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.103 same; high_target: rho=0.112 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.177 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.171 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1189, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.11888130731956852,
+          "residual_p": 5.248717303384343e-25,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.19",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1713, CI=[0.1222, 0.2238], CI_mid=0.173"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5899 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "late_night_doomscroll_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "late_night_doomscroll_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.19067815227663706,
+      "p_value": 9.900004833461258e-14,
+      "ci_lower": 0.13987512286878181,
+      "ci_upper": 0.24476641265705207,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1907, p=0.0",
+          "rho": 0.19067815227663706,
+          "p_value": 9.900004833461258e-14
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.1399, 0.2448]",
+          "ci_lower": 0.13987512286878181,
+          "ci_upper": 0.24476641265705207
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3406",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.106 same; high_target: rho=0.066 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.169 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.191 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.1078, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.1077506763570539,
+          "residual_p": 8.335709622713725e-21,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.177",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1907, CI=[0.1399, 0.2448], CI_mid=0.1923"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5887 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "social_app_proportion",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "social_app_proportion"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.11914705296178127,
+      "p_value": 3.7623021058562426e-06,
+      "ci_lower": 0.06539205044484801,
+      "ci_upper": 0.1681540080826084,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 10,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1191, p=0.0",
+          "rho": 0.11914705296178127,
+          "p_value": 3.7623021058562426e-06
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.0654, 0.1682]",
+          "ci_lower": 0.06539205044484801,
+          "ci_upper": 0.1681540080826084
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=5779",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.064 same; high_target: rho=0.009 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.082 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.119 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0688, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.06882211861849959,
+          "residual_p": 2.4454756741058827e-09,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.088",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1191, CI=[0.0654, 0.1682], CI_mid=0.1168"
+        },
+        "discriminative_power": {
+          "passed": 0,
+          "evidence": "regression binarized AUC=0.5455 (median split, N_pos=3507, N_neg=3990) BELOW 0.55 THRESHOLD",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "presleep_2h_social_app_mean",
+    "verdict": "VALIDATED",
+    "provenance": {
+      "source_columns": [
+        "presleep_2h_social_app_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.12274778135657809,
+      "p_value": 1.8895332196971776e-06,
+      "ci_lower": 0.07328565628624013,
+      "ci_upper": 0.17565969140583274,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.1227, p=0.0",
+          "rho": 0.12274778135657809,
+          "p_value": 1.8895332196971776e-06
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.0733, 0.1757]",
+          "ci_lower": 0.07328565628624013,
+          "ci_upper": 0.17565969140583274
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=460",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.072 same; high_target: rho=0.009 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.1 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.123 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0691, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.06906309473276057,
+          "residual_p": 2.150724189453377e-09,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.108",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.1227, CI=[0.0733, 0.1757], CI_mid=0.1245"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.557 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "steps_autocorrelation_lag1",
+    "verdict": "CONDITIONAL",
+    "provenance": {
+      "source_columns": [
+        "steps_autocorrelation_lag1"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.07200682352042927,
+      "p_value": 0.005299429642126131,
+      "ci_lower": 0.02281765682883588,
+      "ci_upper": 0.12732353611596195,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.072, p=0.0053",
+          "rho": 0.07200682352042927,
+          "p_value": 0.005299429642126131
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.004 (2/500 exceeded observed)",
+          "perm_p": 0.004
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.0228, 0.1273]",
+          "ci_lower": 0.02281765682883588,
+          "ci_upper": 0.12732353611596195
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3406",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.022 same; high_target: rho=0.038 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.095 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.072 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0362, p=0.0017 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.0361852449482465,
+          "residual_p": 0.0017266955998493808,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.096",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.072, CI=[0.0228, 0.1273], CI_mid=0.0751"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5546 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "night_day_screen_ratio",
+    "verdict": "CONDITIONAL",
+    "provenance": {
+      "source_columns": [
+        "night_day_screen_ratio"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.07739603693892876,
+      "p_value": 0.0027217433789588027,
+      "ci_lower": 0.023773711939165686,
+      "ci_upper": 0.13223520499906002,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 10,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.0774, p=0.0027",
+          "rho": 0.07739603693892876,
+          "p_value": 0.0027217433789588027
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.002 (1/500 exceeded observed)",
+          "perm_p": 0.002
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.0238, 0.1322]",
+          "ci_lower": 0.023773711939165686,
+          "ci_upper": 0.13223520499906002
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=4914",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.052 same; high_target: rho=0.095 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.068 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.077 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0685, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.06851629356704436,
+          "residual_p": 2.8766238773563898e-09,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.094",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.0774, CI=[0.0238, 0.1322], CI_mid=0.078"
+        },
+        "discriminative_power": {
+          "passed": 0,
+          "evidence": "regression binarized AUC=0.5391 (median split, N_pos=3507, N_neg=3990) BELOW 0.55 THRESHOLD",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "steps_intradaily_variability",
+    "verdict": "CONDITIONAL",
+    "provenance": {
+      "source_columns": [
+        "steps_intradaily_variability"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": -0.07835426631490142,
+      "p_value": 0.0024072804175077323,
+      "ci_lower": -0.1329927399328732,
+      "ci_upper": -0.030907170839422324,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 11,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=-0.0784, p=0.0024",
+          "rho": -0.07835426631490142,
+          "p_value": 0.0024072804175077323
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.0 (0/500 exceeded observed)",
+          "perm_p": 0.0
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[-0.133, -0.0309]",
+          "ci_lower": -0.1329927399328732,
+          "ci_upper": -0.030907170839422324
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3406",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=-0.02 same; high_target: rho=-0.039 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=-0.091 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.078 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=-0.0358, p=0.0019 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": -0.03578997913631106,
+          "residual_p": 0.0019393965846352774,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=-0.095",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=-0.0784, CI=[-0.133, -0.0309], CI_mid=-0.0819"
+        },
+        "discriminative_power": {
+          "passed": 1,
+          "evidence": "regression binarized AUC=0.5542 (median split, N_pos=3507, N_neg=3990) OK",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "daily_screen_time_cv",
+    "verdict": "CONDITIONAL",
+    "provenance": {
+      "source_columns": [
+        "daily_screen_time_cv"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.07164394767549397,
+      "p_value": 0.005534473078015645,
+      "ci_lower": 0.02319338596842609,
+      "ci_upper": 0.12050096665199754,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 10,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.0716, p=0.0055",
+          "rho": 0.07164394767549397,
+          "p_value": 0.005534473078015645
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.004 (2/500 exceeded observed)",
+          "perm_p": 0.004
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.0232, 0.1205]",
+          "ci_lower": 0.02319338596842609,
+          "ci_upper": 0.12050096665199754
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=629",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.022 same; high_target: rho=0.062 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.073 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.072 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0871, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.08705783095754076,
+          "residual_p": 4.3191667211624667e-14,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.078",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.0716, CI=[0.0232, 0.1205], CI_mid=0.0718"
+        },
+        "discriminative_power": {
+          "passed": 0,
+          "evidence": "regression binarized AUC=0.5391 (median split, N_pos=3507, N_neg=3990) BELOW 0.55 THRESHOLD",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_resting_heart_rate_cv",
+    "verdict": "CONDITIONAL",
+    "provenance": {
+      "source_columns": [
+        "sleep_resting_heart_rate_cv"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.057826741668647604,
+      "p_value": 0.025212503475842956,
+      "ci_lower": 0.008564557978532221,
+      "ci_upper": 0.10844163909637206,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 10,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=0.0578, p=0.0252",
+          "rho": 0.057826741668647604,
+          "p_value": 0.025212503475842956
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.026 (13/500 exceeded observed)",
+          "perm_p": 0.026
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[0.0086, 0.1084]",
+          "ci_lower": 0.008564557978532221,
+          "ci_upper": 0.10844163909637206
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=3347",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 1,
+          "evidence": "low_target: rho=0.027 same; high_target: rho=0.067 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=0.081 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.058 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=0.0585, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": 0.05847770598991979,
+          "residual_p": 4.0456600654477866e-07,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=0.074",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=0.0578, CI=[0.0086, 0.1084], CI_mid=0.0585"
+        },
+        "discriminative_power": {
+          "passed": 0,
+          "evidence": "regression binarized AUC=0.532 (median split, N_pos=3507, N_neg=3990) BELOW 0.55 THRESHOLD",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "health_app_total",
+    "verdict": "CONDITIONAL",
+    "provenance": {
+      "source_columns": [
+        "health_app_total"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": -0.08453688107009288,
+      "p_value": 0.001056438651252009,
+      "ci_lower": -0.13082948794911864,
+      "ci_upper": -0.03293118360590333,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 9,
+      "tests_total": 11,
+      "tests_results": {
+        "replication": {
+          "passed": 1,
+          "evidence": "rho=-0.0845, p=0.0011",
+          "rho": -0.08453688107009288,
+          "p_value": 0.001056438651252009
+        },
+        "permutation": {
+          "passed": 1,
+          "evidence": "perm_p=0.002 (1/500 exceeded observed)",
+          "perm_p": 0.002
+        },
+        "bootstrap": {
+          "passed": 1,
+          "evidence": "95pct CI=[-0.1308, -0.0329]",
+          "ci_lower": -0.13082948794911864,
+          "ci_upper": -0.03293118360590333
+        },
+        "loo_influence": {
+          "passed": 1,
+          "evidence": "0 sign/significance changes, most influential idx=2732",
+          "sign_changes": 0
+        },
+        "subgroup": {
+          "passed": 0,
+          "evidence": "low_target: rho=0.006 opposite; high_target: rho=-0.087 same"
+        },
+        "triangulation": {
+          "passed": 1,
+          "evidence": "Pearson r=-0.078 p=0.0"
+        },
+        "construct_validity": {
+          "passed": 1,
+          "evidence": "Correlation 0.085 threshold=0.85 OK"
+        },
+        "causal_robustness": {
+          "passed": 1,
+          "evidence": "Residual rho=-0.0637, p=0.0 controlling for 7 confounders (7 demographic, 0 validated)",
+          "residual_rho": -0.06373351808679766,
+          "residual_p": 3.331160310755576e-08,
+          "n_confounders": 7
+        },
+        "construct_independence": {
+          "passed": 1,
+          "evidence": "Feature classified as INDEPENDENT. target_rho=-0.076",
+          "construct_analysis_missing": 0
+        },
+        "ci_consistency": {
+          "passed": 1,
+          "evidence": "rho=-0.0845, CI=[-0.1308, -0.0329], CI_mid=-0.0819"
+        },
+        "discriminative_power": {
+          "passed": 0,
+          "evidence": "regression binarized AUC=0.539 (median split, N_pos=3507, N_neg=3990) BELOW 0.55 THRESHOLD",
+          "skipped": 0
+        }
+      }
+    }
+  },
+  {
+    "feature": "sleep_deep_sleep_minutes_mean",
+    "verdict": "REJECTED",
+    "provenance": {
+      "source_columns": [
+        "sleep_deep_sleep_minutes_mean"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.021849277164874992,
+      "p_value": 0.3980832122167668,
+      "ci_lower": -0.028916511710317557,
+      "ci_upper": 0.07293267690391592,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 0,
+      "tests_total": 3,
+      "tests_results": {
+        "replication": {
+          "passed": 0,
+          "evidence": "rho=0.0218, p=0.3981",
+          "rho": 0.021849277164874992,
+          "p_value": 0.3980832122167668
+        },
+        "permutation": {
+          "passed": 0,
+          "evidence": "perm_p=0.366 (183/500 exceeded observed)",
+          "perm_p": 0.366
+        },
+        "bootstrap": {
+          "passed": 0,
+          "evidence": "95pct CI=[-0.0289, 0.0729]",
+          "ci_lower": -0.028916511710317557,
+          "ci_upper": 0.07293267690391592
+        }
+      }
+    }
+  },
+  {
+    "feature": "app_diversity_entropy_daily_std",
+    "verdict": "REJECTED",
+    "provenance": {
+      "source_columns": [
+        "app_diversity_entropy_daily_std"
+      ],
+      "formula": "Original sensor measurement",
+      "category": "raw_sensor",
+      "discovery_round": null,
+      "discovery_method": "gradient_boosting",
+      "analysis_track": "primary"
+    },
+    "hypothesis": null,
+    "statistics": {
+      "rho": 0.042969706013332214,
+      "p_value": 0.096416716466032,
+      "ci_lower": -0.009904280573236526,
+      "ci_upper": 0.09866698075070549,
+      "fdr_adjusted_p": null,
+      "cumulative_fdr_p": null
+    },
+    "validation": {
+      "tests_passed": 0,
+      "tests_total": 3,
+      "tests_results": {
+        "replication": {
+          "passed": 0,
+          "evidence": "rho=0.043, p=0.0964",
+          "rho": 0.042969706013332214,
+          "p_value": 0.096416716466032
+        },
+        "permutation": {
+          "passed": 0,
+          "evidence": "perm_p=0.098 (49/500 exceeded observed)",
+          "perm_p": 0.098
+        },
+        "bootstrap": {
+          "passed": 0,
+          "evidence": "95pct CI=[-0.0099, 0.0987]",
+          "ci_lower": -0.009904280573236526,
+          "ci_upper": 0.09866698075070549
+        }
+      }
+    }
+  }
+]
