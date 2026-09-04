@@ -4,6 +4,8 @@ CoDaS is an AI co-data-scientist that prioritizes candidate biomarkers from wear
 
 ## Install
 
+Python 3.10 or newer.
+
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install --only-binary=:all: -r requirements-lock.txt
@@ -33,8 +35,8 @@ For the deterministic engine on its own, name the target and skip the API key.
 from codas.core.data import read_csv_dataset
 from codas.core.discovery import run_discovery, DiscoveryRequest
 
-df = read_csv_dataset("your_table.csv")
-report = run_discovery(df, DiscoveryRequest(target_column="outcome"))
+df = read_csv_dataset("examples/sample_dataset.csv")
+report = run_discovery(df, DiscoveryRequest(target_column="depression_score"))
 for c in report.candidates:
     print(c.verdict, c.feature, round(c.rho, 3), c.q_value)
 ```
