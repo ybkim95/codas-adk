@@ -20,9 +20,9 @@ The two are from the same analysis session.
 
 | File | What it holds |
 |---|---|
-| `validated_candidates.json` | Every candidate the discovery loop produced, with its verdict, the reason recorded for that verdict, and the per-test results from the validation battery. Rejected candidates are included with their rejection reason, which is the point of shipping it. |
+| `validated_candidates.json` | Every candidate the discovery loop produced, with its verdict, the reason recorded for that verdict, the per-test results from the validation battery, and the `discovery_round` in which it first appeared. Rejected candidates are included with their rejection reason, which is the point of shipping it. The round is present for all 23 WEAR-ME candidates and for 12 of the 33 Digital Wellbeing candidates, so a per-round reconstruction is complete for one cohort and partial for the other. |
 | `biomarker_proofs.json` | The per-candidate evidence assembled for each verdict. |
-| `feature_registry.json` | Every feature considered, with its category, its source columns and the formula used to construct it. It records how each feature was built, not which round introduced it. |
+| `feature_registry.json` | Every feature considered, with its category, its source columns and the formula used to construct it. It records how each feature was built. The discovery round is not here; it is in `validated_candidates.json`. |
 | `full_stat_results_spearman.json` | The derived per-candidate statistics, effect sizes with p-values and confidence intervals. |
 | `numeric_verification_log.json` | The numeric verification pass. Records each correction the pass made to the drafted report, with the before and after value. |
 
