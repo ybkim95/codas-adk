@@ -20,7 +20,8 @@ git ls-files | grep -Ei '\.(csv|tsv|parquet|json|xlsx|pkl|npy)$'
 | `paper_artifacts/dwb/validated_candidates.json` | 33 candidates | Candidates with verdicts, reasons and per-test results, Digital Wellbeing run | **None**, per-candidate |
 | `paper_artifacts/dwb/biomarker_proofs.json` | 33 candidates | Per-candidate evidence behind each verdict | **None**, per-candidate |
 | `paper_artifacts/dwb/feature_registry.json` | 194 features | Feature generation history | **None**, per-feature |
-| `paper_artifacts/dwb/full_stat_results_spearman.json` | per-feature | Derived effect sizes with p-values and intervals | **None**, per-feature |
+| `paper_artifacts/dwb/full_stat_results_spearman.json` | 145 features, n = 5,999 | Derived effect sizes on the discovery split | **None**, per-feature |
+| `paper_artifacts/dwb/full_stat_results_spearman_full_cohort.json` | 145 features, n = 7,497 | The same statistics on the full analytic sample, which is what the paper reports | **None**, per-feature |
 | `paper_artifacts/dwb/numeric_verification_log.json` | 12 corrections | Numeric verification pass record | **None** |
 | `paper_artifacts/wearme/validated_candidates.json` | 23 candidates | As above, WEAR-ME run | **None**, per-candidate |
 | `paper_artifacts/wearme/biomarker_proofs.json` | 23 candidates | As above, WEAR-ME run | **None**, per-candidate |

@@ -23,7 +23,8 @@ The two are from the same analysis session.
 | `validated_candidates.json` | Every candidate the discovery loop produced, with its verdict, the reason recorded for that verdict, the per-test results from the validation battery, and the `discovery_round` in which it first appeared. Rejected candidates are included with their rejection reason, which is the point of shipping it. The round is present for all 23 WEAR-ME candidates and for 12 of the 33 Digital Wellbeing candidates, so a per-round reconstruction is complete for one cohort and partial for the other. |
 | `biomarker_proofs.json` | The per-candidate evidence assembled for each verdict. |
 | `feature_registry.json` | Every feature considered, with its category, its source columns and the formula used to construct it. It records how each feature was built. The discovery round is not here; it is in `validated_candidates.json`. |
-| `full_stat_results_spearman.json` | The derived per-candidate statistics, effect sizes with p-values and confidence intervals. |
+| `full_stat_results_spearman.json` | The derived per-candidate statistics, effect sizes with p-values and confidence intervals, computed on the Digital Wellbeing discovery split, `n = 5,999`. |
+| `full_stat_results_spearman_full_cohort.json` | The same statistics computed on the full analytic sample, `n = 7,497`. These are the values the paper reports, so this is the file to check a reported effect size against. Digital Wellbeing only. |
 | `numeric_verification_log.json` | The numeric verification pass. Records each correction the pass made to the drafted report, with the before and after value. |
 
 ## What is not here, and why
@@ -53,3 +54,18 @@ records twelve corrections, several of the form `Sample size corrected: N=5511 -
 The pass compares numbers in the draft against the engine's own outputs. It does not check that
 a label attached to a number describes what the number measures. The paper's Methods states
 that boundary and gives the case where it mattered.
+
+## Two Spearman files for Digital Wellbeing, and why
+
+The pipeline screens candidates on a discovery split and reports effect sizes on the full
+analytic sample. Those are different numbers for the same feature, so both files ship rather
+than one. Main sleep duration variability is `rho = 0.2491` at `n = 5,999` in
+`full_stat_results_spearman.json` and `rho = 0.2521` at `n = 7,497` in
+`full_stat_results_spearman_full_cohort.json`. The paper reports 0.252, which is the second.
+
+The full-cohort file comes from an earlier run in the same family. It is shipped because it
+carries the sample the paper reports on, and a reader checking a reported effect size against
+the split-sample file alone would find a mismatch that is a difference of sample and not of
+result. WEAR-ME needs no second file. Its per-feature `n` already varies with how many
+participants carry each measurement, so `derived_cardio_fitness` is `n = 865` within a cohort
+of 1,078.
