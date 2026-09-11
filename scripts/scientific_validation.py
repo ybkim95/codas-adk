@@ -47,7 +47,7 @@ def _ar1(n, phi, rng):
     return x
 
 
-RESULTS: list[tuple[str, bool, str, str]] = []
+RESULTS: list[tuple[str, bool | None, str, str]] = []
 
 
 def record(name, passed, metric, detail=""):
@@ -206,7 +206,7 @@ def s9_no_overclaim():
 def s5_future_leakage_real_data():
     raw = os.getenv("CODAS_LEAKAGE_TEST_CSV", "")
     if not raw or not Path(raw).exists():
-        record("S5 future-leakage (real data)", True, "SKIPPED — set CODAS_LEAKAGE_TEST_CSV to run")
+        record("S5 future-leakage (real data)", None, "SKIPPED — set CODAS_LEAKAGE_TEST_CSV to run")
         return
     df = pd.read_csv(raw)
 
@@ -245,16 +245,21 @@ def main():
     print("CoDaS — SCIENTIFIC-VALIDITY AUDIT (longitudinal wearable scenarios, ground truth)")
     print("=" * 92)
     passed = 0
+    failed = 0
+    skipped = 0
     for name, ok, metric, detail in RESULTS:
-        mark = "✅" if ok else "❌"
-        passed += ok
+        mark = "✅" if ok is True else ("❌" if ok is False else "⚪")
+        passed += ok is True
+        failed += ok is False
+        skipped += ok is None
         print(f"\n{mark} {name}\n     {metric}")
-        if detail and not ok:
+        if detail and ok is False:
             print(f"     detail: {detail}")
     print("\n" + "=" * 92)
-    print(f"SCIENTIFIC VALIDITY: {passed}/{len(RESULTS)} scenarios reach the correct verdict")
+    print(f"SCIENTIFIC VALIDITY: {passed}/{passed + failed} executed scenarios reach the correct verdict; "
+          f"{skipped} skipped")
     print("=" * 92)
-    return 0 if passed == len(RESULTS) else 1
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
