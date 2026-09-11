@@ -1,8 +1,10 @@
 # Paper artifacts
 
-The run outputs behind the results reported in the accompanying paper, for the two cohorts
-whose participant-level data cannot be redistributed. These let a reader check the reported
-numbers against the records the pipeline produced, rather than take them on trust.
+Selected archived run outputs for two cohorts whose participant-level data cannot be
+redistributed. These files support row-level checks of the values they contain, but they are
+not a complete manifest of every candidate or number in the accompanying manuscript. In
+particular, this directory contains no GLOBEM run and should not be used to reconstruct the
+manuscript's aggregate candidate count without a separate reconciliation manifest.
 
 Nothing here is participant-level. Every file is per-feature or per-candidate. There are no
 participant identifiers and no arrays of participant length.
@@ -20,11 +22,11 @@ The two are from the same analysis session.
 
 | File | What it holds |
 |---|---|
-| `validated_candidates.json` | Every candidate the discovery loop produced, with its verdict, the reason recorded for that verdict, the per-test results from the validation battery, and the `discovery_round` in which it first appeared. Rejected candidates are included with their rejection reason, which is the point of shipping it. The round is present for all 23 WEAR-ME candidates and for 12 of the 33 Digital Wellbeing candidates, so a per-round reconstruction is complete for one cohort and partial for the other. |
-| `biomarker_proofs.json` | The per-candidate evidence assembled for each verdict. |
-| `feature_registry.json` | Every feature considered, with its category, its source columns and the formula used to construct it. It records how each feature was built. The discovery round is not here; it is in `validated_candidates.json`. |
-| `full_stat_results_spearman.json` | The derived per-candidate statistics, effect sizes with p-values and confidence intervals, computed on the Digital Wellbeing discovery split, `n = 5,999`. |
-| `full_stat_results_spearman_full_cohort.json` | The same statistics computed on the full analytic sample, `n = 7,497`. These are the values the paper reports, so this is the file to check a reported effect size against. Digital Wellbeing only. |
+| `validated_candidates.json` | Candidate records present in the archived export, with verdicts, recorded reasons and per-test results. Rejected records are included. `discovery_round` is non-null for all 23 WEAR-ME records and for 12 of the 33 Digital Wellbeing records, so round-level reconstruction is complete for the former export and partial for the latter; neither fact proves that the exports cover every manuscript row. |
+| `biomarker_proofs.json` | The per-candidate evidence fields present in the archived export. |
+| `feature_registry.json` | Archived feature records with category, source columns and formula fields. The export does not establish a complete, cross-cohort feature-generation manifest. |
+| `full_stat_results_spearman.json` | Per-feature statistics, effect sizes, p-values and confidence intervals computed on the archived Digital Wellbeing discovery split, `n = 5,999`. |
+| `full_stat_results_spearman_full_cohort.json` | The same statistics computed on the full analytic sample, `n = 7,497`. It contains the Digital Wellbeing full-sample effect reported in the paper; it is not a cross-cohort results manifest. |
 | `numeric_verification_log.json` | The numeric verification pass. Records each correction the pass made to the drafted report, with the before and after value. |
 
 ## What is not here, and why
@@ -63,9 +65,10 @@ than one. Main sleep duration variability is `rho = 0.2491` at `n = 5,999` in
 `full_stat_results_spearman.json` and `rho = 0.2521` at `n = 7,497` in
 `full_stat_results_spearman_full_cohort.json`. The paper reports 0.252, which is the second.
 
-The full-cohort file comes from an earlier run in the same family. It is shipped because it
-carries the sample the paper reports on, and a reader checking a reported effect size against
-the split-sample file alone would find a mismatch that is a difference of sample and not of
-result. WEAR-ME needs no second file. Its per-feature `n` already varies with how many
-participants carry each measurement, so `derived_cardio_fitness` is `n = 865` within a cohort
-of 1,078.
+The full-cohort file was supplied as an output from an earlier run in the same family. It is
+shipped because it carries the sample size and Digital Wellbeing effect used in the paper; the
+repository does not include a run manifest that independently establishes its lineage. A reader
+checking that effect against the split-sample file alone would therefore see a different value
+from a different archived sample. WEAR-ME has no second file here. Its per-feature `n` varies
+with measurement availability, so `derived_cardio_fitness` is `n = 865` within a cohort of
+1,078.

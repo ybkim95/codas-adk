@@ -1,8 +1,9 @@
 # Data manifest
 
-Every file in this repository that carries data or points at data, with its provenance. The
-list is exhaustive rather than representative, because an aggregate assurance about participant
-data is worth nothing if it is wrong for one file.
+Every tracked CSV, JSON and related data artifact in this repository, with the provenance
+available in the supplied archive. The inventory is exhaustive for the filename classes in the
+command below; it is not a claim that the repository contains complete provenance for every
+manuscript result.
 
 Reproduce it with:
 
@@ -29,19 +30,18 @@ git ls-files | grep -Ei '\.(csv|tsv|parquet|json|xlsx|pkl|npy)$'
 | `paper_artifacts/wearme/full_stat_results_spearman.json` | per-feature | As above, WEAR-ME run | **None**, per-feature |
 | `paper_artifacts/wearme/numeric_verification_log.json` | 10 corrections | As above, WEAR-ME run | **None** |
 
-`paper_artifacts/` holds run outputs for the two cohorts whose participant-level data cannot be
-redistributed, so that a reader can check the reported numbers against the records that produced
-them. Every file is per-feature or per-candidate. `paper_artifacts/README.md` says what each one
-holds and what is deliberately absent.
+`paper_artifacts/` holds selected archived run outputs for two cohorts whose participant-level
+data cannot be redistributed by this repository. A reader can compare values in those files with
+selected reported values, but the exports do not establish complete end-to-end lineage. Every
+file is per-feature or per-candidate. `paper_artifacts/README.md` states the scope and omissions.
 
-`examples/sample_dataset.csv` is synthetic. Its columns carry the same semantics as the
-production inputs, which is what allows the pipeline to run on it end to end and what makes
-`tests/test_validation_golden.py` a real check rather than a smoke test. Its rows are not
-people, and it is not a subset, sample or transformation of any study cohort.
+`examples/sample_dataset.csv` is synthetic. Its columns exercise the roles expected by the
+public pipeline and support an end-to-end golden test of that synthetic example. This does not
+show equivalence to a governed cohort's schema, value distribution or preprocessing. Its rows
+are not people, and it is not a subset, sample or transformation of any study cohort.
 
-The two JSON files are configuration. `paper_cohorts.example.json` contains paths you fill in
-yourself and the reference effect sizes already published in the paper. Neither file carries
-participant records.
+The two JSON files are configuration. `paper_cohorts.example.json` contains paths users must fill
+in and reference effect sizes stated in the manuscript. Neither file carries participant records.
 
 ## What never ships
 
@@ -61,5 +61,6 @@ to convention.
 The clinical cohorts behind the reported effects are governed data and are not redistributed
 here. Their access terms differ and each is stated in the paper's Data Availability statement.
 `scripts/reproduce_paper_biomarkers.py` takes cohort tables as arguments and ships none of its
-own, so an approved data holder can recompute the reported effects without anything further
-from us.
+own. An authorized data holder can use it to compare selected effects only if they also possess
+matching analysis tables, column definitions, derived features and preprocessing. This repository
+alone does not reconstruct those inputs.

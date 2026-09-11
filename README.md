@@ -1,6 +1,6 @@
 # CoDaS: An AI co-data-scientist
 
-CoDaS is an AI co-data-scientist that prioritizes candidate biomarkers from wearable and clinical data. Given a participant-level table and a clinical outcome, a team of Gemini agents profiles the data, grounds hypotheses in the literature, runs an iterative discovery loop, argues each candidate for and against, and drafts a report you can audit. A deterministic Python engine computes every statistic, so the agents decide what to test and when to stop while never inventing a number.
+CoDaS is an AI co-data-scientist that prioritizes candidate biomarkers from wearable and clinical data. Given a participant-level table and a clinical outcome, a team of Gemini agents profiles the data, grounds hypotheses in the literature, runs an iterative discovery loop, argues each candidate for and against, and drafts a report for human review. A deterministic Python engine supplies the statistical outputs used by the public workflow. This separation reduces the risk that a language model invents a numerical result, but it does not by itself verify labels, study design, clinical interpretation, or numbers assembled outside that workflow.
 
 ## Install
 
@@ -27,7 +27,7 @@ python examples/run_agent.py your_table.csv "Discover candidate biomarkers for <
 
 The agents read the schema, choose the target and roles, iterate the discovery loop, and print a grounded report.
 
-`examples/sample_dataset.csv` is the bundled sample, and the only file here that stands in for a participant table. It is synthetic. Its schema, column semantics and value ranges match the production inputs, which is what lets the pipeline run on it end to end and what makes the golden test a real check, but the rows are not participants. The clinical cohorts are not redistributed here and nothing derived from them ships. `examples/DATA_MANIFEST.md` lists every file that carries data, with the command to reproduce the inventory.
+`examples/sample_dataset.csv` is the bundled sample, and the only file here that stands in for a participant table. It is synthetic and is shaped to exercise the public pipeline's expected input roles; it is not evidence that the governed cohort schemas, distributions or preprocessing are reproduced. The rows are not participants. The clinical cohorts are not redistributed here. The repository does include non-participant-level, per-feature and per-candidate artifacts from selected runs under `paper_artifacts/`; that directory documents their scope and omissions. `examples/DATA_MANIFEST.md` lists every tracked CSV, JSON and related data artifact, with the command used to reproduce that inventory.
 
 For the deterministic engine on its own, name the target and skip the API key.
 
@@ -45,7 +45,7 @@ The engine reads nothing from column names, so the same code runs on any table a
 
 ## Agent workflow
 
-The orchestrator runs six phases over one shared memory and one deterministic tool set. Its core is a discovery loop that deepens the search each round until a GapChecker judges another round will not help.
+The orchestrator runs six phases over one shared memory and one deterministic tool set. Its core is a discovery loop that deepens the search until the configured iteration bound is reached or a GapChecker returns a stop decision. This is an orchestration rule, not a validated scientific criterion for concluding that a dataset contains no reportable signal.
 
 ```
    a table  +  a research goal in plain language
@@ -69,21 +69,21 @@ The orchestrator runs six phases over one shared memory and one deterministic to
 
 The graph is built with [google-adk](https://google.github.io/adk-docs/). Each phase is a `SequentialAgent`, the loop is a `LoopAgent`, and the two interpreters run in a `ParallelAgent`, all sharing one `session.state`. To customize it, edit `codas/agents/agent.py`, where the two Gemini tiers and the loop depth are set (or override them with the `CODAS_*` environment variables in `.env.example`).
 
-Every reportable number comes from the engine, and `tests/test_validation_golden.py` pins the whole pipeline output by hash so a refactor cannot quietly change a verdict. The engine (`codas.core`) is plain numpy, pandas, scipy, and scikit-learn with no LLM and no network. It screens univariate and engineered features with Spearman correlation under Benjamini-Hochberg FDR control, then puts each candidate through a validation battery covering replication, stability, robustness, and discriminative power. Leakage guards drop the target and its declared proxies before screening and demote features that duplicate a stronger one.
+Numbers emitted by the public deterministic path come from the engine, and `tests/test_validation_golden.py` pins a bundled synthetic example by hash so a refactor cannot quietly change that example's verdict. This test does not establish the provenance of every number in a manuscript assembled from multiple runs and analysis environments. The engine (`codas.core`) is plain numpy, pandas, scipy, and scikit-learn with no LLM and no network. It screens univariate and engineered features with Spearman correlation under Benjamini-Hochberg FDR control, then puts each candidate through a validation battery covering replication, stability, robustness, and discriminative power. Leakage guards drop the target and its declared proxies before screening and demote features that duplicate a stronger one.
 
 ## Scope
 
 CoDaS prioritizes candidate biomarkers as hypothesis-generating signals for expert review, not as validated clinical tools. It expects a participant-level table with a declared target and, for repeated measures, a declared participant or time column, which it uses to correct for clustering and temporal dependence. It warns when those roles look undeclared and flags a feature that separates the outcome implausibly strongly as possible leakage, but it does not infer roles from the data on its own.
 
-## Reproducing the reported effects
+## Checking selected reported effects
 
-The reported effect sizes are recomputed by the engine from the participant-level analysis tables. The clinical cohorts are governed data and are not redistributed here, so edit the config to point at tables you already hold.
+When supplied with matching participant-level analysis tables, the script below recomputes selected Spearman effect sizes and compares them with reference values in its configuration. The governed tables, their complete preprocessing lineage and several manuscript analysis layers are not redistributed here; consequently, a public clone by itself cannot reproduce or independently verify the manuscript effects. Edit the config to point at analysis tables you are authorized to use.
 
 ```bash
 python scripts/reproduce_paper_biomarkers.py --config scripts/paper_cohorts.example.json
 ```
 
-On the analysis tables the engine returns the reported effect sizes to three decimals.
+The reference values configured for comparison are:
 
 | Finding | Spearman rho |
 |---|---|
@@ -92,6 +92,7 @@ On the analysis tables the engine returns the reported effect sizes to three dec
 | WEAR-ME, HDL cholesterol vs HOMA-IR | -0.412 |
 
 The count of validated candidates depends on the declared exclusions and thresholds, so the script reports it as computed rather than as a fixed number.
+This harness does not cover GLOBEM, the record-linked retrospective analysis, the nested-model ablation, the human-review studies or end-to-end manuscript assembly.
 
 ## Citation
 
@@ -106,4 +107,6 @@ The count of validated candidates depends on the declared exclusions and thresho
 
 ## License
 
-See [LICENSE](LICENSE).
+See [LICENSE](LICENSE). The current evaluation notice does not grant permission to use, copy,
+modify or distribute the software; the project owners must select an applicable license before
+claiming a reusable open-source release.

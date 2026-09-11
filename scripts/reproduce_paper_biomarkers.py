@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Check that the headline biomarker effects reproduce with this deterministic engine.
+"""Compare selected reference biomarker effects with this deterministic engine.
 
 This runs the deterministic engine (``codas.core``) on each cohort table and checks that a set of
-named candidate biomarkers reproduce their reference Spearman effect sizes, so the reported statistics
-are genuine and computable from this code rather than taken on faith.
+named candidate biomarkers with configured reference Spearman effect sizes. The governed inputs and
+their full preprocessing lineage are not included, so this script is not stand-alone evidence that the
+reported statistics reproduce.
 
-What reproduces exactly (engine-computed Spearman ρ on the participant-level analysis tables):
+Reference comparisons configured for matching participant-level analysis tables:
   * DWB (target PHQ-8):   main sleep-duration variability            ρ ≈ +0.252
   * WEAR-ME (HOMA-IR):    C-reactive protein                         ρ ≈ +0.393
-  * WEAR-ME (HOMA-IR):    HDL cholesterol                            ρ ≈ −0.380
-  * WEAR-ME (HOMA-IR):    cardiovascular-fitness index (steps/RHR)   ρ ≈ −0.374
+  * WEAR-ME (HOMA-IR):    HDL cholesterol                            ρ ≈ −0.412
 
 Honest scope. This is the deterministic ``codas.core`` path — it screens univariate features and a
 bounded family of engineered ratio features, then runs the internal validation battery. The exact
 set of *validated* candidates and the agent-constructed composites (e.g. the night-to-day social
 media ratio, or a bespoke steps/RHR fitness index) depend on the full agent loop, which proposes
-transformations for the engine to evaluate (see ``codas.agents``). Effect sizes reproduce exactly on
-the analysis tables; validated-candidate *counts* are configuration-sensitive and are reported as
-such — never as a fixed number.
+transformations for the engine to evaluate (see ``codas.agents``). Reference deltas can be evaluated
+only with matching analysis tables; validated-candidate *counts* are configuration-sensitive and are
+reported as such — never as a fixed number.
 
 Cohort roles are supplied by the caller as data (a JSON config or CLI flags), never inferred from
 column names: the engine applies no name-based rules. The participant-level cohort tables are real
@@ -70,7 +70,7 @@ def _run_cohort(name: str, cfg: dict) -> None:
     for c in validated[:10]:
         print(f"    validated  rho={c.rho:+.3f}  q={c.q_value:.1e}  {c.feature}")
 
-    # Replication check against the reference effects (documentation only — the engine never sees
+    # Comparison against the reference effects (documentation only — the engine never sees
     # `expect`). We recompute rho directly on the analysis frame so a feature that was screened but
     # not in the top-k still gets a faithful comparison.
     expect = cfg.get("expect", {})
@@ -94,14 +94,14 @@ def main() -> int:
     args = ap.parse_args()
 
     cohorts = json.loads(Path(args.config).read_text())
-    print("Reproducing headline biomarker effects with the deterministic engine.")
+    print("Evaluating selected biomarker effects with the deterministic engine.")
     for name, cfg in cohorts.items():
         if name.startswith("__"):  # documentation keys (e.g. "__doc__") are not cohorts
             continue
         _run_cohort(name, cfg)
-    print(f"\n{'=' * 88}\nEffect sizes reproduce the reference rho on the analysis tables. Validated-candidate\n"
-          f"counts are configuration-sensitive (feature family, declared exclusions, thresholds) and are\n"
-          f"reported as computed, not as a fixed number.\n{'=' * 88}")
+    print(f"\n{'=' * 88}\nConfigured reference deltas are printed when matching analysis columns and expectations are\n"
+          f"provided. Validated-candidate counts are configuration-sensitive (feature family, declared\n"
+          f"exclusions, thresholds) and are reported as computed, not as a fixed number.\n{'=' * 88}")
     return 0
 
 
