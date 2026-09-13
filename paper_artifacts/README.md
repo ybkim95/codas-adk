@@ -9,6 +9,11 @@ manuscript's aggregate candidate count without a separate reconciliation manifes
 Nothing here is participant-level. Every file is per-feature or per-candidate. There are no
 participant identifiers and no arrays of participant length.
 
+The verdict field carries the run's own vocabulary, `VALIDATED`, `CONDITIONAL` and
+`REJECTED`, and the file is named for it. The paper retired that wording after review and
+calls the same label *internally screened*. These records are left as the run wrote them
+rather than edited to match later prose, so `VALIDATED` here is not a claim of validation.
+
 ## Runs
 
 | Directory | Run | Cohort |
