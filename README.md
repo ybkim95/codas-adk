@@ -98,9 +98,10 @@ This harness does not cover GLOBEM, the record-linked retrospective analysis, th
 
 ```bibtex
 @article{kim2026codas,
-  title={CoDaS: AI Co-Data-Scientist for Biomarker Discovery via Wearable Sensors},
+  title={An AI Co-Data-Scientist for Prioritizing Candidate Biomarkers from Wearable Sensor Data},
   author={Kim, Yubin and others},
   journal={arXiv preprint arXiv:2604.14615},
+  note={The preprint carries the earlier title, CoDaS: AI Co-Data-Scientist for Biomarker Discovery via Wearable Sensors},
   year={2026}
 }
 ```
