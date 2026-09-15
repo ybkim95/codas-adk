@@ -106,6 +106,16 @@ This harness does not cover GLOBEM, the record-linked retrospective analysis, th
 }
 ```
 
+## Paper scripts
+
+`scripts/paper/injected_error_stress_test.py` is the injected-error experiment of the Nature
+Medicine revision (Supplementary Note 2). It plants known error classes into the governed
+WEAR-ME table, which is not redistributed (set `CODAS_WEARME_CSV`), runs this repository's
+validation battery on each planted feature over 20 seeds and writes the per-row gate fields.
+Run on this commit it reproduces the released Source Data file `source_data_stress_test.csv`
+row for row. The module evaluates fourteen checks and counts eleven toward the pass rate, so
+the `pass_rate` column differs from the archived file, whose engine copy counted fourteen.
+
 ## License
 
 See [LICENSE](LICENSE). The current evaluation notice does not grant permission to use, copy,
