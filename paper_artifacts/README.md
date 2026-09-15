@@ -33,6 +33,7 @@ The two are from the same analysis session.
 | `full_stat_results_spearman.json` | Per-feature statistics, effect sizes, p-values and confidence intervals computed on the archived Digital Wellbeing discovery split, `n = 5,999`. |
 | `full_stat_results_spearman_full_cohort.json` | The same statistics computed on the full analytic sample, `n = 7,497`. It contains the Digital Wellbeing full-sample effect reported in the paper; it is not a cross-cohort results manifest. |
 | `numeric_verification_log.json` | The numeric verification pass. Records each correction the pass made to the drafted report, with the before and after value. |
+| `debate_records.json` | The adversarial review as the archived run logged it, one record per candidate that entered debate: the Critic's structured assessment (verdict, concerns, confidence) and the Defender's statement. The Digital Wellbeing log holds 20 records although the loader queued 31 candidates; the WEAR-ME log holds all 18. One debate round per candidate. Recovered from `logs/agent_conversations.json` of the archived runs on 14 September 2026, after an earlier version of this README wrongly said the exchanges were not retained. |
 
 ## What is not here, and why
 
@@ -44,10 +45,9 @@ statement for the terms of each.
 Those are positions rather than identifiers, but publishing outlier membership across many
 features is not something we are willing to do for a cohort we cannot redistribute.
 
-**Cross-validation fold assignments and the Critic and Defender exchanges.** The response to
-referees said these would be released. They are not in the archived run outputs, so we cannot
-release them, and the response has been corrected rather than left to promise what does not
-exist.
+**Cross-validation fold assignments.** The run configuration records the seed (42), five
+outer folds and three inner folds, but the fold membership itself was not written out, so it
+cannot be released as a file.
 
 **The nested-model ablation code.** Not part of this release. See the paper's Code Availability
 statement.

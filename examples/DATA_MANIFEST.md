@@ -24,11 +24,13 @@ git ls-files | grep -Ei '\.(csv|tsv|parquet|json|xlsx|pkl|npy)$'
 | `paper_artifacts/dwb/full_stat_results_spearman.json` | 145 features, n = 5,999 | Derived effect sizes on the discovery split | **None**, per-feature |
 | `paper_artifacts/dwb/full_stat_results_spearman_full_cohort.json` | 145 features, n = 7,497 | The same statistics on the full analytic sample, which is what the paper reports | **None**, per-feature |
 | `paper_artifacts/dwb/numeric_verification_log.json` | 12 corrections | Numeric verification pass record | **None** |
+| `paper_artifacts/dwb/debate_records.json` | 20 candidates | Critic assessment and Defender statement for each candidate that entered adversarial review, as the run logged them | **None**, per-candidate |
 | `paper_artifacts/wearme/validated_candidates.json` | 23 candidates | As above, WEAR-ME run | **None**, per-candidate |
 | `paper_artifacts/wearme/biomarker_proofs.json` | 23 candidates | As above, WEAR-ME run | **None**, per-candidate |
 | `paper_artifacts/wearme/feature_registry.json` | 64 features | As above, WEAR-ME run | **None**, per-feature |
 | `paper_artifacts/wearme/full_stat_results_spearman.json` | per-feature | As above, WEAR-ME run | **None**, per-feature |
 | `paper_artifacts/wearme/numeric_verification_log.json` | 10 corrections | As above, WEAR-ME run | **None** |
+| `paper_artifacts/wearme/debate_records.json` | 18 candidates | As above, WEAR-ME run | **None**, per-candidate |
 
 `paper_artifacts/` holds selected archived run outputs for two cohorts whose participant-level
 data cannot be redistributed by this repository. A reader can compare values in those files with
