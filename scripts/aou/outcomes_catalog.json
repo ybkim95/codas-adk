@@ -1,0 +1,20 @@
+{
+  "notes": "Candidate outcomes for free exploration on the All of Us Registered Tier. Concept ids are standard OMOP ids as best known; verify_catalog() checks each against the CDR concept table (exists, domain, name contains expect_name) and skips any that fail, so a wrong id is reported rather than analysed.",
+  "outcomes": [
+    {"name": "hba1c", "label": "HbA1c", "kind": "measurement", "concept_ids": [3004410], "value_min": 3.0, "value_max": 20.0, "expect_name": "a1c"},
+    {"name": "ldl", "label": "LDL cholesterol", "kind": "measurement", "concept_ids": [3028288], "value_min": 10.0, "value_max": 400.0, "expect_name": "ldl"},
+    {"name": "hdl", "label": "HDL cholesterol", "kind": "measurement", "concept_ids": [3007070], "value_min": 5.0, "value_max": 200.0, "expect_name": "hdl"},
+    {"name": "triglycerides", "label": "Triglycerides", "kind": "measurement", "concept_ids": [3022192], "value_min": 10.0, "value_max": 2000.0, "expect_name": "triglyceride"},
+    {"name": "crp", "label": "C-reactive protein", "kind": "measurement", "concept_ids": [3020460, 3010156], "value_min": 0.0, "value_max": 300.0, "expect_name": "c reactive"},
+    {"name": "bmi", "label": "Body mass index", "kind": "measurement", "concept_ids": [3038553], "value_min": 12.0, "value_max": 80.0, "expect_name": "body mass"},
+    {"name": "sbp", "label": "Systolic blood pressure", "kind": "measurement", "concept_ids": [3004249], "value_min": 60.0, "value_max": 260.0, "expect_name": "systolic"},
+    {"name": "t2d", "label": "Type 2 diabetes", "kind": "condition", "concept_ids": [201826], "expect_name": "diabetes"},
+    {"name": "hypertension", "label": "Essential hypertension", "kind": "condition", "concept_ids": [320128], "expect_name": "hypertension"},
+    {"name": "depression", "label": "Depressive disorder", "kind": "condition", "concept_ids": [440383], "expect_name": "depress"},
+    {"name": "anxiety", "label": "Anxiety disorder", "kind": "condition", "concept_ids": [442077], "expect_name": "anxiety"},
+    {"name": "sleep_apnea", "label": "Sleep apnea", "kind": "condition", "concept_ids": [313459], "expect_name": "apnea"},
+    {"name": "afib", "label": "Atrial fibrillation", "kind": "condition", "concept_ids": [313217], "expect_name": "fibrillation"},
+    {"name": "obesity", "label": "Obesity", "kind": "condition", "concept_ids": [433736], "expect_name": "obes"},
+    {"name": "insomnia", "label": "Insomnia", "kind": "condition", "concept_ids": [436962], "expect_name": "insomnia"}
+  ]
+}

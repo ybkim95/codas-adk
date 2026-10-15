@@ -17,6 +17,8 @@ git ls-files | grep -Ei '\.(csv|tsv|parquet|json|xlsx|pkl|npy)$'
 |---|---|---|---|
 | `examples/sample_dataset.csv` | 420 rows, 12 columns | Synthetic sample used by `examples/run_agent.py`, `examples/quickstart.py`, and the engine, service and golden-output tests | **None** |
 | `scripts/ci_smoke_cohorts.json` | config | Points the reproduction harness at the synthetic sample so CI proves the script runs end to end | **None** |
+| `scripts/aou/outcomes_catalog.json` | config | Candidate All of Us outcomes (OMOP concept ids, value bounds) for the free-exploration screen | **None** |
+| `workbench/claude/settings.json` | config | Claude Code settings template for an All of Us workspace (Vertex AI, deny rules, guard hook) | **None** |
 | `scripts/aou/hba1c_fitbit.example.json` | config | Example All of Us cohort spec (outcome concept ids, Fitbit tables and columns) for `scripts/aou/run_codas_aou.py` | **None** |
 | `scripts/paper_cohorts.example.json` | config | Example cohort config with placeholder paths and the published reference effect sizes | **None** |
 | `paper_artifacts/dwb/validated_candidates.json` | 33 candidates | Candidates with verdicts, reasons and per-test results, Digital Wellbeing run | **None**, per-candidate |

@@ -87,6 +87,59 @@ A spec names an outcome by OMOP concept id and the wearable tables to summarise;
 The Fitbit column names in the example follow earlier CDR documentation. The extractor stops with a
 list of missing columns if your CDR differs; check with `bq show --schema <cdr>.<table>`.
 
+## Free exploration
+
+The fastest path is the notebook `notebooks/aou_codas_quickstart.ipynb`: open it in a workspace
+JupyterLab app, set `CDR` in the second cell, and run top to bottom. The same flow from a terminal:
+
+```bash
+python scripts/aou/run_codas_aou.py explore --screen-only   # check + count, no agents
+python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 3 outcomes
+```
+
+1. **Catalog check.** `scripts/aou/outcomes_catalog.json` lists about 15 Registered Tier outcomes
+   (labs and conditions). Each outcome's concept ids must exist in the CDR concept table, sit in the
+   expected domain, and have a name containing `expect_name`; failures are skipped and reported.
+2. **Feasibility screen.** For each outcome, the participants who meet the extractor's wearable
+   rule (and, for a condition, cases and controls), counted with the extractor's own SQL.
+3. **Selection.** A fixed rule: keep measurements with at least `--min-n` participants (default
+   1,000) and conditions with at least `--min-cases` cases and controls (default 200), order by that
+   sample, take `--top-k`.
+4. **Runs.** Each selected outcome gets a spec built from the base spec's wearables, is extracted,
+   and goes through the full agent graph. `explore_summary.md` collects the masked screen table and
+   each run's validated candidates.
+
+## Testing outside the Workbench
+
+`codas/aou/synthetic.py` builds a synthetic All of Us–shaped CDR in DuckDB (no real people; planted
+associations), and `duckdb_query` runs the extractor's BigQuery SQL against it via sqlglot.
+
+* `tests/test_aou_sql.py` checks the SQL against a hand-worked micro-CDR (window bounds, the
+  index-day exclusion, the nap filter, re-indexing to a later measurement, the minimum-wear rule)
+  and runs the catalog check, the feasibility counts and the screen on the synthetic CDR.
+* `tests/test_aou_e2e.py` runs the whole agent graph in AoU mode with a scripted model that calls
+  the real tools, records every request sent to the model, and asserts that none carries a
+  participant row or a count of 1-20; it also runs `explore` end to end on the synthetic CDR.
+
+## Claude Code inside the workspace (opt-in)
+
+Workbench cloud apps ship with Claude Code. `workbench/claude/` holds a configuration that runs it
+on Vertex AI in the workspace project and lets it operate CoDaS (run the notebook or
+`run_codas_aou.py`, read the masked outputs, summarise them) without reading participant data:
+
+* a PreToolUse hook (`aou_guard.py`) blocks reading `.codas_runs/` except masked outputs, direct
+  BigQuery or Cloud Storage access, interpreters other than the CoDaS entry points, recursive grep
+  and `find -exec`, writing code that reads the tables, and edits to the guard or privacy module;
+* deny rules repeat the main file blocks, and a CLAUDE.md tells Claude to stop and ask when blocked.
+
+The hook is an allow-list, not proof of isolation. All of Us has not published guidance on AI
+coding agents in workspaces, so the installer refuses to run until you confirm you have the
+program's written agreement:
+
+```bash
+scripts/aou/install_claude_guard.sh --confirmed   # copies into .claude/ (git-ignored)
+```
+
 ## Open questions to confirm with All of Us
 
 Ask the User Support Hub or the Resource Access Board before a production run:
@@ -95,3 +148,5 @@ Ask the User Support Hub or the Resource Access Board before a production run:
    workspaces, and is sending aggregate results to them acceptable under the Code of Conduct?
 2. Is Google Search grounding acceptable when the query contains no participant data?
 3. What is the CDR dataset identifier in Workbench 2.0 (the legacy Workbench exposed `WORKSPACE_CDR`)?
+4. May the pre-installed Claude Code run in a workspace on Vertex AI, configured so it cannot read
+   participant-level files and only operates CoDaS?

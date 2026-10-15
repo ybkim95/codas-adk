@@ -1,0 +1,32 @@
+{
+  "env": {
+    "CLAUDE_CODE_USE_VERTEX": "1",
+    "CLOUD_ML_REGION": "global",
+    "ANTHROPIC_VERTEX_PROJECT_ID": "__WORKSPACE_PROJECT__",
+    "CODAS_AOU_MODE": "1",
+    "GOOGLE_GENAI_USE_VERTEXAI": "TRUE",
+    "GOOGLE_CLOUD_PROJECT": "__WORKSPACE_PROJECT__"
+  },
+  "permissions": {
+    "deny": [
+      "Read(./.codas_runs/**/*.csv)",
+      "Read(./.codas_runs/**/*.parquet)",
+      "Edit(./.claude/**)",
+      "Edit(./codas/aou/privacy.py)",
+      "Edit(./codas/agents/callbacks.py)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/aou_guard.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
