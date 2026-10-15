@@ -11,6 +11,12 @@ from typing import Any
 
 from codas.agents.grounding import engine_numbers, ungrounded_claims
 from codas.agents.numeric_audit import verify_and_correct
+from codas.aou.privacy import (
+    aou_mode,
+    mask_small_counts_in_text,
+    sanitize_shared_state,
+    sanitize_tool_response,
+)
 
 
 LOGGER = logging.getLogger("codas.agents")
@@ -47,11 +53,18 @@ def before_tool_guardrail(tool: Any, args: dict[str, Any], tool_context: Any) ->
     return None
 
 
-def after_tool_logger(tool: Any, args: dict[str, Any], tool_context: Any, tool_response: dict[str, Any]) -> None:
-    """Log deterministic tool completion without mutating the response."""
+def after_tool_logger(
+    tool: Any, args: dict[str, Any], tool_context: Any, tool_response: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Log deterministic tool completion. Outside AoU mode the response passes through unchanged; in
+    AoU mode the model gets a copy with row-level payloads dropped and counts of 1-20 masked, and the
+    memory keys the prompts interpolate are masked the same way."""
     status = "error" if isinstance(tool_response, dict) and "error" in tool_response else "ok"
     LOGGER.info("Tool end: %s status=%s", getattr(tool, "name", tool), status)
-    return None
+    if not aou_mode():
+        return None
+    sanitize_shared_state(getattr(tool_context, "state", None))
+    return sanitize_tool_response(tool_response)
 
 
 def before_model_logger(callback_context: Any, llm_request: Any) -> None:
@@ -123,4 +136,10 @@ def report_grounding_audit(callback_context: Any) -> None:
             })
     except Exception as exc:  # never break a run on the guardrail
         LOGGER.debug("grounding audit skipped: %s", exc)
+    if aou_mode():
+        # Outside the try: a failure to mask must stop the run rather than leave a count of 1-20 in
+        # the report.
+        state = callback_context.state
+        if state.get("report"):
+            state["report"] = mask_small_counts_in_text(str(state["report"]))
     return None

@@ -26,6 +26,7 @@ from typing import Any
 import pandas as pd
 from google.adk.tools import ToolContext
 
+from codas.aou.privacy import aou_mode, literature_search_enabled, mask_small_counts_in_text
 from codas.core import gemini
 from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
@@ -108,11 +109,15 @@ def preview_columns(csv_path: str = "", limit: int = 20, tool_context: ToolConte
     if path is None:
         return {"error": "No dataset path in memory; seed state['csv_path'] or pass csv_path."}
     df = pd.read_csv(path, nrows=max(1, min(limit, 200)))
-    return _json_safe({
+    preview = {
         "columns": list(df.columns),
         "dtypes": {column: str(dtype) for column, dtype in df.dtypes.items()},
-        "preview_rows": df.head(3).to_dict(orient="records"),
-    })
+    }
+    if aou_mode():  # All of Us: no participant row ever reaches the model
+        preview["note"] = "Row preview withheld (All of Us mode); use profile_dataset for aggregates."
+    else:
+        preview["preview_rows"] = df.head(3).to_dict(orient="records")
+    return _json_safe(preview)
 
 
 def run_discovery(
@@ -154,6 +159,12 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
     """
     if not query or not query.strip():
         return {"grounded": False, "summary": "", "sources": [], "queries": [], "note": "empty query"}
+    if aou_mode():
+        if not literature_search_enabled():
+            return {"grounded": False, "summary": "", "sources": [], "queries": [],
+                    "note": "Literature search is turned off for this All of Us run. Reason from general "
+                            "principles and do not fabricate citations."}
+        query = mask_small_counts_in_text(query)
     reply = gemini.generate_grounded_reply(
         query.strip(),
         context=("You are grounding a wearable-biomarker discovery finding in the scientific literature. "

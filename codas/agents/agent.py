@@ -39,9 +39,10 @@ from typing import Any
 # nested sub-agents. The corresponding DeprecationWarnings are filtered in the pytest config so a
 # run's output is not mistaken for staleness.
 from google.adk.agents import LlmAgent, LoopAgent, ParallelAgent, SequentialAgent
-from google.adk.models import Gemini
+from google.adk.models import BaseLlm, Gemini
 from google.genai.types import HttpRetryOptions
 
+from codas.aou.privacy import check_llm_backend
 from codas.agents import prompts
 from codas.agents.callbacks import (
     after_tool_logger,
@@ -83,8 +84,21 @@ _MODEL_RETRY = HttpRetryOptions(
     exp_base=2.0,
     http_status_codes=[408, 429, 500, 502, 503, 504],
 )
-REASONING_MODEL = Gemini(model=_REASONING_MODEL_NAME, retry_options=_MODEL_RETRY)
-FAST_MODEL = Gemini(model=_FAST_MODEL_NAME, retry_options=_MODEL_RETRY)
+
+
+def _make_model(name: str) -> BaseLlm:
+    """Gemini by default; a ``claude-*`` name is served as Claude on Vertex AI (Model Garden), using
+    GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION and requiring the ``anthropic[vertex]`` package."""
+    if name.strip().lower().startswith("claude"):
+        from google.adk.models.anthropic_llm import Claude
+
+        return Claude(model=name.strip())
+    return Gemini(model=name, retry_options=_MODEL_RETRY)
+
+
+check_llm_backend()  # AoU mode: refuse to build the graph on a backend outside the workspace project
+REASONING_MODEL = _make_model(_REASONING_MODEL_NAME)
+FAST_MODEL = _make_model(_FAST_MODEL_NAME)
 # The orchestrator's loop runs at most this many deepening rounds; the GapChecker usually stops it
 # earlier via escalate once deeper search saturates. Bounded so a live run stays within the timeout.
 MAX_DISCOVERY_ROUNDS = int(os.getenv("CODAS_MAX_DISCOVERY_ROUNDS", "3"))
@@ -95,7 +109,7 @@ def _agent(
     description: str,
     instruction: str,
     *,
-    model: Gemini = FAST_MODEL,
+    model: BaseLlm = FAST_MODEL,
     tools: list | None = None,
     output_key: str | None = None,
     after_agent: Any = None,

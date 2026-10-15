@@ -17,6 +17,7 @@ git ls-files | grep -Ei '\.(csv|tsv|parquet|json|xlsx|pkl|npy)$'
 |---|---|---|---|
 | `examples/sample_dataset.csv` | 420 rows, 12 columns | Synthetic sample used by `examples/run_agent.py`, `examples/quickstart.py`, and the engine, service and golden-output tests | **None** |
 | `scripts/ci_smoke_cohorts.json` | config | Points the reproduction harness at the synthetic sample so CI proves the script runs end to end | **None** |
+| `scripts/aou/hba1c_fitbit.example.json` | config | Example All of Us cohort spec (outcome concept ids, Fitbit tables and columns) for `scripts/aou/run_codas_aou.py` | **None** |
 | `scripts/paper_cohorts.example.json` | config | Example cohort config with placeholder paths and the published reference effect sizes | **None** |
 | `paper_artifacts/dwb/validated_candidates.json` | 33 candidates | Candidates with verdicts, reasons and per-test results, Digital Wellbeing run | **None**, per-candidate |
 | `paper_artifacts/dwb/biomarker_proofs.json` | 33 candidates | Per-candidate evidence behind each verdict | **None**, per-candidate |

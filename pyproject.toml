@@ -28,6 +28,8 @@ dependencies = [
 agent = ["google-adk>=2.4,<2.5", "google-genai"]
 # HTTP service layer (codas.service).
 service = ["fastapi", "uvicorn", "pydantic", "python-multipart"]
+# All of Us Researcher Workbench: BigQuery cohort extraction (codas.aou) and Claude on Vertex AI.
+aou = ["google-adk>=2.4,<2.5", "google-genai", "google-cloud-bigquery", "db-dtypes", "anthropic[vertex]"]
 dev = ["pytest"]
 all = ["google-adk>=2.4,<2.5", "google-genai", "fastapi", "uvicorn", "pydantic", "python-multipart"]
 

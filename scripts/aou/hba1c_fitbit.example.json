@@ -1,0 +1,33 @@
+{
+  "name": "hba1c_fitbit",
+  "notes": "Example spec. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs.",
+  "outcome": {
+    "kind": "measurement",
+    "name": "hba1c",
+    "concept_ids": [3004410],
+    "include_descendants": true,
+    "value_min": 3.0,
+    "value_max": 20.0
+  },
+  "window_days": 180,
+  "min_wear_days": 30,
+  "include_demographics": true,
+  "wearables": [
+    {
+      "table": "activity_summary",
+      "date_column": "date",
+      "prefix": "act",
+      "columns": ["steps", "very_active_minutes", "fairly_active_minutes", "lightly_active_minutes",
+                  "sedentary_minutes", "calories_out"]
+    },
+    {
+      "table": "sleep_daily_summary",
+      "date_column": "sleep_date",
+      "prefix": "sleep",
+      "columns": ["minute_asleep", "minute_in_bed", "minute_deep", "minute_light", "minute_rem",
+                  "minute_awake"],
+      "filter_column": "is_main_sleep",
+      "filter_value": true
+    }
+  ]
+}
