@@ -60,7 +60,23 @@ def run_agents(csv: str | Path, goal: str, on_tool_call: Any = None) -> dict[str
     """Run the CoDaS agent graph on ``csv`` with the AoU guard on, and return the final session state."""
     os.environ["CODAS_AOU_MODE"] = "1"
     check_llm_backend()  # the graph may have been imported before AoU mode was switched on
-    return asyncio.run(_run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call))
+    return _run_sync(_run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call))
+
+
+def _run_sync(coro: Any) -> Any:
+    """Run a coroutine to completion from sync code, including from a Jupyter cell.
+
+    A notebook kernel already runs an event loop, where ``asyncio.run`` refuses to start; there the
+    coroutine runs on its own loop in a worker thread, and this call blocks until it finishes.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR) -> dict[str, Any]:

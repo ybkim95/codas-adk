@@ -235,3 +235,17 @@ def test_raw_values_would_be_caught_without_the_guard():
     table = _cohort_table()
     preview = json.dumps(table.head(3).to_dict(orient="records"))
     assert re.search(r"\d\.\d{8,}", preview)
+
+
+def test_run_agents_inside_a_running_event_loop(aou_env):
+    """Jupyter kernels already run an event loop; run_agents must work from inside one."""
+    import asyncio
+
+    csv = RUN_DIR / "cohort.csv"
+    _cohort_table().to_csv(csv, index=False)
+
+    async def notebook_cell():
+        return runner.run_agents(csv, runner.goal_for(CohortSpec.from_json(SPEC), "HbA1c"))
+
+    state = asyncio.run(notebook_cell())
+    assert state.get("rounds")
