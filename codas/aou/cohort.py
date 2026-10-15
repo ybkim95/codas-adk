@@ -239,7 +239,10 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         filt = ""
         if source.filter_column is not None:
             name = f"w{i}_filter"
-            filt = f"\n    AND s.{source.filter_column} = @{name}"
+            # Compare as lowercase text: CDR flag columns differ in type between releases (the
+            # Registered Tier v9 stores is_main_sleep as STRING 'true'/'false', not BOOL).
+            filt = (f"\n    AND LOWER(CAST(s.{source.filter_column} AS STRING))"
+                    f" = LOWER(CAST(@{name} AS STRING))")
             params.append((name, _scalar_type(source.filter_value), source.filter_value))
         ctes.append(
             f"w{i} AS (\n"

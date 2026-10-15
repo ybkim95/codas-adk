@@ -159,3 +159,34 @@ def test_explore_screen_on_synthetic_cdr(synthetic, monkeypatch):
         assert "Feasibility screen" in summary and "skipped" in summary
     finally:
         shutil.rmtree(out_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize("main,nap", [("true", "false"), (True, False)])
+def test_sleep_filter_matches_string_and_bool_flags(main, nap):
+    """The Registered Tier v9 stores is_main_sleep as STRING; earlier releases used BOOL."""
+    con = duckdb.connect()
+    days = _days(date(2023, 1, 1), 10)
+    tables = {
+        "concept_ancestor": pd.DataFrame({"ancestor_concept_id": [1], "descendant_concept_id": [1]}),
+        "measurement": pd.DataFrame({"measurement_id": [1], "person_id": [1], "measurement_concept_id": [1],
+                                     "measurement_date": [date(2023, 1, 20)], "value_as_number": [5.0]}),
+        "activity_summary": pd.DataFrame({"person_id": 1, "date": days, "steps": 1000.0}),
+        "sleep_daily_summary": pd.DataFrame({"person_id": 1, "sleep_date": days * 2,
+                                             "is_main_sleep": [main] * 10 + [nap] * 10,
+                                             "minute_asleep": [400.0] * 10 + [40.0] * 10}),
+    }
+    for name, frame in tables.items():
+        con.register("_t", frame)
+        con.execute(f"CREATE TABLE {name} AS SELECT * FROM _t")
+        con.unregister("_t")
+    spec = CohortSpec.from_dict({
+        "name": "flags", "outcome": {"kind": "measurement", "name": "y", "concept_ids": [1]},
+        "window_days": 60, "min_wear_days": 5, "include_demographics": False,
+        "wearables": [
+            {"table": "activity_summary", "date_column": "date", "prefix": "act", "columns": ["steps"]},
+            {"table": "sleep_daily_summary", "date_column": "sleep_date", "prefix": "sleep",
+             "columns": ["minute_asleep"], "filter_column": "is_main_sleep", "filter_value": True},
+        ],
+    })
+    out = duckdb_query(con)(None, *build_cohort_sql(spec, SYNTHETIC_CDR))
+    assert out.iloc[0].sleep_minute_asleep_mean == 400.0 and out.iloc[0].sleep_days == 10
