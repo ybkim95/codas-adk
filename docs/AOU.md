@@ -38,7 +38,7 @@ pip install -e ".[aou]"
 export CODAS_AOU_MODE=1                      # set by run_codas_aou.py anyway
 export GOOGLE_GENAI_USE_VERTEXAI=TRUE
 export GOOGLE_CLOUD_PROJECT=$(gcloud config get-value project)
-export GOOGLE_CLOUD_LOCATION=us-central1
+export GOOGLE_CLOUD_LOCATION=global   # preview Gemini models are served from "global"; us-central1 returns 404 for them
 export CODAS_AOU_CDR=<cdr-project>.<cdr-dataset>   # the workspace's CDR; or WORKSPACE_CDR if exposed
 
 # models: Gemini by default; any claude-* name is served as Claude on Vertex AI
@@ -90,7 +90,8 @@ list of missing columns if your CDR differs; check with `bq show --schema <cdr>.
 ## Free exploration
 
 The fastest path is the notebook `notebooks/aou_codas_quickstart.ipynb`: open it in a workspace
-JupyterLab app, set `CDR` in the second cell, and run top to bottom. The same flow from a terminal:
+JupyterLab app and run top to bottom: the second cell finds the CDR (`wb resource list`) and a Vertex
+location and Gemini models that answer from the workspace project, so normally nothing needs editing. The same flow from a terminal:
 
 ```bash
 python scripts/aou/run_codas_aou.py explore --screen-only   # check + count, no agents
