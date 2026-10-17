@@ -49,6 +49,9 @@ class DiscoveryRequest:
     time_column: str | None = None
     excluded_columns: list[str] = field(default_factory=list)
     confounder_columns: list[str] = field(default_factory=list)
+    # Adjustment-only columns: kept out of the candidate screen (not biomarkers), but available to be
+    # named in confounder_columns. A column in both lists is used as a confounder.
+    context_columns: list[str] = field(default_factory=list)
     top_k: int = 25
     fdr_alpha: float = 0.05  # Benjamini-Hochberg FDR control level (alpha = 0.05)
     max_ratio_features: int = 24
@@ -746,6 +749,7 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
         time_column=effective_time,
         excluded_columns=request.excluded_columns,
         confounder_columns=request.confounder_columns,
+        context_columns=request.context_columns,
         max_ratio_features=request.max_ratio_features,
     )
     audit_log = list(analysis.audit_log)

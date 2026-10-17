@@ -3,7 +3,8 @@
 A ``CohortSpec`` names an outcome (a lab measurement or a condition, by OMOP concept id) and the
 wearable tables to summarise. For each participant the extractor fixes an index date, summarises
 every wearable column over the ``window_days`` before it (mean, SD, and the number of days worn),
-adds age and sex at birth, and writes the table to the workspace disk under ``.codas_runs/aou/``.
+adds age and sex at birth and any covariates the spec names, and writes the table to the workspace
+disk under ``.codas_runs/aou/``.
 
 Index date:
 
@@ -12,6 +13,12 @@ Index date:
 * ``condition`` outcome: the first diagnosis date for cases and the last wearable date for
   everyone else; the outcome is 1 for cases and 0 otherwise. Cases and controls get index dates by
   different rules, so treat associations as hypothesis-generating.
+
+Covariates (optional, ``CohortSpec.covariates``) are clinical context for confounder adjustment, not
+candidate biomarkers: a measurement covariate is the most recent value in the ``lookback_days`` up
+to and including the index date; a condition or drug covariate is 1 if a record starts in the
+lookback before the index date, else 0. Which covariates to extract is configuration; whether to
+adjust for one is decided during the analysis.
 
 The table is participant-level data. It stays inside the Workbench: it carries no person_id or
 dates, it is git-ignored, and CoDaS only ever shows the model aggregates computed from it.
@@ -97,6 +104,42 @@ class OutcomeSpec:
         _ident(self.name, "outcome name")
 
 
+_COVARIATE_TABLES = {
+    # kind: (table, concept column, date column)
+    "measurement": ("measurement", "measurement_concept_id", "measurement_date"),
+    "condition": ("condition_occurrence", "condition_concept_id", "condition_start_date"),
+    "drug": ("drug_exposure", "drug_concept_id", "drug_exposure_start_date"),
+}
+
+
+@dataclass
+class CovariateSpec:
+    """A clinical covariate extracted alongside the outcome, for adjustment rather than discovery."""
+
+    name: str
+    kind: str  # "measurement", "condition" or "drug"
+    concept_ids: list[int]
+    include_descendants: bool = True
+    # Days before the index date to look back; None looks back without limit.
+    lookback_days: int | None = 365
+    value_min: float | None = None
+    value_max: float | None = None
+    # Text the concept name must contain, checked against the CDR concept table before a run.
+    expect_name: str = ""
+
+    def validate(self) -> None:
+        _ident(self.name, "covariate name")
+        if self.kind not in _COVARIATE_TABLES:
+            raise ValueError(f"covariate {self.name!r}: kind must be one of {sorted(_COVARIATE_TABLES)}, "
+                             f"not {self.kind!r}.")
+        if not self.concept_ids or not all(isinstance(c, int) and not isinstance(c, bool) for c in self.concept_ids):
+            raise ValueError(f"covariate {self.name!r}: concept_ids must be a non-empty list of integer OMOP concept ids.")
+        if self.lookback_days is not None and self.lookback_days < 0:
+            raise ValueError(f"covariate {self.name!r}: lookback_days must be non-negative or null.")
+        if self.kind != "measurement" and (self.value_min is not None or self.value_max is not None):
+            raise ValueError(f"covariate {self.name!r}: value bounds apply to measurement covariates only.")
+
+
 @dataclass
 class CohortSpec:
     name: str
@@ -105,6 +148,7 @@ class CohortSpec:
     window_days: int = 180
     min_wear_days: int = 30
     include_demographics: bool = True
+    covariates: list[CovariateSpec] = field(default_factory=list)
     notes: str = ""
 
     def validate(self) -> None:
@@ -122,6 +166,16 @@ class CohortSpec:
             raise ValueError("window_days and min_wear_days must be positive.")
         if self.min_wear_days > self.window_days:
             raise ValueError("min_wear_days cannot exceed window_days.")
+        taken = set(_base_columns(self))
+        for covariate in self.covariates:
+            covariate.validate()
+            if covariate.name in taken:
+                raise ValueError(f"Covariate name {covariate.name!r} clashes with another column.")
+            taken.add(covariate.name)
+            shared = set(covariate.concept_ids) & set(self.outcome.concept_ids)
+            if shared:
+                raise ValueError(f"Covariate {covariate.name!r} shares concept ids {sorted(shared)} with the "
+                                 "outcome; a covariate cannot be the outcome itself.")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CohortSpec":
@@ -132,6 +186,7 @@ class CohortSpec:
             window_days=int(data.get("window_days", 180)),
             min_wear_days=int(data.get("min_wear_days", 30)),
             include_demographics=bool(data.get("include_demographics", True)),
+            covariates=[CovariateSpec(**c) for c in data.get("covariates", [])],
             notes=str(data.get("notes", "")),
         )
         spec.validate()
@@ -156,8 +211,7 @@ def _scalar_type(value: Any) -> str:
     return "STRING"
 
 
-def output_columns(spec: CohortSpec) -> list[str]:
-    """The columns of the extracted table, in order."""
+def _base_columns(spec: CohortSpec) -> list[str]:
     cols = [spec.outcome.name]
     if spec.include_demographics:
         cols += ["age", "female"]
@@ -166,6 +220,21 @@ def output_columns(spec: CohortSpec) -> list[str]:
         for column in source.columns:
             cols += [f"{source.prefix}_{column}_mean", f"{source.prefix}_{column}_sd"]
     return cols
+
+
+def output_columns(spec: CohortSpec) -> list[str]:
+    """The columns of the extracted table, in order."""
+    return _base_columns(spec) + [c.name for c in spec.covariates]
+
+
+def covariates_without(covariates: list[CovariateSpec], outcome: OutcomeSpec) -> tuple[list[CovariateSpec], list[str]]:
+    """Split ``covariates`` into those usable with ``outcome`` and the names of those that share a
+    concept id with it (a covariate cannot be the outcome itself)."""
+    keep, dropped = [], []
+    for covariate in covariates:
+        (dropped.append(covariate.name) if set(covariate.concept_ids) & set(outcome.concept_ids)
+         else keep.append(covariate))
+    return keep, dropped
 
 
 def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
@@ -255,6 +324,50 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
             ")"
         )
 
+    for i, covariate in enumerate(spec.covariates):
+        table, concept_col, date_col = _COVARIATE_TABLES[covariate.kind]
+        ids = f"c{i}_concept_ids"
+        params.append((ids, "ARRAY<INT64>", list(covariate.concept_ids)))
+        concepts = f"SELECT concept_id FROM UNNEST(@{ids}) AS concept_id"
+        if covariate.include_descendants:
+            concepts += (f"\n    UNION DISTINCT\n    SELECT descendant_concept_id FROM {t('concept_ancestor')}"
+                         f"\n    WHERE ancestor_concept_id IN UNNEST(@{ids})")
+        # A measurement may be taken on the index date itself; a condition or drug record must start
+        # before it, so a diagnosis made at the index visit is not counted as prior history.
+        upper = "<=" if covariate.kind == "measurement" else "<"
+        where = f"r.{date_col} {upper} ie.index_date"
+        if covariate.lookback_days is not None:
+            params.append((f"c{i}_lookback", "INT64", int(covariate.lookback_days)))
+            where += f"\n      AND r.{date_col} >= DATE_SUB(ie.index_date, INTERVAL @c{i}_lookback DAY)"
+        join = (f"  FROM index_events ie\n"
+                f"  JOIN {t(table)} r ON r.person_id = ie.person_id\n"
+                f"  JOIN (\n    {concepts}\n  ) cc ON r.{concept_col} = cc.concept_id\n")
+        if covariate.kind == "measurement":
+            if covariate.value_min is not None:
+                where += f"\n      AND r.value_as_number >= @c{i}_min"
+                params.append((f"c{i}_min", "FLOAT64", float(covariate.value_min)))
+            if covariate.value_max is not None:
+                where += f"\n      AND r.value_as_number <= @c{i}_max"
+                params.append((f"c{i}_max", "FLOAT64", float(covariate.value_max)))
+            ctes.append(
+                f"c{i} AS (\n"
+                f"  SELECT person_id, value AS {covariate.name} FROM (\n"
+                "  SELECT ie.person_id, r.value_as_number AS value,\n"
+                f"    ROW_NUMBER() OVER (PARTITION BY ie.person_id ORDER BY r.{date_col} DESC, r.measurement_id DESC) AS rn\n"
+                + join +
+                f"  WHERE r.value_as_number IS NOT NULL\n      AND {where}\n"
+                "  ) AS ranked WHERE rn = 1\n"
+                ")"
+            )
+        else:
+            ctes.append(
+                f"c{i} AS (\n"
+                "  SELECT DISTINCT ie.person_id\n"
+                + join +
+                f"  WHERE {where}\n"
+                ")"
+            )
+
     select = [f"ie.outcome_value AS {spec.outcome.name}"]
     joins = []
     if spec.include_demographics:
@@ -271,6 +384,12 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         for column in source.columns:
             select += [f"w{i}.{source.prefix}_{column}_mean", f"w{i}.{source.prefix}_{column}_sd"]
         joins.append(f"LEFT JOIN w{i} ON w{i}.person_id = ie.person_id")
+    for i, covariate in enumerate(spec.covariates):
+        if covariate.kind == "measurement":
+            select.append(f"c{i}.{covariate.name}")
+        else:
+            select.append(f"IF(c{i}.person_id IS NULL, 0, 1) AS {covariate.name}")
+        joins.append(f"LEFT JOIN c{i} ON c{i}.person_id = ie.person_id")
 
     sql = (
         "WITH " + ",\n".join(ctes) + "\n"
@@ -284,7 +403,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
 def schema_check_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
     """SQL listing the (table, column) pairs the spec needs that exist in the CDR."""
     cdr = resolve_cdr(cdr)
-    tables = sorted({s.table for s in spec.wearables})
+    tables = sorted({s.table for s in spec.wearables} | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates})
     sql = (f"SELECT table_name, column_name FROM `{cdr}.INFORMATION_SCHEMA.COLUMNS`\n"
            "WHERE table_name IN UNNEST(@tables)")
     return sql, [("tables", "ARRAY<STRING>", tables)]
@@ -297,6 +416,11 @@ def missing_columns(spec: CohortSpec, present: list[tuple[str, str]]) -> list[st
     for s in spec.wearables:
         cols = [s.date_column, "person_id", *s.columns] + ([s.filter_column] if s.filter_column else [])
         needed += [(s.table, c) for c in cols]
+    for c in spec.covariates:
+        table, concept_col, date_col = _COVARIATE_TABLES[c.kind]
+        needed += [(table, col) for col in ("person_id", concept_col, date_col)]
+        if c.kind == "measurement":
+            needed += [(table, "value_as_number"), (table, "measurement_id")]
     return [f"{tbl}.{col}" for tbl, col in dict.fromkeys(needed) if (tbl, col) not in have]
 
 

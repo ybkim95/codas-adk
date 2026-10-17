@@ -82,6 +82,14 @@ A spec names an outcome by OMOP concept id and the wearable tables to summarise;
   results as hypothesis-generating.
 * each wearable column becomes `<prefix>_<column>_mean` and `_sd` over the window, plus
   `<prefix>_days`; `filter_column`/`filter_value` selects rows (e.g. `is_main_sleep = true`).
+* `covariates` (optional) adds clinical context columns for confounder adjustment. Each names a
+  `kind` (`measurement`, `condition` or `drug`), OMOP `concept_ids` (descendants included by
+  default) and a `lookback_days` (default 365; `null` for no limit). A measurement covariate is the
+  most recent value in the lookback up to and including the index date (`value_min`/`value_max`
+  apply); a condition or drug covariate is 1 if a record starts in the lookback before the index
+  date. `expect_name` is checked against the concept table before a run, like the catalog. A
+  covariate that shares a concept id with the outcome is refused in a single spec and left out
+  automatically in an exploration.
 * the output has no person_id or dates.
 
 The Fitbit column names in the example follow earlier CDR documentation. The extractor stops with a
@@ -90,12 +98,15 @@ list of missing columns if your CDR differs; check with `bq show --schema <cdr>.
 ## Free exploration
 
 The fastest path is the notebook `notebooks/aou_codas_quickstart.ipynb`: open it in a workspace
-JupyterLab app and run top to bottom: the second cell finds the CDR (`wb resource list`) and a Vertex
-location and Gemini models that answer from the workspace project, so normally nothing needs editing. The same flow from a terminal:
+JupyterLab app and choose Run > Run All Cells. Nothing needs editing. The first cell fast-forwards the
+checkout to `origin/aou` (resetting the notebook's saved outputs, which would otherwise block the
+pull) and says so if the notebook itself changed and needs reloading; the second finds the CDR
+(`wb resource list`) and a Vertex location and Gemini models that answer from the workspace project.
+The same flow from a terminal:
 
 ```bash
 python scripts/aou/run_codas_aou.py explore --screen-only   # check + count, no agents
-python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 3 outcomes
+python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 3 outcomes of each kind
 ```
 
 1. **Catalog check.** `scripts/aou/outcomes_catalog.json` lists about 15 Registered Tier outcomes
@@ -105,10 +116,12 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
    rule (and, for a condition, cases and controls), counted with the extractor's own SQL.
 3. **Selection.** A fixed rule: keep measurements with at least `--min-n` participants (default
    1,000) and conditions with at least `--min-cases` cases and controls (default 200), order by that
-   sample, take `--top-k`.
-4. **Runs.** Each selected outcome gets a spec built from the base spec's wearables, is extracted,
-   and goes through the full agent graph. `explore_summary.md` collects the masked screen table and
-   each run's validated candidates.
+   sample, and take `--top-k` (default 3) for each outcome kind, so one run covers lab measurements
+   and diagnoses. `--overall` takes the top K across kinds instead.
+4. **Runs.** Each selected outcome gets a spec built from the base spec's wearables and covariates,
+   is extracted, and goes through the full agent graph. `explore_summary.md` collects the masked
+   screen table and, for each run, the validated candidates, the confounders adjusted for and the
+   features excluded as leakage.
 
 ### Choosing outcomes yourself
 
@@ -129,6 +142,12 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   is fit, so a single extreme row in a test fold can no longer drive cross-validated R^2 far below zero.
   On the bundled synthetic example this moves the held-out metric in the third decimal only; the
   full-report golden hash was re-pinned for it.
+* **Adjustment-only covariates.** `DiscoveryRequest.context_columns` (empty by default) names columns
+  that never enter the candidate screen but can be declared as confounders. The AoU runner fills it
+  with the spec's covariates and lists them in the goal; the Researcher and Critic decide, with a
+  recorded reason, whether to adjust for each (`declare_confounders`). Each round summary shows the
+  share of rows that have each covariate, since adjusting drops the rows that lack it. Declaring a
+  confounder after a round has run revises the design, so the loop runs at least once more with it.
 * **Chance-claim audit.** If the report says the model beats chance while the engine's permutation
   test says it does not, a correction note is appended to the report.
 

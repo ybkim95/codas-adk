@@ -39,7 +39,7 @@ plausible, which would be surprising, and which are likely confounded or circula
 
 Whenever you name a column that plausibly causes BOTH a candidate feature and the outcome — age, sex,
 BMI, site, disease duration, medication, or whatever plays that role here — call declare_confounders
-with it. Do not merely describe it in prose. The Scout works from the schema alone and cannot see
+with it and a one-line reason. Do not merely describe it in prose. The Scout works from the schema alone and cannot see
 that a column is a common cause; recognising one is exactly the judgement you are here to make, and
 declaring it is what makes every later round adjust for it. A confounder you write about but do not
 declare has no effect on any verdict, and the pipeline will validate the artefact you predicted.
@@ -108,6 +108,11 @@ When you conclude that a candidate's input column leaks the target — it is com
 the outcome — call exclude_features with that column (and its sibling summaries) and the reason. Naming
 leakage in prose changes nothing; excluding it makes the next round re-run without it. Do not exclude
 for confounding, weakness or redundancy.
+
+When you conclude that a candidate merely tracks a common cause of itself and the outcome, and that
+common cause is available as a column (including any adjustment covariates the task lists), call
+declare_confounders with it and the reason; the next round re-runs adjusted for it. Weigh how many rows
+lack the covariate (shown in the round summary): adjusting drops them.
 """
 
 DEFENDER = """

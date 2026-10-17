@@ -221,21 +221,26 @@ def test_explore_end_to_end_on_synthetic_cdr(aou_env, monkeypatch):
     con = duckdb.connect()
     build_synthetic_cdr(con)
     monkeypatch.setattr(cohort, "_query", duckdb_query(con))
-    result = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=2,
+    # top 1 of each outcome kind: one measurement and one condition run end to end
+    result = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=1,
                             min_measurement_n=100, min_cases=30, out_dir=RUN_DIR, log=lambda *_: None)
 
-    assert len(result["runs"]) == 2
+    assert [r["cohort"] for r in result["runs"]] == ["explore_hdl", "explore_depression"]
     for run in result["runs"]:
         assert run["rounds"] >= 1 and Path(run["report_path"]).exists()
-    hba1c = next(r for r in result["runs"] if r["cohort"] == "explore_hba1c")
+    hdl = result["runs"][0]
     # The planted signal is one latent activity factor behind steps, active minutes and calories (rank
     # correlation ~0.99 between them). The scripted critic excludes calories as leakage, and the engine
     # then also rejects features that are near-copies of an excluded column, so the signal surfaces
     # through whatever survives: an active-minutes or steps feature, or a ratio built on one.
     planted = ("act_steps_mean", "act_very_active_minutes_mean")
-    assert any(p in c for c in hba1c["top_candidates"] for p in planted), hba1c["top_candidates"]
+    assert any(p in c for c in hdl["top_candidates"] for p in planted), hdl["top_candidates"]
+    # The base spec's covariate was extracted, and stayed out of the candidates.
+    table = pd.read_csv(RUN_DIR / "explore_hdl.csv")
+    assert table["bmi_cov"].notna().any() and not any("bmi_cov" in c for c in hdl["top_candidates"])
     assert "preview_rows" not in "\n".join(_serialize(req) for _, req in aou_env)
-    assert "explore_hba1c" in Path(result["summary_path"]).read_text(encoding="utf-8")
+    summary = Path(result["summary_path"]).read_text(encoding="utf-8")
+    assert "explore_hdl" in summary and "explore_depression" in summary and "adjusted for:" in summary
 
 
 def test_run_agents_refuses_consumer_api_key(aou_env, monkeypatch):
@@ -263,3 +268,50 @@ def test_run_agents_inside_a_running_event_loop(aou_env):
 
     state = asyncio.run(notebook_cell())
     assert state.get("rounds")
+
+
+def _confounded_table(n: int = 600) -> pd.DataFrame:
+    """Body size drives calories, the covariate and the outcome; steps act on the outcome on their own."""
+    spec = CohortSpec.from_json(SPEC)
+    rng = np.random.default_rng(5)
+    df = pd.DataFrame({c: rng.normal(0, 1, n) for c in output_columns(spec)})
+    body, steps = rng.normal(0, 1, n), rng.normal(0, 1, n)
+    df["age"] = rng.integers(20, 80, n)
+    df["female"] = rng.integers(0, 2, n)
+    df["act_steps_mean"] = 7000 + 2400 * steps
+    df["act_calories_out_mean"] = 2200 + 300 * body + rng.normal(0, 40, n)
+    df["bmi_cov"] = 28 + 4.5 * body + rng.normal(0, 0.6, n)
+    df["hba1c"] = 5.7 + 0.30 * body - 0.25 * steps + rng.normal(0, 0.35, n)
+    return df
+
+
+def test_declared_covariate_confounder_is_adjusted_for_and_never_a_candidate(aou_env, monkeypatch):
+    # The critic judges that calories track body size and declares the covariate; no leakage exclusion.
+    monkeypatch.setitem(SCRIPTS, "critic_agent", [_call(
+        "declare_confounders", confounder_columns_csv="bmi_cov",
+        reason="body size drives both energy expenditure and the outcome")])
+    csv = RUN_DIR / "confounded.csv"
+    _confounded_table().to_csv(csv, index=False)
+    spec = CohortSpec.from_json(SPEC)
+    goal = runner.goal_for(spec, "HbA1c")
+    assert "bmi_cov" in goal and "not candidate biomarkers" in goal
+
+    state = runner.run_agents(csv, goal, context_columns=[c.name for c in spec.covariates])
+    rounds = state["rounds"]
+    first, last = rounds[0], rounds[-1]
+
+    def passing(r):
+        return {c["feature"] for c in r["passing_candidates"]}
+
+    # The covariate is adjustment-only: never screened, alone or inside an engineered feature.
+    for r in rounds:
+        assert not any("bmi_cov" in f for f in passing(r)), passing(r)
+    assert not any("bmi_cov" in c["feature"] for c in state["latest_report"]["candidates"])
+    # Before adjustment the body-size proxy validates; once the covariate is declared, the loop runs
+    # again on the adjusted design and the proxy no longer passes, while the independent signal does.
+    assert "act_calories_out_mean" in passing(first)
+    assert len(rounds) >= 2 and last["confounders"][-1] == "bmi_cov"
+    assert last["confounder_log"][0]["reason"].startswith("body size")
+    assert "act_calories_out_mean" not in passing(last)
+    assert "act_steps_mean" in passing(last)
+    assert 0 < last["adjustment_covariates"]["bmi_cov"]["non_missing_fraction"] <= 1

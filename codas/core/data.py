@@ -771,10 +771,14 @@ def build_analysis_frame(
     excluded_columns: list[str] | None = None,
     confounder_columns: list[str] | None = None,
     max_ratio_features: int = 24,
+    context_columns: list[str] | None = None,
 ) -> AnalysisFrame:
     df, _binary_target_note = _validate_and_encode_target(df, target_column)
     excluded = set(excluded_columns or [])
     confounders = [column for column in (confounder_columns or []) if column in df.columns]
+    # Adjustment-only columns never enter the candidate screen; those named as confounders are
+    # carried as confounders, the rest are dropped from the frame.
+    context = {column for column in (context_columns or []) if column in df.columns} - set(confounders)
     audit_log: list[str] = []
     if _binary_target_note:
         audit_log.append(_binary_target_note)
@@ -827,7 +831,8 @@ def build_analysis_frame(
             "addressed by the mixed-effects model instead."
         )
     if _should_aggregate:
-        work = _aggregate_longitudinal(work, target_column, participant_id_column, time_column, excluded, confounders)
+        work = _aggregate_longitudinal(work, target_column, participant_id_column, time_column, excluded | context,
+                                       confounders)
         target_note = work.attrs.get("codas_target_aggregation_note", "target aggregation")
         if time_column:
             audit_log.append(
@@ -849,6 +854,7 @@ def build_analysis_frame(
         reserved.add(time_column)
     reserved.update(excluded)
     reserved.update(confounders)
+    reserved.update(context)
 
     feature_columns = [
         column

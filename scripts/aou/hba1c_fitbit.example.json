@@ -1,6 +1,6 @@
 {
   "name": "hba1c_fitbit",
-  "notes": "Example spec. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs.",
+  "notes": "Example spec. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically.",
   "outcome": {
     "kind": "measurement",
     "name": "hba1c",
@@ -12,6 +12,10 @@
   "window_days": 180,
   "min_wear_days": 30,
   "include_demographics": true,
+  "covariates": [
+    {"name": "bmi_cov", "kind": "measurement", "concept_ids": [3038553], "lookback_days": 365,
+     "value_min": 12.0, "value_max": 80.0, "expect_name": "body mass"}
+  ],
   "wearables": [
     {
       "table": "activity_summary",

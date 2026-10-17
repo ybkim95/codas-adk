@@ -23,18 +23,35 @@ from codas.aou.privacy import check_llm_backend, mask_small_counts, mask_small_c
 GOAL_TEMPLATE = (
     "Discover and validate wearable biomarkers of {label} in this All of Us cohort. The target column is "
     "{name} ({kind}: {target_note}). age and female are confounders. The features summarise Fitbit data over "
-    "the {window}-day window before each participant's index date. Iterate and write a short report."
+    "the {window}-day window before each participant's index date.{covariates} Iterate and write a short report."
+)
+COVARIATE_NOTE = (
+    " These columns are clinical covariates recorded up to the index date, available for confounder "
+    "adjustment and not candidate biomarkers: {columns}. Declare as confounders the ones you judge to "
+    "be common causes of a candidate feature and the outcome."
 )
 
 
 def goal_for(spec: CohortSpec, label: str | None = None) -> str:
     kind = spec.outcome.kind
     note = "first qualifying lab value" if kind == "measurement" else "1 = diagnosed, 0 = not"
+    covariates = ""
+    if spec.covariates:
+        columns = ", ".join(f"{c.name} ({_describe(c)})" for c in spec.covariates)
+        covariates = COVARIATE_NOTE.format(columns=columns)
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
-                                target_note=note, window=spec.window_days)
+                                target_note=note, window=spec.window_days, covariates=covariates)
 
 
-async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None) -> dict[str, Any]:
+def _describe(covariate: Any) -> str:
+    span = f"the {covariate.lookback_days} days" if covariate.lookback_days is not None else "any time"
+    if covariate.kind == "measurement":
+        return f"most recent value in {span} up to the index date"
+    return f"1 if a {covariate.kind} record starts in {span} before the index date"
+
+
+async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
+                            context_columns: list[str] | None = None) -> dict[str, Any]:
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
@@ -44,7 +61,7 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None) -> d
     sessions = InMemorySessionService()
     sid = uuid.uuid4().hex[:12]
     await sessions.create_session(app_name="codas_aou", user_id="aou", session_id=sid,
-                                  state={"csv_path": str(csv)})
+                                  state={"csv_path": str(csv), "context_columns": list(context_columns or [])})
     runner = Runner(app_name="codas_aou", agent=root_agent, session_service=sessions)
     message = types.Content(role="user", parts=[types.Part(text=goal)])
     async for event in runner.run_async(user_id="aou", session_id=sid, new_message=message):
@@ -56,11 +73,15 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None) -> d
     return dict(session.state)
 
 
-def run_agents(csv: str | Path, goal: str, on_tool_call: Any = None) -> dict[str, Any]:
-    """Run the CoDaS agent graph on ``csv`` with the AoU guard on, and return the final session state."""
+def run_agents(csv: str | Path, goal: str, on_tool_call: Any = None,
+               context_columns: list[str] | None = None) -> dict[str, Any]:
+    """Run the CoDaS agent graph on ``csv`` with the AoU guard on, and return the final session state.
+
+    ``context_columns`` are adjustment-only columns (the spec's covariates): never screened as
+    candidates, available to be declared as confounders."""
     os.environ["CODAS_AOU_MODE"] = "1"
     check_llm_backend()  # the graph may have been imported before AoU mode was switched on
-    return _run_sync(_run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call))
+    return _run_sync(_run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call, context_columns))
 
 
 def _run_sync(coro: Any) -> Any:
@@ -97,6 +118,8 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
         "rounds": len(rounds),
         "validated_count": last.get("validated_count"),
         "ml_metric": f"{last.get('ml_metric_name')}={last.get('ml_metric_value')}" if last else None,
+        "confounders": list(state.get("confounder_columns") or []),
+        "excluded": list(state.get("excluded_columns") or []),
         "top_candidates": [f"{c.get('feature')} (rho={c.get('rho')}, {c.get('verdict')})"
                            for c in (last.get("passing_candidates") or [])[:5]],
         "report_path": str(out / f"{stem}_report.md"),
@@ -107,7 +130,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None) -> dict[str, Any]:
     """Extract one cohort, run the agents on it, save the masked outputs."""
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
-    state = run_agents(csv, goal_for(spec, label), on_tool_call)
+    state = run_agents(csv, goal_for(spec, label), on_tool_call, [c.name for c in spec.covariates])
     return save_outputs(state, spec.name, out_dir)
 
 
@@ -118,6 +141,7 @@ def explore(
     *,
     client: Any = None,
     top_k: int = 3,
+    per_kind: bool = True,
     min_measurement_n: int = feas.MIN_MEASUREMENT_N,
     min_cases: int = feas.MIN_CASES,
     out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -128,7 +152,8 @@ def explore(
 ) -> dict[str, Any]:
     """Verify the catalog, screen feasibility, then run CoDaS on the top-K outcomes.
 
-    ``outcome_names`` names catalog entries to run instead of the ranked top K; they still have to pass the
+    With ``per_kind`` (the default) the top K is taken for each outcome kind in the catalog, so one
+    run covers measurements and conditions alike. ``outcome_names`` names catalog entries to run instead of the ranked top K; they still have to pass the
     concept check and have at least one qualifying participant.
 
     Returns the masked screen table, the chosen outcomes and one summary per run, and writes
@@ -139,6 +164,11 @@ def explore(
 
         client = bigquery.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
     cdr = resolve_cdr(cdr)
+    base, failed_covariates = feas.verify_covariates(base, cdr, client)
+    for name, reason in failed_covariates.items():
+        log(f"covariate {name} skipped: {reason}")
+    if base.covariates:
+        log(f"covariates: {', '.join(c.name for c in base.covariates)} (adjustment only, not candidates)")
     present = cohort._query(client, *cohort.schema_check_sql(base, cdr))
     missing = cohort.missing_columns(base, list(zip(present["table_name"], present["column_name"])))
     if missing:
@@ -159,7 +189,8 @@ def explore(
         if skipped:
             log(f"skipped (failed the concept check or no qualifying participants): {', '.join(skipped)}")
     else:
-        chosen = feas.rank_outcomes(rows, top_k=top_k, min_measurement_n=min_measurement_n, min_cases=min_cases)
+        chosen = feas.rank_outcomes(rows, top_k=top_k, min_measurement_n=min_measurement_n, min_cases=min_cases,
+                                    per_kind=per_kind)
     table = feas.feasibility_table(rows, problems, chosen)
     log(table)
 
@@ -180,6 +211,8 @@ def explore(
     for r in runs:
         lines += [f"### {r['cohort']}", f"- participants: {r['rows']}, rounds: {r['rounds']}, "
                   f"validated: {r['validated_count']}, {r['ml_metric']}",
+                  f"- adjusted for: {', '.join(r.get('confounders') or []) or 'none'}; "
+                  f"excluded as leakage: {', '.join(r.get('excluded') or []) or 'none'}",
                   *[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}", ""]
     summary_path = out / "explore_summary.md"
     summary_path.write_text(mask_small_counts_in_text("\n".join(lines)), encoding="utf-8")

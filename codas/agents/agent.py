@@ -197,7 +197,7 @@ critic_agent = _agent(
     "Adversarially attacks candidates for leakage, confounding, construct overlap, and overclaiming.",
     prompts.CRITIC,
     model=REASONING_MODEL,
-    tools=[exclude_features],
+    tools=[declare_confounders, exclude_features],
     output_key="critique",
 )
 defender_agent = _agent(

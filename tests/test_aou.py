@@ -196,7 +196,9 @@ def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
     table = _synthetic_cohort(spec)
     schema = pd.DataFrame(
         [(s.table, c) for s in spec.wearables
-         for c in ["person_id", s.date_column, *s.columns, *([s.filter_column] if s.filter_column else [])]],
+         for c in ["person_id", s.date_column, *s.columns, *([s.filter_column] if s.filter_column else [])]]
+        + [("measurement", c) for c in ("person_id", "measurement_concept_id", "measurement_date",
+                                        "value_as_number", "measurement_id")],
         columns=["table_name", "column_name"])
     calls = []
 

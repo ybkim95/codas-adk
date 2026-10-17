@@ -91,6 +91,74 @@ def test_micro_cdr_matches_hand_computed_rows(micro):
     assert p2.female == 0 and pd.isna(p2.sleep_days)                               # no sleep data -> NULL
 
 
+COVARIATES = [
+    {"name": "weight", "kind": "measurement", "concept_ids": [900], "lookback_days": 365, "value_max": 300.0},
+    {"name": "htn", "kind": "condition", "concept_ids": [901], "lookback_days": None},
+    {"name": "rx", "kind": "drug", "concept_ids": [903], "lookback_days": 30},
+]
+
+
+def test_covariates_match_hand_computed_values(micro):
+    """P1 is indexed on 2023-07-01, P2 on 2023-08-01 (see the micro fixture)."""
+    micro.execute("""INSERT INTO measurement VALUES
+        (10, 1, 900, DATE '2023-07-01', 70.0),   -- P1 on the index day: counts, and is the latest
+        (11, 1, 900, DATE '2023-06-01', 68.0),   -- P1 earlier in the lookback
+        (12, 1, 900, DATE '2022-01-01', 99.0),   -- P1 outside the 365-day lookback
+        (13, 1, 900, DATE '2023-07-02', 200.0),  -- P1 after the index: never used
+        (14, 2, 900, DATE '2023-05-01', 999.0),  -- P2 above value_max: dropped, so P2 has no value
+        (15, 2, 900, DATE '2023-08-15', 80.0)""")  # P2 after the index
+    micro.execute("INSERT INTO concept_ancestor VALUES (900, 900), (901, 901), (901, 902), (903, 903)")
+    micro.execute("""CREATE TABLE condition_occurrence AS SELECT * FROM (VALUES
+        (1, 902, DATE '2020-01-01'),   -- P1: a descendant concept, long before (no lookback limit)
+        (2, 901, DATE '2023-08-01')    -- P2: on the index date, so not prior history
+        ) AS t(person_id, condition_concept_id, condition_start_date)""")
+    micro.execute("""CREATE TABLE drug_exposure AS SELECT * FROM (VALUES
+        (1, 903, DATE '2023-05-01'),   -- P1: 61 days before the index, outside the 30-day lookback
+        (2, 903, DATE '2023-07-15')    -- P2: 17 days before the index
+        ) AS t(person_id, drug_concept_id, drug_exposure_start_date)""")
+    spec = CohortSpec.from_dict({**_micro_dict(), "covariates": COVARIATES})
+    out = duckdb_query(micro)(None, *build_cohort_sql(spec, SYNTHETIC_CDR)).sort_values("hba1c")
+    assert list(out.columns) == output_columns(spec)
+    p2, p1 = out.iloc[0], out.iloc[1]
+    assert p1.weight == 70.0 and p1.htn == 1 and p1.rx == 0
+    assert pd.isna(p2.weight) and p2.htn == 0 and p2.rx == 1
+    # the covariates leave the wearable features and the cohort untouched
+    base = duckdb_query(micro)(None, *build_cohort_sql(MICRO_SPEC, SYNTHETIC_CDR)).sort_values("hba1c")
+    pd.testing.assert_frame_equal(out[output_columns(MICRO_SPEC)].reset_index(drop=True), base.reset_index(drop=True))
+
+
+def test_covariate_that_is_the_outcome_is_refused_or_left_out():
+    same = {"name": "a1c_again", "kind": "measurement", "concept_ids": [3004410]}
+    with pytest.raises(ValueError, match="outcome"):
+        CohortSpec.from_dict({**_micro_dict(), "covariates": [same]})
+    base = CohortSpec.from_dict({**_micro_dict(), "covariates": [COVARIATES[0]]})
+    base.covariates.append(cohort.CovariateSpec(**same))  # as a base spec reused for many outcomes
+    o = feas.CatalogOutcome(name="hba1c", label="HbA1c", kind="measurement", concept_ids=[3004410],
+                            expect_name="a1c")
+    assert [c.name for c in feas.spec_for(o, base).covariates] == ["weight"]
+
+
+def _micro_dict() -> dict:
+    return {
+        "name": "micro",
+        "outcome": {"kind": "measurement", "name": "hba1c", "concept_ids": [3004410]},
+        "window_days": 180, "min_wear_days": 30,
+        "wearables": [
+            {"table": "activity_summary", "date_column": "date", "prefix": "act", "columns": ["steps"]},
+            {"table": "sleep_daily_summary", "date_column": "sleep_date", "prefix": "sleep",
+             "columns": ["minute_asleep"], "filter_column": "is_main_sleep", "filter_value": True},
+        ],
+    }
+
+
+def test_explore_skips_covariates_that_fail_the_concept_check(synthetic, monkeypatch):
+    monkeypatch.setattr(cohort, "_query", duckdb_query(synthetic))
+    base = CohortSpec.from_json(SPEC)
+    base.covariates.append(cohort.CovariateSpec(name="unknown_cov", kind="drug", concept_ids=[123456789]))
+    kept, failed = feas.verify_covariates(base, SYNTHETIC_CDR, object())
+    assert [c.name for c in kept.covariates] == ["bmi_cov"] and "not in the CDR" in failed["unknown_cov"]
+
+
 @pytest.fixture(scope="module")
 def synthetic():
     con = duckdb.connect()
@@ -153,8 +221,13 @@ def test_explore_screen_on_synthetic_cdr(synthetic, monkeypatch):
         result = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=2,
                                 min_measurement_n=100, min_cases=30, out_dir=out_dir, screen_only=True,
                                 log=lambda *_: None)
-        # the two measurements the synthetic vocabulary carries outrank the conditions' case counts
-        assert set(result["chosen"]) == {"hba1c", "hdl"}
+        # by default the top K is taken for each outcome kind, so conditions run alongside measurements
+        assert set(result["chosen"]) == {"hba1c", "hdl", "t2d", "depression"}
+        overall = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=2,
+                                 per_kind=False, min_measurement_n=100, min_cases=30, out_dir=out_dir,
+                                 screen_only=True, log=lambda *_: None)
+        # across kinds, the measurements' participant counts outrank the conditions' case counts
+        assert set(overall["chosen"]) == {"hba1c", "hdl"}
         summary = Path(result["summary_path"]).read_text(encoding="utf-8")
         assert "Feasibility screen" in summary and "skipped" in summary
     finally:

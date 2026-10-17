@@ -1,6 +1,6 @@
 """Run CoDaS on All of Us data inside the Researcher Workbench.
 
-    # free exploration: verify the outcome catalog, screen feasibility, run CoDaS on the top 3
+    # free exploration: verify the outcome catalog, screen feasibility, run CoDaS on the top 3 of each kind
     python scripts/aou/run_codas_aou.py explore
     python scripts/aou/run_codas_aou.py explore --screen-only          # counts only, no agent runs
 
@@ -57,8 +57,10 @@ def cmd_run(args: argparse.Namespace, csv: Path | None = None, spec: CohortSpec 
     csv = (csv or Path(args.csv)).expanduser().resolve()
     goal = args.goal or (runner.goal_for(spec) if spec else runner.GOAL_TEMPLATE.format(
         label="the outcome", name="the first column", kind="outcome", target_note="see the cohort spec",
-        window="pre-index"))
-    state = runner.run_agents(csv, goal, _progress)
+        window="pre-index", covariates=""))
+    context = [c.name for c in spec.covariates] if spec else [
+        c.strip() for c in (getattr(args, "covariates", "") or "").split(",") if c.strip()]
+    state = runner.run_agents(csv, goal, _progress, context)
     summary = runner.save_outputs(state, csv.stem, args.out_dir)
     print("-" * 96)
     print(Path(summary["report_path"]).read_text(encoding="utf-8") or "(no report produced)")
@@ -67,7 +69,7 @@ def cmd_run(args: argparse.Namespace, csv: Path | None = None, spec: CohortSpec 
 
 def cmd_explore(args: argparse.Namespace) -> None:
     result = runner.explore(
-        args.catalog, CohortSpec.from_json(args.spec), args.cdr, top_k=args.top_k,
+        args.catalog, CohortSpec.from_json(args.spec), args.cdr, top_k=args.top_k, per_kind=not args.overall,
         min_measurement_n=args.min_n, min_cases=args.min_cases, out_dir=args.out_dir,
         screen_only=args.screen_only, on_tool_call=_progress,
         outcome_names=[o.strip() for o in args.outcomes.split(",") if o.strip()] or None)
@@ -90,11 +92,15 @@ def main() -> None:
             p.add_argument("--dry-run", action="store_true", help="print the SQL and parameters, run nothing")
         if name == "run":
             p.add_argument("--csv", required=True)
+            p.add_argument("--covariates", default="",
+                           help="comma-separated adjustment-only columns (never screened as candidates)")
         if name in ("run", "all"):
             p.add_argument("--goal", default=None)
         if name == "explore":
             p.add_argument("--catalog", default=str(DEFAULT_CATALOG))
-            p.add_argument("--top-k", type=int, default=3)
+            p.add_argument("--top-k", type=int, default=3, help="outcomes to run for each outcome kind")
+            p.add_argument("--overall", action="store_true",
+                           help="take the top K across all kinds instead of for each kind")
             p.add_argument("--min-n", type=int, default=runner.feas.MIN_MEASUREMENT_N,
                            help="minimum participants for a measurement outcome")
             p.add_argument("--min-cases", type=int, default=runner.feas.MIN_CASES,

@@ -10,7 +10,11 @@ Three steps, all aggregate-only:
    wearable-window rule the extractor applies (and, for a condition, how many are cases).
 3. ``rank_outcomes``: a fixed rule, not a model judgement: keep outcomes that clear a minimum
    sample (participants for a measurement, cases and controls for a condition), order by that
-   sample, and take the top K.
+   sample, and take the top K, overall or for each outcome kind.
+
+The base spec's covariates are checked against the concept table the same way
+(``verify_covariates``), and each outcome's spec carries the verified covariates that are not the
+outcome itself.
 
 Counts are returned as integers for the ranking; ``feasibility_table`` masks 1-20 for display.
 """
@@ -23,10 +27,11 @@ from pathlib import Path
 from typing import Any
 
 from codas.aou import cohort
-from codas.aou.cohort import CohortSpec, OutcomeSpec, WearableSource, build_cohort_sql, resolve_cdr
+from codas.aou.cohort import (CohortSpec, OutcomeSpec, WearableSource, build_cohort_sql, covariates_without,
+                              resolve_cdr)
 from codas.aou.privacy import MASK, SMALL_CELL_MAX
 
-_DOMAIN = {"measurement": "Measurement", "condition": "Condition"}
+_DOMAIN = {"measurement": "Measurement", "condition": "Condition", "drug": "Drug"}
 MIN_MEASUREMENT_N = 1000
 MIN_CASES = 200
 
@@ -58,14 +63,18 @@ def load_catalog(path: str | Path) -> list[CatalogOutcome]:
 
 
 def spec_for(outcome: CatalogOutcome, base: CohortSpec, *, prefix: str = "explore") -> CohortSpec:
-    """A cohort spec for ``outcome`` that reuses the wearables, window and demographics of ``base``."""
+    """A cohort spec for ``outcome`` that reuses the wearables, window, demographics and covariates of
+    ``base``; a covariate that shares a concept id with the outcome is left out."""
+    target = outcome.outcome_spec()
+    covariates, _dropped = covariates_without(base.covariates, target)
     spec = CohortSpec(
         name=f"{prefix}_{outcome.name}",
-        outcome=outcome.outcome_spec(),
+        outcome=target,
         wearables=list(base.wearables),
         window_days=base.window_days,
         min_wear_days=base.min_wear_days,
         include_demographics=base.include_demographics,
+        covariates=covariates,
     )
     spec.validate()
     return spec
@@ -101,6 +110,21 @@ def check_concepts(outcomes: list[CatalogOutcome], rows: list[dict[str, Any]]) -
 def verify_catalog(outcomes: list[CatalogOutcome], cdr: str, client: Any) -> dict[str, str | None]:
     frame = cohort._query(client, *concept_check_sql(outcomes, cdr))
     return check_concepts(outcomes, frame.to_dict(orient="records"))
+
+
+def verify_covariates(base: CohortSpec, cdr: str, client: Any) -> tuple[CohortSpec, dict[str, str]]:
+    """``base`` with only the covariates whose concepts pass the catalog's concept check, and the
+    reason each dropped covariate failed."""
+    if not base.covariates:
+        return base, {}
+    problems = verify_catalog(base.covariates, cdr, client)
+    failed = {name: reason for name, reason in problems.items() if reason}
+    kept = [c for c in base.covariates if c.name not in failed]
+    spec = CohortSpec(name=base.name, outcome=base.outcome, wearables=list(base.wearables),
+                      window_days=base.window_days, min_wear_days=base.min_wear_days,
+                      include_demographics=base.include_demographics, covariates=kept, notes=base.notes)
+    spec.validate()
+    return spec, failed
 
 
 def feasibility_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[cohort.QueryParam]]:
@@ -149,12 +173,20 @@ def rank_outcomes(
     top_k: int = 3,
     min_measurement_n: int = MIN_MEASUREMENT_N,
     min_cases: int = MIN_CASES,
+    per_kind: bool = False,
 ) -> list[dict[str, Any]]:
-    """Outcomes clearing the minimum sample, largest effective sample first (ties by name)."""
+    """Outcomes clearing the minimum sample, largest effective sample first (ties by name).
+
+    With ``per_kind`` the top K is taken separately for each outcome kind, so outcomes of one kind
+    (whose effective sample is counted differently) cannot crowd out the others."""
     eligible = [r for r in rows
                 if (r["kind"] == "measurement" and r["n_participants"] >= min_measurement_n)
                 or (r["kind"] == "condition" and min(r.get("n_cases", 0), r.get("n_controls", 0)) >= min_cases)]
-    return sorted(eligible, key=lambda r: (-_effective(r), r["name"]))[:top_k]
+    ranked = sorted(eligible, key=lambda r: (-_effective(r), r["name"]))
+    if not per_kind:
+        return ranked[:top_k]
+    kinds = list(dict.fromkeys(r["kind"] for r in ranked))
+    return [r for kind in kinds for r in [x for x in ranked if x["kind"] == kind][:top_k]]
 
 
 def _show(n: Any) -> str:

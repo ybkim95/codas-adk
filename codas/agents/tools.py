@@ -26,7 +26,7 @@ from typing import Any
 import pandas as pd
 from google.adk.tools import ToolContext
 
-from codas.aou.privacy import aou_mode, literature_search_enabled, mask_small_counts_in_text
+from codas.aou.privacy import MASK, SMALL_CELL_MAX, aou_mode, literature_search_enabled, mask_small_counts_in_text
 from codas.core import gemini
 from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
@@ -223,7 +223,7 @@ def set_target(
     }
 
 
-def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext) -> dict[str, Any]:
+def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext, reason: str = "") -> dict[str, Any]:
     """Add confounders to the recorded analysis design, without disturbing the rest of it.
 
     A confounder is a column that plausibly causes BOTH a candidate feature and the outcome, so a
@@ -237,7 +237,9 @@ def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext) 
     the participant/time/excluded roles already recorded, and adds to any confounders already there.
 
     Names that are not columns, or that are already serving as the target or the participant/time
-    column, are ignored and reported back rather than silently dropped.
+    column, are ignored and reported back rather than silently dropped. ``reason`` (why each is a
+    common cause of the features and the outcome) is recorded in the round summaries the report reads.
+    Adding a confounder revises the design, so the loop runs at least one more round with it.
     """
     if not str(tool_context.state.get("target_column") or "").strip():
         return {"error": "Call set_target first; there is no analysis design to add confounders to."}
@@ -263,6 +265,7 @@ def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext) 
 
     accepted = list(tool_context.state.get("confounder_columns") or [])
     ignored: list[str] = []
+    added: list[str] = []
     for name in requested:
         if name in accepted:
             continue
@@ -270,7 +273,16 @@ def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext) 
             ignored.append(name)
             continue
         accepted.append(name)
+        added.append(name)
     tool_context.state["confounder_columns"] = accepted
+    if added and tool_context.state.get("rounds"):
+        # Rounds already ran without these; the loop must test the adjusted design before stopping.
+        tool_context.state["design_revision"] = int(tool_context.state.get("design_revision") or 0) + 1
+    if added:
+        log = list(tool_context.state.get("confounder_log") or [])
+        log.append({"columns": added, "reason": (reason or "").strip(),
+                    "after_round": len(tool_context.state.get("rounds") or [])})
+        tool_context.state["confounder_log"] = log
 
     return {
         "confounder_columns": accepted,
@@ -455,6 +467,7 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
         time_column=str(tool_context.state.get("time_column") or "").strip() or None,
         excluded_columns=list(tool_context.state.get("excluded_columns") or []),
         confounder_columns=list(tool_context.state.get("confounder_columns") or []),
+        context_columns=list(tool_context.state.get("context_columns") or []),
         proposed_features=list(tool_context.state.get("proposed_features") or []),
         top_k=top_k,
         max_ratio_features=ratio_features,
@@ -475,10 +488,36 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
     summary["excluded_features"] = list(tool_context.state.get("excluded_columns") or [])
     if tool_context.state.get("exclusion_log"):
         summary["exclusion_log"] = list(tool_context.state["exclusion_log"])
+    summary["confounders"] = list(tool_context.state.get("confounder_columns") or [])
+    if tool_context.state.get("confounder_log"):
+        summary["confounder_log"] = list(tool_context.state["confounder_log"])
+    context = list(tool_context.state.get("context_columns") or [])
+    if context:
+        summary["adjustment_covariates"] = _coverage(path, context)
     tool_context.state["rounds"] = rounds + [summary]
     tool_context.state["fact_sheet"] = report.get("fact_sheet", {})
     tool_context.state["latest_report"] = report
     return summary
+
+
+def _coverage(path: Path, columns: list[str]) -> dict[str, Any]:
+    """Share of rows with a value for each adjustment covariate. Adjusting for a covariate drops the
+    rows that lack it, so this is what an agent weighs before declaring one."""
+    try:
+        frame = read_csv_dataset(path)
+    except Exception:  # noqa: BLE001 - coverage is advisory; never fail the round over it
+        return {}
+    out: dict[str, Any] = {}
+    for c in [c for c in columns if c in frame.columns]:
+        have = int(frame[c].notna().sum())
+        lacking = len(frame) - have
+        if aou_mode() and (1 <= have <= SMALL_CELL_MAX or 1 <= lacking <= SMALL_CELL_MAX):
+            # A fraction next to the row count would reveal a small count; describe it instead.
+            out[c] = {"non_missing_fraction": f"{MASK} rows have a value" if have <= SMALL_CELL_MAX
+                      else f"{MASK} rows lack a value"}
+        else:
+            out[c] = {"non_missing_fraction": round(have / len(frame), 3) if len(frame) else None}
+    return out
 
 
 def check_convergence(tool_context: ToolContext) -> dict[str, Any]:
@@ -500,8 +539,9 @@ def check_convergence(tool_context: ToolContext) -> dict[str, Any]:
     if int(tool_context.state.get("design_revision") or 0) > int(current.get("design_revision") or 0):
         return {
             "converged": False,
-            "reason": "The analysis design changed after the latest round (features excluded); run one "
-                      "more round on the revised design before judging convergence.",
+            "reason": "The analysis design changed after the latest round (features excluded or "
+                      "confounders added); run one more round on the revised design before judging "
+                      "convergence.",
             "rounds_completed": len(rounds),
         }
     # A clear null after the first round: nothing validated and the held-out model is not above its

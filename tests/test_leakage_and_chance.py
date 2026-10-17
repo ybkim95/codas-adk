@@ -1,4 +1,5 @@
-"""Agent-declared leakage exclusion, convergence on a revised design, and the chance-claim audit.
+"""Agent-declared leakage exclusion and confounders, context (adjustment-only) columns, convergence on
+a revised design, and the chance-claim audit.
 
 All dataset-agnostic: the tests use the bundled synthetic sample and arbitrary column names.
 """
@@ -7,7 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codas.agents.grounding import chance_claim_conflict
-from codas.agents.tools import check_convergence, exclude_features, propose_feature, run_discovery_round, set_target
+from codas.agents.tools import (check_convergence, declare_confounders, exclude_features, propose_feature,
+                                run_discovery_round, set_target)
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "sample_dataset.csv"
 
@@ -59,6 +61,27 @@ def test_convergence_waits_for_a_round_on_the_revised_design():
     ctx.state["design_revision"] = 1                             # something was excluded after round 1
     out = check_convergence(ctx)
     assert out["converged"] is False and not ctx.actions.escalate
+
+
+def test_context_columns_stay_out_of_the_screen_until_declared(monkeypatch):
+    from codas.agents import tools
+
+    monkeypatch.setattr(tools, "_ROUND_RESAMPLES", 50)
+    ctx = _ctx()
+    ctx.state["context_columns"] = ["age"]
+    first = run_discovery_round(ctx)
+    screened = [c["feature"] for c in ctx.state["latest_report"]["candidates"]]
+    assert not any("age" in f for f in screened)
+    assert first["adjustment_covariates"]["age"]["non_missing_fraction"] > 0
+    out = declare_confounders("age", ctx, reason="causes both the features and the outcome")
+    assert out["confounder_columns"] == ["age"] and ctx.state["design_revision"] == 1
+    assert ctx.state["confounder_log"][0] == {"columns": ["age"], "reason": "causes both the features and the outcome",
+                                              "after_round": 1}
+    assert check_convergence(ctx)["converged"] is False         # the adjusted design has not run yet
+    second = run_discovery_round(ctx)
+    assert second["confounders"] == ["age"] and second["design_revision"] == 1
+    assert declare_confounders("age", ctx)["confounder_columns"] == ["age"]
+    assert ctx.state["design_revision"] == 1                     # nothing new: the design is unchanged
 
 
 def test_chance_claim_flagged_only_when_the_engine_disagrees():
