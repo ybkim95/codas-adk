@@ -171,6 +171,11 @@ class _QuantileClipper(BaseEstimator, TransformerMixin):
         return np.clip(np.asarray(x, dtype=float), self.low_, self.high_)
 
 
+# Smallest number of label-permuted CV draws behind the held-out model's null: 39 draws make p = 0.025
+# attainable, so the 0.05 decision is not decided by the draw count.
+_MIN_NULL_DRAWS = 39
+
+
 def _ml_benchmark(
     frame: pd.DataFrame,
     target_column: str,
@@ -247,11 +252,15 @@ def _ml_benchmark(
     # permutation-null distribution the SAME way (label-shuffled). A chance-level model then
     # reads as chance instead of being surfaced as a finding.
     reps = 20 if len(subset) <= 500 else (10 if len(subset) <= 3000 else 4)
+    # Fewer repeats of the REAL metric are enough at large n (its variance shrinks), but the null needs
+    # enough draws to make a 0.05 decision possible at all: with k draws the smallest attainable
+    # permutation p is 1/(k+1), so 4 draws could never report p below 0.2.
+    null_reps = max(reps, _MIN_NULL_DRAWS)
     rng = np.random.default_rng(random_state)
     real_draws = [v for v in (_cv_mean(random_state + i, yv) for i in range(reps)) if np.isfinite(v)]
     real = float(np.mean(real_draws)) if real_draws else None
     null_draws: list[float] = []
-    for _ in range(reps):
+    for _ in range(null_reps):
         yp = rng.permutation(yv)
         v = _cv_mean(int(rng.integers(0, 1_000_000)), yp)
         if np.isfinite(v):
@@ -269,6 +278,7 @@ def _ml_benchmark(
         out["null_metric_mean"] = float(np.nanmean(null_arr))
         out["null_metric_p95"] = float(np.nanpercentile(null_arr, 95))
         out["metric_vs_null_p"] = float((1 + int(np.nansum(null_arr >= real))) / (len(null_arr) + 1))
+        out["null_draws"] = int(len(null_arr))
         out["above_chance"] = bool(real > out["null_metric_p95"])
     # For binary outcomes, also report prevalence + PR-AUC (average precision): ROC-AUC is
     # optimistic at low base rates, so a rare-event detector needs the precision-recall view.
@@ -386,16 +396,20 @@ def _normalize_target(df: pd.DataFrame, target_column: str, warnings: list[str])
 _PROPOSED_FEATURE_OPS = ("ratio", "product", "difference", "sum")
 
 
-def _materialize_proposed_features(df: pd.DataFrame, proposed: list[dict], warnings: list[str]) -> pd.DataFrame:
+def _materialize_proposed_features(df: pd.DataFrame, proposed: list[dict], warnings: list[str],
+                                   blocked: set[str] | None = None) -> pd.DataFrame:
     """Realise generative-interpreter feature proposals as ordinary numeric columns.
 
     Each proposal names a safe binary operation over two existing numeric columns; there is no
     expression evaluation. Once materialised, the new column flows through the standard screening, FDR
     correction and validation battery like any other feature — so a proposal is evaluated, never
-    trusted. Malformed or duplicate proposals are skipped with a disclosed warning.
+    trusted. Malformed or duplicate proposals are skipped with a disclosed warning, as are proposals
+    built on a ``blocked`` column (the target, or a column the design excluded, adjusts for, or keeps
+    for adjustment only), which would otherwise bring that column back as a candidate.
     """
     if not proposed:
         return df
+    blocked = blocked or set()
     out = df
     for spec in proposed:
         op = str(spec.get("op", "")).strip().lower()
@@ -403,6 +417,10 @@ def _materialize_proposed_features(df: pd.DataFrame, proposed: list[dict], warni
         name = str(spec.get("name") or f"{a}_{op}_{b}").strip()
         if op not in _PROPOSED_FEATURE_OPS:
             warnings.append(f"Proposed feature '{name}' skipped: unsupported operation '{op}'.")
+            continue
+        if a in blocked or b in blocked:
+            warnings.append(f"Proposed feature '{name}' skipped: it uses {[c for c in (a, b) if c in blocked]}, "
+                            "which the analysis design excluded or reserved for adjustment.")
             continue
         if a not in out.columns or b not in out.columns:
             missing = [c for c in (a, b) if c not in out.columns]
@@ -1098,7 +1116,9 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
         df = df.replace([np.inf, -np.inf], np.nan)
     # Generative-interpreter proposals: materialise proposed transformations as ordinary
     # columns so they enter the same screening + FDR + validation as every other feature.
-    df = _materialize_proposed_features(df, request.proposed_features, warnings)
+    blocked = {request.target_column, *request.excluded_columns, *request.post_outcome_columns,
+               *request.confounder_columns, *request.context_columns}
+    df = _materialize_proposed_features(df, request.proposed_features, warnings, blocked)
     LOGGER.info("discovery start: target=%r rows=%d cols=%d", request.target_column, len(df), df.shape[1])
     # Hard temporal-leakage guard: caller-declared post-outcome columns are excluded before screening
     # so a forward-looking / post-outcome feature can never be reported as a predictor of the current

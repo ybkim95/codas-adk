@@ -379,6 +379,15 @@ def propose_feature(
         return {"error": f"unsupported operation {operation!r}; use one of: {', '.join(_PROPOSE_OPS)}."}
     if not (feature_a or "").strip() or not (feature_b or "").strip():
         return {"error": "propose_feature needs two existing column names (feature_a, feature_b)."}
+    state = tool_context.state
+    blocked = {str(state.get("target_column") or "").strip(),
+               *(state.get("excluded_columns") or []), *(state.get("confounder_columns") or []),
+               *(state.get("context_columns") or [])}
+    blocked.discard("")
+    used = [c for c in (feature_a.strip(), feature_b.strip()) if c in blocked]
+    if used:
+        return {"error": f"{', '.join(used)} cannot be a feature component: the design uses it as the target, "
+                         "excludes it, or keeps it for adjustment only. Propose a transformation of other columns."}
     label = (name or f"{feature_a}_{op}_{feature_b}").strip()
     proposals = list(tool_context.state.get("proposed_features") or [])
     if not any(p.get("name") == label for p in proposals):

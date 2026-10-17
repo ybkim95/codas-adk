@@ -575,6 +575,7 @@ def _add_interaction_features(
     feature_columns: list[str],
     feature_components: dict[str, list[str]],
     max_interaction_features: int = 12,
+    blocked: set[str] | None = None,
 ) -> list[str]:
     """Multiplicative INTERACTION features z(a)*z(b) for the leading numeric pairs (S5).
 
@@ -583,6 +584,10 @@ def _add_interaction_features(
     product is a genuine interaction term (both-high & both-low ⇒ positive), not scale-dominated. Has its
     OWN budget so it is never crowded out by the ratio budget. Detects BETWEEN-unit interactions; pure
     within-person/within-row interactions still need a mixed-effects interaction term (documented).
+
+    ``blocked`` columns (the target, the participant/time columns, and every column the design takes
+    out of the candidate pool: excluded, confounder and context columns) are never paired, so an
+    excluded column cannot return inside a product.
     """
     if max_interaction_features <= 0:
         return []
@@ -600,9 +605,11 @@ def _add_interaction_features(
     # Derive interaction candidates from the FULL frame, not the (already univariate-pruned)
     # feature_columns list: an interaction-only predictor has null MAIN effects, so its components
     # are exactly the ones the univariate screen drops — they must still be reachable here.
-    frame_cols = [str(c) for c in frame.columns]
+    blocked = blocked or set()
+    frame_cols = [str(c) for c in frame.columns if str(c) not in blocked]
     mean_cols = [c for c in frame_cols if c.endswith("_mean") and "_over_" not in c and "_x_" not in c]
-    primary = mean_cols if mean_cols else [c for c in feature_columns if "_over_" not in c and "_x_" not in c]
+    primary = mean_cols if mean_cols else [c for c in feature_columns
+                                           if "_over_" not in c and "_x_" not in c and c not in blocked]
     usable, seen_base = [], set()
     for column in primary:
         if "_over_" in column or "_x_" in column:  # skip already-derived ratio/interaction features
@@ -881,7 +888,7 @@ def build_analysis_frame(
 
     # Interaction (product) features get their OWN budget so they are never crowded out by ratios.
     try:
-        added_interactions = _add_interaction_features(work, feature_columns, feature_components)
+        added_interactions = _add_interaction_features(work, feature_columns, feature_components, blocked=reserved)
         if added_interactions:
             feature_columns = feature_columns + added_interactions
             audit_log.append(f"Generated {len(added_interactions)} interaction (product) features before screening.")

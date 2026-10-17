@@ -23,8 +23,17 @@ from codas.aou.privacy import check_llm_backend, mask_small_counts, mask_small_c
 GOAL_TEMPLATE = (
     "Discover and validate wearable biomarkers of {label} in this All of Us cohort. The target column is "
     "{name} ({kind}: {target_note}). age and female are confounders. The features summarise Fitbit data over "
-    "the {window}-day window before each participant's index date.{covariates} Iterate and write a short report."
+    "the {window}-day window before each participant's index date. {index_note}{covariates} Iterate and write a "
+    "short report."
 )
+# How the extractor fixes the index date (codas/aou/cohort.py), so the analysis reads the design correctly.
+INDEX_NOTES = {
+    "measurement": "The index date is the participant's first qualifying measurement that has wearable data "
+                   "in the window before it.",
+    "condition": "The index date is the first recorded diagnosis for cases and the last wearable day for "
+                 "everyone else, so a case's window ends before the first recorded diagnosis (which can "
+                 "postdate onset); cases and non-cases get index dates by different rules.",
+}
 COVARIATE_NOTE = (
     " These columns are clinical covariates recorded up to the index date, available for confounder "
     "adjustment and not candidate biomarkers: {columns}. Declare as confounders the ones you judge to "
@@ -40,14 +49,15 @@ def goal_for(spec: CohortSpec, label: str | None = None) -> str:
         columns = ", ".join(f"{c.name} ({_describe(c)})" for c in spec.covariates)
         covariates = COVARIATE_NOTE.format(columns=columns)
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
-                                target_note=note, window=spec.window_days, covariates=covariates)
+                                target_note=note, window=spec.window_days, index_note=INDEX_NOTES[kind],
+                                covariates=covariates)
 
 
 def _describe(covariate: Any) -> str:
-    span = f"the {covariate.lookback_days} days" if covariate.lookback_days is not None else "any time"
+    span = f"in the {covariate.lookback_days} days" if covariate.lookback_days is not None else "at any time"
     if covariate.kind == "measurement":
-        return f"most recent value in {span} up to the index date"
-    return f"1 if a {covariate.kind} record starts in {span} before the index date"
+        return f"most recent value {span} up to the index date"
+    return f"1 if a {covariate.kind} record starts {span} before the index date"
 
 
 async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
@@ -119,11 +129,28 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
         "validated_count": last.get("validated_count"),
         "ml_metric": f"{last.get('ml_metric_name')}={last.get('ml_metric_value')}" if last else None,
         "confounders": list(state.get("confounder_columns") or []),
+        "covariate_coverage": {name: info.get("non_missing_fraction")
+                               for name, info in (last.get("adjustment_covariates") or {}).items()},
         "excluded": list(state.get("excluded_columns") or []),
         "top_candidates": [f"{c.get('feature')} (rho={c.get('rho')}, {c.get('verdict')})"
                            for c in (last.get("passing_candidates") or [])[:5]],
         "report_path": str(out / f"{stem}_report.md"),
     })
+
+
+def _with_coverage(confounders: list[str] | None, coverage: dict[str, Any] | None) -> str:
+    """Confounder names, each adjustment covariate with the share of participants who have a value
+    (adjusting for it drops the rest)."""
+    parts = []
+    for name in confounders or []:
+        share = (coverage or {}).get(name)
+        if isinstance(share, (int, float)):
+            parts.append(f"{name} ({share:.0%} have a value)")
+        elif share is not None:
+            parts.append(f"{name} ({share})")
+        else:
+            parts.append(name)
+    return ", ".join(parts) or "none"
 
 
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
@@ -209,11 +236,16 @@ def explore(
              "Counts of 1-20 are masked. Review before anything leaves the Workbench.", "",
              "## Feasibility screen", "", table, "", "## Runs", ""]
     for r in runs:
+        coverage = r.get("covariate_coverage") or {}
+        confounders, excluded = r.get("confounders") or [], r.get("excluded") or []
+        unused = [c for c in coverage if c not in confounders and c not in excluded]
         lines += [f"### {r['cohort']}", f"- participants: {r['rows']}, rounds: {r['rounds']}, "
                   f"validated: {r['validated_count']}, {r['ml_metric']}",
-                  f"- adjusted for: {', '.join(r.get('confounders') or []) or 'none'}; "
-                  f"excluded as leakage: {', '.join(r.get('excluded') or []) or 'none'}",
-                  *[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}", ""]
+                  f"- adjusted for: {_with_coverage(confounders, coverage)}; "
+                  f"excluded as leakage: {', '.join(excluded) or 'none'}"]
+        if unused:
+            lines.append(f"- covariates not adjusted for: {_with_coverage(unused, coverage)}")
+        lines += [*[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}", ""]
     summary_path = out / "explore_summary.md"
     summary_path.write_text(mask_small_counts_in_text("\n".join(lines)), encoding="utf-8")
     return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path)}

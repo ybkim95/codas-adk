@@ -84,7 +84,8 @@ A spec names an outcome by OMOP concept id and the wearable tables to summarise;
   `<prefix>_days`; `filter_column`/`filter_value` selects rows (e.g. `is_main_sleep = true`).
 * `covariates` (optional) adds clinical context columns for confounder adjustment. Each names a
   `kind` (`measurement`, `condition` or `drug`), OMOP `concept_ids` (descendants included by
-  default) and a `lookback_days` (default 365; `null` for no limit). A measurement covariate is the
+  default) and a `lookback_days` (default 365; `null` for no limit; the example spec uses `null` for
+  BMI, since a 365-day lookback left most participants without a value). A measurement covariate is the
   most recent value in the lookback up to and including the index date (`value_min`/`value_max`
   apply); a condition or drug covariate is 1 if a record starts in the lookback before the index
   date. `expect_name` is checked against the concept table before a run, like the catalog. A
@@ -148,6 +149,16 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   recorded reason, whether to adjust for each (`declare_confounders`). Each round summary shows the
   share of rows that have each covariate, since adjusting drops the rows that lack it. Declaring a
   confounder after a round has run revises the design, so the loop runs at least once more with it.
+* **Blocked columns stay blocked.** The target, the participant/time columns and every excluded,
+  confounder and context column are kept out of engineered products and out of agent-proposed
+  features (the proposal is refused, and the engine skips it with a warning if one arrives anyway),
+  so a column excluded as leakage cannot return inside an interaction term.
+* **Permutation null with enough draws.** The held-out model's permutation null always has at least
+  39 draws, so p = 0.025 is attainable; before, large cohorts used 4 draws and could never report p
+  below 0.2. The draw count is in the fact sheet (`ml_null_draws`). This moved only the null fields of
+  the full-report golden fingerprint, which was re-pinned.
+* **Design stated in the goal.** The goal tells the agents how the index date is fixed for the
+  outcome kind, so a condition's pre-diagnosis window is not read as post-diagnosis behaviour.
 * **Chance-claim audit.** If the report says the model beats chance while the engine's permutation
   test says it does not, a correction note is appended to the report.
 

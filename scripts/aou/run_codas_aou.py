@@ -57,7 +57,7 @@ def cmd_run(args: argparse.Namespace, csv: Path | None = None, spec: CohortSpec 
     csv = (csv or Path(args.csv)).expanduser().resolve()
     goal = args.goal or (runner.goal_for(spec) if spec else runner.GOAL_TEMPLATE.format(
         label="the outcome", name="the first column", kind="outcome", target_note="see the cohort spec",
-        window="pre-index", covariates=""))
+        window="pre-index", index_note="", covariates=""))
     context = [c.name for c in spec.covariates] if spec else [
         c.strip() for c in (getattr(args, "covariates", "") or "").split(",") if c.strip()]
     state = runner.run_agents(csv, goal, _progress, context)

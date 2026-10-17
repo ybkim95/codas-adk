@@ -51,6 +51,7 @@ def build_fact_sheet(
         "ml_metric_null_mean": ml_metrics.get("null_metric_mean"),
         "ml_metric_null_p95": ml_metrics.get("null_metric_p95"),
         "ml_metric_vs_null_p": ml_metrics.get("metric_vs_null_p"),
+        "ml_null_draws": ml_metrics.get("null_draws"),
         "ml_above_chance": ml_metrics.get("above_chance"),
         "ml_n_samples": ml_metrics.get("n_samples"),
         "ml_low_confidence": ml_metrics.get("low_confidence"),

@@ -47,7 +47,8 @@ def engine_numbers(fact_sheet: dict | None, candidates: list | None, rounds: lis
     fs = fact_sheet or {}
     for key in ("ml_metric_value", "rows", "columns", "candidate_features_screened",
                 "internal_battery_passing_variants", "ml_metric_vs_null_p", "ml_pr_auc",
-                "ml_positive_rate", "positive_rate"):
+                "ml_positive_rate", "positive_rate", "ml_metric_null_mean", "ml_metric_null_p95",
+                "ml_null_draws"):
         add(fs.get(key))
     if isinstance(fs.get("ml_metric_value"), (int, float)):
         add(fs["ml_metric_value"] * 100)

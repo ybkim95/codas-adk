@@ -13,7 +13,7 @@
   "min_wear_days": 30,
   "include_demographics": true,
   "covariates": [
-    {"name": "bmi_cov", "kind": "measurement", "concept_ids": [3038553], "lookback_days": 365,
+    {"name": "bmi_cov", "kind": "measurement", "concept_ids": [3038553], "lookback_days": null,
      "value_min": 12.0, "value_max": 80.0, "expect_name": "body mass"}
   ],
   "wearables": [
