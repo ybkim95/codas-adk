@@ -122,10 +122,14 @@ def explore(
     min_cases: int = feas.MIN_CASES,
     out_dir: str | Path = DEFAULT_OUT_DIR,
     screen_only: bool = False,
+    outcome_names: list[str] | None = None,
     on_tool_call: Any = None,
     log: Any = print,
 ) -> dict[str, Any]:
     """Verify the catalog, screen feasibility, then run CoDaS on the top-K outcomes.
+
+    ``outcome_names`` names catalog entries to run instead of the ranked top K; they still have to pass the
+    concept check and have at least one qualifying participant.
 
     Returns the masked screen table, the chosen outcomes and one summary per run, and writes
     ``explore_summary.md`` next to the per-outcome reports.
@@ -146,7 +150,16 @@ def explore(
     log(f"catalog: {len(verified)}/{len(outcomes)} outcomes verified against the concept table")
 
     rows = feas.feasibility(verified, base, cdr, client)
-    chosen = feas.rank_outcomes(rows, top_k=top_k, min_measurement_n=min_measurement_n, min_cases=min_cases)
+    if outcome_names:
+        unknown = sorted(set(outcome_names) - {o.name for o in outcomes})
+        if unknown:
+            raise ValueError(f"Not in the catalog: {', '.join(unknown)}.")
+        chosen = [r for r in rows if r["name"] in set(outcome_names) and r["n_participants"] > 0]
+        skipped = sorted(set(outcome_names) - {r["name"] for r in chosen})
+        if skipped:
+            log(f"skipped (failed the concept check or no qualifying participants): {', '.join(skipped)}")
+    else:
+        chosen = feas.rank_outcomes(rows, top_k=top_k, min_measurement_n=min_measurement_n, min_cases=min_cases)
     table = feas.feasibility_table(rows, problems, chosen)
     log(table)
 

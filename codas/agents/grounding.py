@@ -78,3 +78,29 @@ def ungrounded_claims(report: str, engine_vals: set[float]) -> tuple[list[tuple[
         and value not in _BENIGN_INTS
     ]
     return ungrounded, len(claims)
+
+
+# Claims that the held-out model beats chance. A number can be grounded while the sentence around it
+# is wrong ("exceeds the permutation null (p = 0.2)"), which the figure check above cannot see.
+_CHANCE_CLAIM = re.compile(
+    r"(above[- ]chance|better than chance|(exceed|beat|outperform|surpass)\w*\s+(the\s+|its\s+)?"
+    r"(permutation[- ])?null|statistically (stable|significant|reliable) (predictive )?signal)",
+    re.I,
+)
+_NEGATION = re.compile(r"\b(not|no|never|fails?|failed|failing|below|without|cannot|neither|nor)\b|n't", re.I)
+
+
+def chance_claim_conflict(report: str, fact_sheet: dict | None) -> str | None:
+    """A correction note when the report says the model beats chance but the engine says it does not."""
+    fs = fact_sheet or {}
+    if fs.get("ml_above_chance") is not False:
+        return None
+    for match in _CHANCE_CLAIM.finditer(report or ""):
+        sentence_start = max(report.rfind(".", 0, match.start()), report.rfind("\n", 0, match.start())) + 1
+        if not _NEGATION.search(report[sentence_start:match.start()]):
+            p = fs.get("ml_metric_vs_null_p")
+            p_text = f" (permutation p = {p:.3g})" if isinstance(p, (int, float)) else ""
+            return ("**Engine check.** The held-out model did not beat its permutation null"
+                    f"{p_text}; statements above that it performs above chance are not supported by "
+                    "the deterministic engine.")
+    return None

@@ -20,6 +20,7 @@ try:  # StratifiedGroupKFold needs sklearn >= 0.24; fall back to GroupKFold if a
 except ImportError:  # pragma: no cover
     StratifiedGroupKFold = None
 from sklearn.pipeline import make_pipeline
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import StandardScaler
 
 from .data import (
@@ -142,6 +143,31 @@ def _is_binary_target(y: pd.Series) -> bool:
 
 
 
+# Feature values beyond these training-fold quantiles are clipped before the held-out model is fit.
+# A single extreme row (e.g. a ratio over a near-zero denominator) that lands in a test fold otherwise
+# makes the linear model extrapolate wildly and drives the cross-validated R^2 far below zero, even
+# though the in-sample fit is fine. The bounds are learned inside each training fold, so no test-fold
+# information leaks into the model.
+_ML_CLIP_QUANTILES = (0.005, 0.995)
+
+
+class _QuantileClipper(BaseEstimator, TransformerMixin):
+    """Clip each feature to quantile bounds learned on the training data it is fit on."""
+
+    def __init__(self, lower: float = _ML_CLIP_QUANTILES[0], upper: float = _ML_CLIP_QUANTILES[1]):
+        self.lower = lower
+        self.upper = upper
+
+    def fit(self, x, y=None):
+        values = np.asarray(x, dtype=float)
+        self.low_ = np.nanquantile(values, self.lower, axis=0)
+        self.high_ = np.nanquantile(values, self.upper, axis=0)
+        return self
+
+    def transform(self, x):
+        return np.clip(np.asarray(x, dtype=float), self.low_, self.high_)
+
+
 def _ml_benchmark(
     frame: pd.DataFrame,
     target_column: str,
@@ -167,12 +193,13 @@ def _ml_benchmark(
         yv = labels
         scoring = "roc_auc"
         metric_label = "auc"
-        model = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), LogisticRegression(max_iter=500))
+        model = make_pipeline(SimpleImputer(strategy="median"), _QuantileClipper(), StandardScaler(),
+                              LogisticRegression(max_iter=500))
     else:
         yv = y.to_numpy(dtype=float)
         scoring = "r2"
         metric_label = "r2"
-        model = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), Ridge(alpha=1.0))
+        model = make_pipeline(SimpleImputer(strategy="median"), _QuantileClipper(), StandardScaler(), Ridge(alpha=1.0))
 
     # Group-aware CV when participants repeat: no participant may appear in both the train
     # and test folds, otherwise a flexible model can memorize participants and inflate the
@@ -422,7 +449,9 @@ def _demote_collinear(candidates: list[Candidate], frame: pd.DataFrame) -> list[
             if j <= i or fi in demoted or fj in demoted:
                 continue
             try:
-                r = float(frame[[fi, fj]].dropna().corr().iloc[0, 1])
+                # Rank correlation, like the rest of the screen: a feature and its reciprocal (a/b vs b/a)
+                # are rank-identical but far from linearly related, so Pearson misses the duplicate.
+                r = float(frame[[fi, fj]].dropna().corr(method="spearman").iloc[0, 1])
             except Exception:
                 r = 0.0
             if np.isfinite(r) and abs(r) > _COLLINEAR_THRESHOLD:

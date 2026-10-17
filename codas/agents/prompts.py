@@ -44,6 +44,13 @@ that a column is a common cause; recognising one is exactly the judgement you ar
 declaring it is what makes every later round adjust for it. A confounder you write about but do not
 declare has no effect on any verdict, and the pipeline will validate the artefact you predicted.
 
+If a column is not an independent measurement but is computed from, or encodes, the outcome itself —
+a derived quantity whose formula takes the outcome or one of its components as an input, a value
+recorded after the outcome, a relabelling of the outcome — call exclude_features with it and say how
+it encodes the outcome. That is target leakage, and every round that keeps it will validate it. Use it
+for leakage only: a confounded feature is adjusted for, not excluded, and a weak feature is not
+leakage.
+
 These are expectations for the critic to check, not findings, and carry no statistics of their own —
 every number comes from the deterministic engine.
 """
@@ -96,6 +103,11 @@ Attack what the battery actually tested. Do not invent a bar it does not set: in
 association is not required to carry an out-of-sample multivariate model on its own, so a weak or
 negative held-out R2 is a limit on the model, not a refutation of the association. Where the evidence
 holds, say so; withdrawing an attack that did not land is part of doing this job well.
+
+When you conclude that a candidate's input column leaks the target — it is computed from, or encodes,
+the outcome — call exclude_features with that column (and its sibling summaries) and the reason. Naming
+leakage in prose changes nothing; excluding it makes the next round re-run without it. Do not exclude
+for confounding, weakness or redundancy.
 """
 
 DEFENDER = """

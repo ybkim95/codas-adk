@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from codas.agents.grounding import engine_numbers, ungrounded_claims
+from codas.agents.grounding import chance_claim_conflict, engine_numbers, ungrounded_claims
 from codas.agents.numeric_audit import verify_and_correct
 from codas.aou.privacy import (
     aou_mode,
@@ -127,6 +127,12 @@ def report_grounding_audit(callback_context: Any) -> None:
                     "quantities such as hazard/odds ratios, sensitivity, or specificity."
                 )
                 state["report"] = report
+
+        conflict = chance_claim_conflict(report, fact_sheet)
+        if conflict:
+            LOGGER.warning("report claims above-chance prediction that the engine does not support")
+            report = report + "\n\n---\n" + conflict
+            state["report"] = report
 
         if corrections or total:
             _write_numeric_audit({

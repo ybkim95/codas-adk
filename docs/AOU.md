@@ -110,6 +110,28 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
    and goes through the full agent graph. `explore_summary.md` collects the masked screen table and
    each run's validated candidates.
 
+### Choosing outcomes yourself
+
+The ranking favours whichever outcomes have the largest effective sample. To run specific catalog
+entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell, or pass
+`--outcomes <name>,<name>` to `run_codas_aou.py explore`.
+
+## Engine and agent behaviour added on this branch (dataset-agnostic)
+
+* **Agent-declared leakage.** The Researcher and Critic agents can call `exclude_features` when they
+  judge that a column encodes the outcome. Later rounds drop the column and everything engineered
+  from it, the engine's construct-independence gate rejects features that are near-copies of it, and
+  the loop runs at least one more round on the revised design. Exclusions and their reasons appear in
+  the round summaries the report is written from.
+* **Reciprocal and near-duplicate features.** Near-duplicate validated features are now detected with
+  rank (Spearman) correlation, like the rest of the screen, so `a/b` and `b/a` count once.
+* **Robust held-out model.** Features are clipped to training-fold quantiles before the held-out model
+  is fit, so a single extreme row in a test fold can no longer drive cross-validated R^2 far below zero.
+  On the bundled synthetic example this moves the held-out metric in the third decimal only; the
+  full-report golden hash was re-pinned for it.
+* **Chance-claim audit.** If the report says the model beats chance while the engine's permutation
+  test says it does not, a correction note is appended to the report.
+
 ## Testing outside the Workbench
 
 `codas/aou/synthetic.py` builds a synthetic All of Us–shaped CDR in DuckDB (no real people; planted

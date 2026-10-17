@@ -190,3 +190,32 @@ def test_sleep_filter_matches_string_and_bool_flags(main, nap):
     })
     out = duckdb_query(con)(None, *build_cohort_sql(spec, SYNTHETIC_CDR))
     assert out.iloc[0].sleep_minute_asleep_mean == 400.0 and out.iloc[0].sleep_days == 10
+
+
+def test_reciprocal_ratios_are_not_double_counted(synthetic):
+    """a/b and b/a are rank-identical; only one of each pair may count as a validated finding."""
+    from codas.core.discovery import DiscoveryRequest, run_discovery
+
+    df = duckdb_query(synthetic)(None, *build_cohort_sql(CohortSpec.from_json(SPEC), SYNTHETIC_CDR))
+    report = run_discovery(df, DiscoveryRequest(target_column="hba1c", confounder_columns=["age", "female"],
+                                                validation_resamples=60, max_ratio_features=12))
+    passing = {c.feature for c in report.candidates if c.verdict in {"validated", "conditional"}}
+    for feature in passing:
+        if "_over_" in feature:
+            numerator, denominator = feature.split("_over_", 1)
+            assert f"{denominator}_over_{numerator}" not in passing, feature
+
+
+def test_explore_runs_named_outcomes_instead_of_the_ranking(synthetic, monkeypatch):
+    monkeypatch.setattr(cohort, "_query", duckdb_query(synthetic))
+    out_dir = ROOT / ".codas_runs" / "aou_named_test"
+    try:
+        result = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(),
+                                outcome_names=["depression", "ldl"], out_dir=out_dir, screen_only=True,
+                                log=lambda *_: None)
+        assert result["chosen"] == ["depression"]   # ldl fails the concept check in the synthetic vocabulary
+        with pytest.raises(ValueError):
+            runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(),
+                           outcome_names=["not_in_catalog"], out_dir=out_dir, screen_only=True, log=lambda *_: None)
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)

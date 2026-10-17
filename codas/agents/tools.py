@@ -281,6 +281,69 @@ def declare_confounders(confounder_columns_csv: str, tool_context: ToolContext) 
     }
 
 
+def exclude_features(columns_csv: str, reason: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Remove features that leak the target from every later discovery round.
+
+    Use this only for target leakage: a column that is not an independent measurement but is computed
+    from, or encodes, the outcome itself (for example a derived quantity whose formula takes the
+    outcome, or part of it, as an input, or a value recorded after the outcome). A merely confounded
+    feature is not leakage; declare the confounder with declare_confounders instead. Weak features are
+    not leakage either.
+
+    The excluded columns are dropped before feature engineering, so ratios and products built from
+    them disappear too, and any proposed feature that uses them is withdrawn. The exclusion and its
+    reason are recorded in shared memory and in every later round summary, so the report can state
+    what was removed and why. Names that are not columns, or that are the target or the participant/time
+    column, are ignored and reported back.
+    """
+    requested = _split_csv(columns_csv)
+    if not requested:
+        return {"error": "exclude_features needs at least one column name."}
+    if not (reason or "").strip():
+        return {"error": "exclude_features needs a reason: say how the column encodes the outcome."}
+
+    reserved = {
+        str(tool_context.state.get(key) or "").strip()
+        for key in ("target_column", "participant_id_column", "time_column")
+    }
+    reserved.discard("")
+    columns: set[str] | None = None
+    path = _resolve_csv_path(tool_context.state.get("csv_path"), "")
+    if path is not None:
+        try:
+            columns = {str(c) for c in read_csv_dataset(path, nrows=5).columns}
+        except Exception:
+            columns = None
+
+    excluded = list(tool_context.state.get("excluded_columns") or [])
+    accepted, ignored = [], []
+    for name in requested:
+        if name in reserved or (columns is not None and name not in columns):
+            ignored.append(name)
+        elif name not in excluded:
+            excluded.append(name)
+            accepted.append(name)
+    if not accepted:
+        return {"excluded_columns": excluded, "ignored": ignored, "note": "Nothing new to exclude."}
+
+    proposals = list(tool_context.state.get("proposed_features") or [])
+    withdrawn = [p["name"] for p in proposals if p.get("a") in accepted or p.get("b") in accepted]
+    tool_context.state["proposed_features"] = [p for p in proposals if p["name"] not in withdrawn]
+    tool_context.state["excluded_columns"] = excluded
+    log = list(tool_context.state.get("exclusion_log") or [])
+    log.append({"columns": accepted, "reason": reason.strip(), "after_round": len(tool_context.state.get("rounds") or [])})
+    tool_context.state["exclusion_log"] = log
+    tool_context.state["design_revision"] = int(tool_context.state.get("design_revision") or 0) + 1
+    return {
+        "excluded_columns": excluded,
+        "newly_excluded": accepted,
+        "withdrawn_proposals": withdrawn,
+        "ignored": ignored,
+        "note": "Recorded. The next discovery round drops these columns and everything engineered from "
+                "them; the loop runs at least one more round on the revised design.",
+    }
+
+
 def propose_feature(
     operation: str,
     feature_a: str,
@@ -407,6 +470,11 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
         return {"error": f"Discovery failed for target '{target}': {type(exc).__name__}: {exc}", "round": round_index}
 
     summary = _round_summary(round_index, ratio_features, top_k, report)
+    # The design this round ran on, so the GapChecker can tell a saturated search from a revised one.
+    summary["design_revision"] = int(tool_context.state.get("design_revision") or 0)
+    summary["excluded_features"] = list(tool_context.state.get("excluded_columns") or [])
+    if tool_context.state.get("exclusion_log"):
+        summary["exclusion_log"] = list(tool_context.state["exclusion_log"])
     tool_context.state["rounds"] = rounds + [summary]
     tool_context.state["fact_sheet"] = report.get("fact_sheet", {})
     tool_context.state["latest_report"] = report
@@ -427,6 +495,15 @@ def check_convergence(tool_context: ToolContext) -> dict[str, Any]:
         return {"converged": False, "reason": "No discovery round has run yet.", "rounds_completed": 0}
 
     current = rounds[-1]
+    # A revised design (features excluded as leakage after this round ran) has not been tested yet, so
+    # the loop must not stop on the old design's numbers; the LoopAgent's iteration bound still applies.
+    if int(tool_context.state.get("design_revision") or 0) > int(current.get("design_revision") or 0):
+        return {
+            "converged": False,
+            "reason": "The analysis design changed after the latest round (features excluded); run one "
+                      "more round on the revised design before judging convergence.",
+            "rounds_completed": len(rounds),
+        }
     # A clear null after the first round: nothing validated and the held-out model is not above its
     # permutation null. Deeper feature engineering cannot manufacture signal that is not there, so stop.
     if len(rounds) == 1:

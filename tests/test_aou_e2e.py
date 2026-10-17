@@ -46,6 +46,9 @@ SCRIPTS: dict[str, list[types.Part]] = {
     "statistical_interpreter": [_call("propose_feature", operation="ratio", feature_a="act_steps_mean",
                                       feature_b="sleep_rare_mean")],
     "gapcheck_agent": [_call("check_convergence")],
+    # The critic judges one input to be target leakage; the next round must run without it.
+    "critic_agent": [_call("exclude_features", columns_csv="act_calories_out_mean,act_calories_out_sd",
+                           reason="treated as derived from the outcome in this test")],
 }
 REPORT_TEXT = ("Mean daily steps were inversely associated with HbA1c. A subgroup of n = 7 participants "
                "and 15 cases lacked sleep data.")
@@ -196,7 +199,13 @@ def test_full_graph_sends_only_masked_aggregates(aou_env):
     # 3. The literature tool was off, and its query never left.
     assert "Literature search is turned off" in everything
 
-    # 4. The saved report is masked.
+    # 4. The critic's exclusion reached the engine: a later round ran without the column or anything
+    #    built from it, and the round summary the report reads records it.
+    last = state["rounds"][-1]
+    assert len(state["rounds"]) >= 2 and "act_calories_out_mean" in last["excluded_features"]
+    assert not any("act_calories_out" in c["feature"] for c in state["latest_report"]["candidates"])
+
+    # 5. The saved report is masked.
     report = Path(summary["report_path"]).read_text(encoding="utf-8")
     assert "n = 7" not in report and "15 cases" not in report and MASK in report
     assert "n = 7" not in str(state.get("report"))
@@ -219,7 +228,12 @@ def test_explore_end_to_end_on_synthetic_cdr(aou_env, monkeypatch):
     for run in result["runs"]:
         assert run["rounds"] >= 1 and Path(run["report_path"]).exists()
     hba1c = next(r for r in result["runs"] if r["cohort"] == "explore_hba1c")
-    assert any("act_steps_mean" in c for c in hba1c["top_candidates"])  # the planted signal is found
+    # The planted signal is one latent activity factor behind steps, active minutes and calories (rank
+    # correlation ~0.99 between them). The scripted critic excludes calories as leakage, and the engine
+    # then also rejects features that are near-copies of an excluded column, so the signal surfaces
+    # through whatever survives: an active-minutes or steps feature, or a ratio built on one.
+    planted = ("act_steps_mean", "act_very_active_minutes_mean")
+    assert any(p in c for c in hba1c["top_candidates"] for p in planted), hba1c["top_candidates"]
     assert "preview_rows" not in "\n".join(_serialize(req) for _, req in aou_env)
     assert "explore_hba1c" in Path(result["summary_path"]).read_text(encoding="utf-8")
 
