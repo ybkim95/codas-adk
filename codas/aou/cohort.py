@@ -204,6 +204,8 @@ class CohortSpec:
             raise ValueError("lag_days must be non-negative and horizon_days positive.")
         if not 0.0 <= self.holdout_fraction < 1.0:
             raise ValueError("holdout_fraction must be in [0, 1).")
+        if not 0 <= self.split_salt <= MAX_SPLIT_SALT:
+            raise ValueError(f"split_salt must be in [0, {MAX_SPLIT_SALT}].")
         if self.valid_day is not None:
             _ident(str(self.valid_day.get("column", "")), "valid_day column")
             if self.valid_day.get("column") not in self.wearables[0].columns:
@@ -297,6 +299,19 @@ def output_columns(spec: CohortSpec) -> list[str]:
 
 FOLLOWUP_COLUMN = "followup_days"
 HOLDOUT_COLUMN = "_holdout"
+# Holdout split: the person id is reduced modulo the prime 2**31 - 1, mixed (multiply, add the salt,
+# square, multiply), and mapped to a bucket in 0..999. Every intermediate stays below 2**62, so
+# 12-digit All of Us person ids cannot overflow INT64; the squaring makes a new salt an unrelated
+# split rather than a shifted one.
+_SPLIT_MOD, _SPLIT_MUL, MAX_SPLIT_SALT = 2147483647, 48271, 10**9
+_SPLIT_MIXED = f"MOD(MOD(person_id, {_SPLIT_MOD}) * {_SPLIT_MUL} + @split_salt, {_SPLIT_MOD})"
+_SPLIT_SQL = f"MOD(MOD(MOD({_SPLIT_MIXED} * {_SPLIT_MIXED}, {_SPLIT_MOD}) * {_SPLIT_MUL}, {_SPLIT_MOD}), 1000)"
+
+
+def holdout_bucket(person_id: int, salt: int = 0) -> int:
+    """The split bucket (0-999) the extraction SQL assigns to ``person_id``; below the share x 1000 is sealed."""
+    h = (person_id % _SPLIT_MOD * _SPLIT_MUL + salt) % _SPLIT_MOD
+    return h * h % _SPLIT_MOD * _SPLIT_MUL % _SPLIT_MOD % 1000
 NC_PREFIX = "nc_"
 
 
@@ -590,8 +605,8 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         # columns so the output carries only the flag; extract_cohort drops it before the agents see rows.
         params += [("holdout_permille", "INT64", int(round(spec.holdout_fraction * 1000))),
                    ("split_salt", "INT64", int(spec.split_salt))]
-        ctes.append("split AS (\n  SELECT person_id, MOD(person_id * 2654435761 + @split_salt, 1000) < @holdout_permille"
-                    f" AS {HOLDOUT_COLUMN}\n  FROM index_events\n)")
+        ctes.append(f"split AS (\n  SELECT person_id, {_SPLIT_SQL} < @holdout_permille AS {HOLDOUT_COLUMN}\n"
+                    "  FROM index_events\n)")
         select.append(f"sp.{HOLDOUT_COLUMN}")
         joins.append("JOIN split sp ON sp.person_id = ie.person_id")
 

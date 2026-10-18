@@ -382,7 +382,7 @@ def test_holdout_rows_are_sealed_in_a_separate_table(incident_cdr, monkeypatch, 
         path = cohort.extract_cohort(spec, SYNTHETIC_CDR, out_dir, client=object(), check_schema=False)
         discovery, sealed = pd.read_csv(path), pd.read_csv(cohort.holdout_path(path))
         assert list(discovery.columns) == list(sealed.columns) == output_columns(spec)  # no split column, no ids
-        expected_sealed = {pid for pid in (1, 2) if (pid * 2654435761 + 7) % 1000 < 500}
+        expected_sealed = {pid for pid in (1, 2) if cohort.holdout_bucket(pid, 7) < 500}
         sealed_steps = {1000.0 * pid for pid in expected_sealed}
         assert set(sealed["act_steps_mean"]) == sealed_steps
         assert set(discovery["act_steps_mean"]) == {1000.0, 2000.0} - sealed_steps
@@ -451,3 +451,25 @@ def test_negative_controls_are_validated_and_dropped_for_their_own_outcome():
     assert [c.name for c in spec.negative_controls] == ["c"] and spec.positive_controls == ["age"]
     slim, _ = feas.feasibility_sql(spec, SYNTHETIC_CDR)
     assert "n0_concept_ids" not in slim  # the feasibility count does not compute the controls
+
+
+AOU_SIZED_ID = 200_001_000_000  # All of Us person ids have 12 digits
+
+
+def test_holdout_split_handles_all_of_us_sized_person_ids(incident_cdr, monkeypatch):
+    """A 12-digit person id times a 32-bit hash constant overflows INT64 (BigQuery and DuckDB both raise)."""
+    for table in ("person", "condition_occurrence", "visit_occurrence", "measurement", "activity_summary"):
+        incident_cdr.execute(f"UPDATE {table} SET person_id = person_id + {AOU_SIZED_ID}")
+    spec = CohortSpec.from_dict({**INCIDENT, "holdout_fraction": 0.5, "split_salt": 3})
+    out = duckdb_query(incident_cdr)(None, *build_cohort_sql(spec, SYNTHETIC_CDR))
+    sealed = {int(round(steps / 1000)) for steps, flag in zip(out["act_steps_mean"], out["_holdout"]) if flag}
+    assert sealed == {pid for pid in (1, 2) if cohort.holdout_bucket(pid + AOU_SIZED_ID, 3) < 500}
+
+
+def test_holdout_bucket_is_uniform_and_the_salt_reshuffles_it():
+    ids = range(AOU_SIZED_ID, AOU_SIZED_ID + 100_000)
+    first = {i for i in ids if cohort.holdout_bucket(i, 0) < 500}
+    assert abs(len(first) / 100_000 - 0.5) < 0.01
+    again = {i for i in ids if cohort.holdout_bucket(i, 1) < 500}
+    assert abs(len(first & again) / len(first) - 0.5) < 0.02  # a new salt is a new split, not a shifted one
+    assert all(0 <= cohort.holdout_bucket(i, 0) < 1000 for i in (1, 2**62, AOU_SIZED_ID))

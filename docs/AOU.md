@@ -83,7 +83,7 @@ The example spec uses `design: "incident"`, the design of the landmark All of Us
   from `index + lag_days` to the diagnosis or the last EHR visit (`visit_occurrence`). A measurement
   becomes the first value at or after `index + lag_days` (within `horizon_days` if set). In this design
   a baseline value of the outcome's own measure is allowed as a covariate.
-* **Sealed holdout.** `holdout_fraction` of participants (a deterministic hash of the person id; the
+* **Sealed holdout.** `holdout_fraction` of participants (a deterministic, overflow-free hash of the person id and `split_salt`, `cohort.holdout_bucket`; the
   flag is computed apart from the selected columns and dropped before writing) goes to
   `<cohort>.holdout.csv`, which no agent or tool reads.
 * **Pre-registration and one-shot confirmation** (`codas/aou/confirm.py`). After the agents finish,

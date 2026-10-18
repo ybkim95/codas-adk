@@ -52,7 +52,8 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
     body = body_rng.normal(0, 1, n_people)        # latent: drives calories, BMI, HbA1c, HDL
     start = date(2023, 1, 1)
     people = pd.DataFrame({
-        "person_id": np.arange(1, n_people + 1),
+        # All of Us person ids have 12 digits; matching their size keeps id arithmetic honest.
+        "person_id": np.arange(1, n_people + 1, dtype=np.int64) + 200_000_000_000,
         "year_of_birth": rng.integers(1945, 2000, n_people),
         "sex_at_birth_concept_id": rng.choice([1585847, 1585846], n_people),
     })
