@@ -22,6 +22,14 @@ from codas.aou.synthetic import SYNTHETIC_CDR, build_synthetic_cdr, duckdb_query
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "scripts" / "aou" / "hba1c_fitbit.example.json"
+
+def _window_spec() -> CohortSpec:
+    """The example spec with the outcome-anchored design these tests characterise (no split, no lag)."""
+    from dataclasses import replace
+
+    return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
+                   holdout_fraction=0.0, min_wear_days=30)
+
 CATALOG = ROOT / "scripts" / "aou" / "outcomes_catalog.json"
 
 MICRO_SPEC = CohortSpec.from_dict({
@@ -153,7 +161,7 @@ def _micro_dict() -> dict:
 
 def test_explore_skips_covariates_that_fail_the_concept_check(synthetic, monkeypatch):
     monkeypatch.setattr(cohort, "_query", duckdb_query(synthetic))
-    base = CohortSpec.from_json(SPEC)
+    base = _window_spec()
     base.covariates.append(cohort.CovariateSpec(name="unknown_cov", kind="drug", concept_ids=[123456789]))
     kept, failed = feas.verify_covariates(base, SYNTHETIC_CDR, object())
     assert [c.name for c in kept.covariates] == ["bmi_cov"] and "not in the CDR" in failed["unknown_cov"]
@@ -167,7 +175,7 @@ def synthetic():
 
 
 def test_synthetic_planted_signal_survives_extraction(synthetic):
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     df = duckdb_query(synthetic)(None, *build_cohort_sql(spec, SYNTHETIC_CDR))
     assert len(df) > 300
     assert df["hba1c"].corr(df["act_steps_mean"], method="spearman") < -0.4
@@ -189,7 +197,7 @@ def test_concept_check_rejects_wrong_domain_and_name():
 
 def test_feasibility_counts_match_extraction(synthetic, monkeypatch):
     monkeypatch.setattr(cohort, "_query", duckdb_query(synthetic))
-    base = CohortSpec.from_json(SPEC)
+    base = _window_spec()
     outcomes = {o.name: o for o in feas.load_catalog(CATALOG)}
     rows = {r["name"]: r for r in feas.feasibility([outcomes["hba1c"], outcomes["t2d"]], base, SYNTHETIC_CDR, None)}
     full = duckdb_query(synthetic)(None, *build_cohort_sql(feas.spec_for(outcomes["t2d"], base), SYNTHETIC_CDR))
@@ -218,12 +226,12 @@ def test_explore_screen_on_synthetic_cdr(synthetic, monkeypatch):
     monkeypatch.setattr(cohort, "_query", duckdb_query(synthetic))
     out_dir = ROOT / ".codas_runs" / "aou_explore_test"
     try:
-        result = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=2,
+        result = runner.explore(CATALOG, _window_spec(), SYNTHETIC_CDR, client=object(), top_k=2,
                                 min_measurement_n=100, min_cases=30, out_dir=out_dir, screen_only=True,
                                 log=lambda *_: None)
         # by default the top K is taken for each outcome kind, so conditions run alongside measurements
         assert set(result["chosen"]) == {"hba1c", "hdl", "t2d", "depression"}
-        overall = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=2,
+        overall = runner.explore(CATALOG, _window_spec(), SYNTHETIC_CDR, client=object(), top_k=2,
                                  per_kind=False, min_measurement_n=100, min_cases=30, out_dir=out_dir,
                                  screen_only=True, log=lambda *_: None)
         # across kinds, the measurements' participant counts outrank the conditions' case counts
@@ -269,7 +277,7 @@ def test_reciprocal_ratios_are_not_double_counted(synthetic):
     """a/b and b/a are rank-identical; only one of each pair may count as a validated finding."""
     from codas.core.discovery import DiscoveryRequest, run_discovery
 
-    df = duckdb_query(synthetic)(None, *build_cohort_sql(CohortSpec.from_json(SPEC), SYNTHETIC_CDR))
+    df = duckdb_query(synthetic)(None, *build_cohort_sql(_window_spec(), SYNTHETIC_CDR))
     report = run_discovery(df, DiscoveryRequest(target_column="hba1c", confounder_columns=["age", "female"],
                                                 validation_resamples=60, max_ratio_features=12))
     passing = {c.feature for c in report.candidates if c.verdict in {"validated", "conditional"}}
@@ -283,12 +291,117 @@ def test_explore_runs_named_outcomes_instead_of_the_ranking(synthetic, monkeypat
     monkeypatch.setattr(cohort, "_query", duckdb_query(synthetic))
     out_dir = ROOT / ".codas_runs" / "aou_named_test"
     try:
-        result = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(),
+        result = runner.explore(CATALOG, _window_spec(), SYNTHETIC_CDR, client=object(),
                                 outcome_names=["depression", "ldl"], out_dir=out_dir, screen_only=True,
                                 log=lambda *_: None)
         assert result["chosen"] == ["depression"]   # ldl fails the concept check in the synthetic vocabulary
         with pytest.raises(ValueError):
-            runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(),
+            runner.explore(CATALOG, _window_spec(), SYNTHETIC_CDR, client=object(),
                            outcome_names=["not_in_catalog"], out_dir=out_dir, screen_only=True, log=lambda *_: None)
     finally:
         shutil.rmtree(out_dir, ignore_errors=True)
+
+
+INCIDENT = {
+    "name": "inc",
+    "design": "incident", "window_days": 30, "lag_days": 10, "min_wear_days": 5,
+    "valid_day": {"column": "steps", "min": 100},
+    "outcome": {"kind": "condition", "name": "dx", "concept_ids": [500]},
+    "wearables": [{"table": "activity_summary", "date_column": "date", "prefix": "act", "columns": ["steps"]}],
+}
+
+
+@pytest.fixture
+def incident_cdr():
+    """Six people; every expected value below is worked out by hand."""
+    con = duckdb.connect()
+    act = []
+    # P1: Jan 1 has 50 steps (invalid), then 1,000 a day to Feb 9. First valid day Jan 2 -> index Feb 1,
+    #     outcome counted from Feb 11; baseline [Jan 2, Feb 1) holds 30 valid days.
+    act += [(1, date(2023, 1, 1), 50.0)] + [(1, d, 1000.0) for d in _days(date(2023, 1, 2), 39)]
+    act += [(2, d, 2000.0) for d in _days(date(2023, 3, 1), 46)]     # P2: index Mar 31, from Apr 10
+    act += [(3, d, 3000.0) for d in _days(date(2023, 1, 1), 40)]     # P3: diagnosed before (prevalent)
+    act += [(4, d, 4000.0) for d in _days(date(2023, 1, 1), 40)]     # P4: diagnosed inside the lag
+    act += [(5, d, 5000.0) for d in _days(date(2023, 1, 1), 40)]     # P5: no EHR visit after the lag
+    act += [(6, d, 6000.0) for d in _days(date(2023, 1, 1), 3)]      # P6: 3 baseline days < min_wear_days
+    tables = {
+        "person": pd.DataFrame({"person_id": [1, 2, 3, 4, 5, 6], "year_of_birth": [1980] * 6,
+                                "sex_at_birth_concept_id": [10] * 6}),
+        "concept": pd.DataFrame({"concept_id": [10, 500], "concept_name": ["Female", "Some condition"],
+                                 "standard_concept": [None, "S"], "domain_id": ["Gender", "Condition"]}),
+        "concept_ancestor": pd.DataFrame({"ancestor_concept_id": [500], "descendant_concept_id": [500]}),
+        "condition_occurrence": pd.DataFrame({
+            "person_id": [1, 3, 4], "condition_concept_id": [500, 500, 500],
+            "condition_start_date": [date(2023, 6, 1), date(2022, 5, 1), date(2023, 2, 5)]}),
+        "visit_occurrence": pd.DataFrame({
+            "person_id": [1, 1, 2, 3, 4, 5, 6],
+            "visit_start_date": [date(2023, 6, 1), date(2023, 12, 1), date(2024, 1, 10), date(2024, 1, 1),
+                                 date(2024, 1, 1), date(2023, 1, 15), date(2024, 1, 1)]}),
+        "measurement": pd.DataFrame({
+            "measurement_id": [1, 2, 3, 4], "person_id": [1, 1, 1, 2], "measurement_concept_id": [600] * 4,
+            "measurement_date": [date(2023, 2, 5), date(2023, 3, 1), date(2023, 9, 1), date(2023, 5, 1)],
+            "value_as_number": [9.0, 7.0, 8.0, 6.0]}),
+        "activity_summary": pd.DataFrame(act, columns=["person_id", "date", "steps"]),
+    }
+    for name, frame in tables.items():
+        con.register("_t", frame)
+        con.execute(f"CREATE TABLE {name} AS SELECT * FROM _t")
+        con.unregister("_t")
+    return con
+
+
+def test_incident_condition_cohort_matches_hand_computed_rows(incident_cdr):
+    spec = CohortSpec.from_dict(INCIDENT)
+    out = duckdb_query(incident_cdr)(None, *build_cohort_sql(spec, SYNTHETIC_CDR))
+    assert list(out.columns) == output_columns(spec) and "followup_days" in out.columns
+    out = out.sort_values("act_steps_mean").reset_index(drop=True)
+    assert out["act_steps_mean"].tolist() == [1000.0, 2000.0]   # P3-P6 excluded, each for its own reason
+    p1, p2 = out.iloc[0], out.iloc[1]
+    assert p1.dx == 1 and p1.followup_days == 110 and p1.act_days == 30   # Feb 11 -> Jun 1; invalid Jan 1 dropped
+    assert p2.dx == 0 and p2.followup_days == 275 and p2.act_days == 30   # Apr 10 -> last visit 2024-01-10
+
+
+def test_incident_measurement_takes_the_first_value_after_the_lag(incident_cdr):
+    spec = CohortSpec.from_dict({**INCIDENT, "outcome": {"kind": "measurement", "name": "lab", "concept_ids": [600]}})
+    out = duckdb_query(incident_cdr)(None, *build_cohort_sql(spec, SYNTHETIC_CDR)).sort_values("act_steps_mean")
+    # P1: Feb 5 is inside baseline+lag (before Feb 11), so Mar 1's 7.0 is the outcome; P2: May 1's 6.0.
+    assert out["lab"].tolist() == [7.0, 6.0] and "followup_days" not in out.columns
+    capped = CohortSpec.from_dict({**INCIDENT, "horizon_days": 19,
+                                   "outcome": {"kind": "measurement", "name": "lab", "concept_ids": [600]}})
+    out = duckdb_query(incident_cdr)(None, *build_cohort_sql(capped, SYNTHETIC_CDR))
+    # 19 days after the lag: P1's window is [Feb 11, Mar 2), which holds Mar 1; P2's is [Apr 10, Apr 29),
+    # which misses May 1, so P2 drops out.
+    assert out["lab"].tolist() == [7.0]
+
+
+def test_holdout_rows_are_sealed_in_a_separate_table(incident_cdr, monkeypatch, tmp_path):
+    spec = CohortSpec.from_dict({**INCIDENT, "holdout_fraction": 0.5, "split_salt": 7})
+    monkeypatch.setattr(cohort, "_query", duckdb_query(incident_cdr))
+    out_dir = ROOT / ".codas_runs" / "holdout_test"
+    try:
+        path = cohort.extract_cohort(spec, SYNTHETIC_CDR, out_dir, client=object(), check_schema=False)
+        discovery, sealed = pd.read_csv(path), pd.read_csv(cohort.holdout_path(path))
+        assert list(discovery.columns) == list(sealed.columns) == output_columns(spec)  # no split column, no ids
+        expected_sealed = {pid for pid in (1, 2) if (pid * 2654435761 + 7) % 1000 < 500}
+        sealed_steps = {1000.0 * pid for pid in expected_sealed}
+        assert set(sealed["act_steps_mean"]) == sealed_steps
+        assert set(discovery["act_steps_mean"]) == {1000.0, 2000.0} - sealed_steps
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def test_incident_design_allows_a_baseline_value_of_the_outcome_as_covariate():
+    same = {"name": "lab_baseline", "kind": "measurement", "concept_ids": [600]}
+    spec = CohortSpec.from_dict({**INCIDENT, "covariates": [same],
+                                 "outcome": {"kind": "measurement", "name": "lab", "concept_ids": [600]}})
+    assert [c.name for c in spec.covariates] == ["lab_baseline"]
+    with pytest.raises(ValueError, match="outcome"):
+        CohortSpec.from_dict({**INCIDENT, "design": "window", "covariates": [same],
+                              "outcome": {"kind": "measurement", "name": "lab", "concept_ids": [600]}})
+
+
+def test_incident_holdout_sql_selects_no_identifier():
+    spec = CohortSpec.from_dict({**INCIDENT, "holdout_fraction": 0.5})
+    sql, _ = build_cohort_sql(spec, SYNTHETIC_CDR)
+    selected = sql[sql.rindex("\nSELECT"):sql.index("\nFROM index_events ie")]
+    assert "person_id" not in selected and "_holdout" in selected

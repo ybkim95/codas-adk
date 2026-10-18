@@ -29,6 +29,14 @@ from codas.aou.privacy import MASK, SMALL_CELL_MAX, _is_count_key
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "scripts" / "aou" / "hba1c_fitbit.example.json"
+
+def _window_spec() -> CohortSpec:
+    """The example spec with the outcome-anchored design these tests characterise (no split, no lag)."""
+    from dataclasses import replace
+
+    return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
+                   holdout_fraction=0.0, min_wear_days=30)
+
 CATALOG = ROOT / "scripts" / "aou" / "outcomes_catalog.json"
 RUN_DIR = ROOT / ".codas_runs" / "aou_e2e_test"
 
@@ -98,7 +106,7 @@ def _llm_agents(node: Any):
 
 
 def _cohort_table(n: int = 400) -> pd.DataFrame:
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     rng = np.random.default_rng(11)
     df = pd.DataFrame({c: rng.normal(0, 1, n) for c in output_columns(spec)})
     df["age"] = rng.integers(20, 80, n)
@@ -169,7 +177,7 @@ def test_full_graph_sends_only_masked_aggregates(aou_env):
     csv = RUN_DIR / "cohort.csv"
     table.to_csv(csv, index=False)
 
-    state = runner.run_agents(csv, runner.goal_for(CohortSpec.from_json(SPEC), "HbA1c"))
+    state = runner.run_agents(csv, runner.goal_for(_window_spec(), "HbA1c"))
     summary = runner.save_outputs(state, "cohort", RUN_DIR)
 
     agents_called = {name for name, _ in recorder}
@@ -222,7 +230,7 @@ def test_explore_end_to_end_on_synthetic_cdr(aou_env, monkeypatch):
     build_synthetic_cdr(con)
     monkeypatch.setattr(cohort, "_query", duckdb_query(con))
     # top 1 of each outcome kind: one measurement and one condition run end to end
-    result = runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=1,
+    result = runner.explore(CATALOG, _window_spec(), SYNTHETIC_CDR, client=object(), top_k=1,
                             min_measurement_n=100, min_cases=30, out_dir=RUN_DIR, log=lambda *_: None)
 
     assert [r["cohort"] for r in result["runs"]] == ["explore_hdl", "explore_depression"]
@@ -272,7 +280,7 @@ def test_run_agents_inside_a_running_event_loop(aou_env):
     _cohort_table().to_csv(csv, index=False)
 
     async def notebook_cell():
-        return runner.run_agents(csv, runner.goal_for(CohortSpec.from_json(SPEC), "HbA1c"))
+        return runner.run_agents(csv, runner.goal_for(_window_spec(), "HbA1c"))
 
     state = asyncio.run(notebook_cell())
     assert state.get("rounds")
@@ -280,7 +288,7 @@ def test_run_agents_inside_a_running_event_loop(aou_env):
 
 def _confounded_table(n: int = 600) -> pd.DataFrame:
     """Body size drives calories, the covariate and the outcome; steps act on the outcome on their own."""
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     rng = np.random.default_rng(5)
     df = pd.DataFrame({c: rng.normal(0, 1, n) for c in output_columns(spec)})
     body, steps = rng.normal(0, 1, n), rng.normal(0, 1, n)
@@ -300,7 +308,7 @@ def test_declared_covariate_confounder_is_adjusted_for_and_never_a_candidate(aou
         reason="body size drives both energy expenditure and the outcome")])
     csv = RUN_DIR / "confounded.csv"
     _confounded_table().to_csv(csv, index=False)
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     goal = runner.goal_for(spec, "HbA1c")
     assert "bmi_cov" in goal and "not candidate biomarkers" in goal
 
@@ -332,7 +340,7 @@ def test_full_trace_and_phase_outputs_are_saved_and_masked(aou_env):
     table = _cohort_table()
     table.to_csv(csv, index=False)
     recorder = TraceRecorder()
-    state = runner.run_agents(csv, runner.goal_for(CohortSpec.from_json(SPEC), "HbA1c"), recorder=recorder)
+    state = runner.run_agents(csv, runner.goal_for(_window_spec(), "HbA1c"), recorder=recorder)
     summary = runner.save_outputs(state, "cohort", RUN_DIR, recorder)
 
     events = [json.loads(line) for line in Path(summary["files"]["trace_jsonl"]).read_text().splitlines()]
@@ -371,3 +379,41 @@ def test_full_trace_and_phase_outputs_are_saved_and_masked(aou_env):
     pdf = Path(summary["files"]["pdf"]).read_bytes()
     assert pdf.startswith(b"%PDF") and pdf.count(b"/Type /Page\n") + pdf.count(b"/Type /Page ") >= 6
     assert "Phase coverage" in Path(summary["files"]["trace_md"]).read_text()
+
+
+def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch):
+    """Incident cohorts, a sealed holdout, pre-registration and confirmation, through explore()."""
+    from dataclasses import replace
+
+    pytest.importorskip("duckdb")
+    pytest.importorskip("sqlglot")
+    import duckdb
+
+    from codas.aou import cohort
+    from codas.aou.synthetic import SYNTHETIC_CDR, build_synthetic_cdr, duckdb_query
+
+    con = duckdb.connect()
+    build_synthetic_cdr(con)
+    monkeypatch.setattr(cohort, "_query", duckdb_query(con))
+    base = replace(CohortSpec.from_json(SPEC), design="incident", window_days=60, lag_days=7, min_wear_days=20,
+                   holdout_fraction=0.5)
+    result = runner.explore(CATALOG, base, SYNTHETIC_CDR, client=object(), top_k=1, min_measurement_n=30,
+                            min_cases=10, out_dir=RUN_DIR, log=lambda *_: None)
+    kinds = {}
+    for run in result["runs"]:
+        assert not run.get("failed"), run
+        stem = run["cohort"]
+        prereg = json.loads((RUN_DIR / f"{stem}_prereg.json").read_text())
+        confirmation = json.loads((RUN_DIR / f"{stem}_confirmation.json").read_text())
+        assert confirmation["prereg_sha256"] == prereg["sha256"]
+        assert run["replication"] == f"{confirmation['replicated']}/{confirmation['tested']}"
+        assert "Holdout replication (pre-registered" in Path(run["report_path"]).read_text()
+        # The agents analysed only the discovery share; the sealed share never reached a model request.
+        discovery, sealed = pd.read_csv(RUN_DIR / f"{stem}.csv"), pd.read_csv(RUN_DIR / f"{stem}.holdout.csv")
+        assert len(discovery) and len(sealed)
+        kinds[stem] = prereg["survival_time"]
+    # One measurement (value outcome) and one condition (time to event, tested with Cox).
+    assert sorted(kinds.values(), key=str) == [None, "followup_days"]
+    sent = "\n".join(_serialize(req) for _, req in aou_env)
+    assert "prospective design" in sent and "sealed share" in sent
+    assert "Holdout replication" not in sent  # confirmation results are never shown to an agent

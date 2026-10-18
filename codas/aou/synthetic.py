@@ -40,7 +40,7 @@ _ANCESTRY = [(201826, 201826), (201826, 4193704), (3004410, 3004410), (3007070, 
 
 def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: int = 0) -> None:
     """Create person, concept, concept_ancestor, measurement, condition_occurrence, drug_exposure,
-    activity_summary and sleep_daily_summary in the DuckDB connection ``con``."""
+    visit_occurrence, activity_summary and sleep_daily_summary in the DuckDB connection ``con``."""
     rng = np.random.default_rng(seed)
     # Body size draws from its own stream, so adding it left every other synthetic value unchanged.
     body_rng = np.random.default_rng(seed + 1)
@@ -71,6 +71,10 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
                 sleep_rows.append((pid, day, False, 40.0, 50.0, 0.0, 30.0, 10.0, 5.0))
 
     meas_rows, cond_rows, drug_rows = [], [], []
+    # EHR visits (for follow-up in the incident design) draw from their own stream too.
+    visit_rng = np.random.default_rng(seed + 2)
+    visit_rows = [(pid, start + timedelta(days=int(d)))
+                  for pid in people.person_id for d in visit_rng.integers(0, n_days + 400, visit_rng.integers(1, 6))]
     mid = 1
     for i, pid in enumerate(people.person_id):
         for concept, base, slope in ((3004410, 5.7, -0.35), (3007070, 52.0, 6.0)):
@@ -99,6 +103,7 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
                                                         "measurement_date", "value_as_number"]),
         "condition_occurrence": pd.DataFrame(cond_rows, columns=["person_id", "condition_concept_id",
                                                                  "condition_start_date"]),
+        "visit_occurrence": pd.DataFrame(visit_rows, columns=["person_id", "visit_start_date"]),
         "drug_exposure": pd.DataFrame(drug_rows, columns=["person_id", "drug_concept_id", "drug_exposure_start_date"]),
         "activity_summary": pd.DataFrame(act_rows, columns=["person_id", "date", "steps", "very_active_minutes",
                                                             "fairly_active_minutes", "lightly_active_minutes",

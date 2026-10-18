@@ -21,6 +21,14 @@ from codas.aou.cohort import CohortSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "scripts" / "aou" / "hba1c_fitbit.example.json"
+
+def _window_spec() -> CohortSpec:
+    """The example spec with the outcome-anchored design these tests characterise (no split, no lag)."""
+    from dataclasses import replace
+
+    return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
+                   holdout_fraction=0.0, min_wear_days=30)
+
 CATALOG = ROOT / "scripts" / "aou" / "outcomes_catalog.json"
 RUN_DIR = ROOT / ".codas_runs" / "resilience_test"
 
@@ -106,7 +114,7 @@ def synthetic_explore(monkeypatch):
     RUN_DIR.mkdir(parents=True, exist_ok=True)
 
     def explore(**kw):
-        return runner.explore(CATALOG, CohortSpec.from_json(SPEC), SYNTHETIC_CDR, client=object(), top_k=1,
+        return runner.explore(CATALOG, _window_spec(), SYNTHETIC_CDR, client=object(), top_k=1,
                               min_measurement_n=100, min_cases=30, out_dir=RUN_DIR, log=lambda *_: None, **kw)
 
     yield explore, calls, failing

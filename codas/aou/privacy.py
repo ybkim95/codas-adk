@@ -30,9 +30,9 @@ ROW_LEVEL_KEYS = frozenset({"preview_rows", "rows_sample", "records", "sample_ro
 # Keys whose integer value is a count of participants or rows.
 _COUNT_KEYS = frozenset({
     "n", "rows", "count", "cases", "controls", "positives", "negatives", "support",
-    "n_participants", "participants", "n_rows", "n_cases", "n_controls",
+    "n_participants", "participants", "n_rows", "n_cases", "n_controls", "events",
 })
-_COUNT_SUFFIXES = ("_count", "_n", "_rows", "_participants", "_cases", "_controls")
+_COUNT_SUFFIXES = ("_count", "_n", "_rows", "_participants", "_cases", "_controls", "_events")
 _COUNT_PREFIXES = ("n_", "num_", "count_")
 # Counts of things that are not people (features, checks, rounds) are structural and stay visible.
 _STRUCTURAL_HINTS = ("feature", "column", "candidate", "check", "test", "round", "variant",

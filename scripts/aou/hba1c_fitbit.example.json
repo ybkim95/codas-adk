@@ -1,6 +1,6 @@
 {
   "name": "hba1c_fitbit",
-  "notes": "Example spec. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically.",
+  "notes": "Example spec. Prospective (incident) design: everyone is indexed 180 days after their first valid wear day (100-45,000 steps), features summarise that baseline, outcomes are counted from 90 days after the index (earlier diagnoses exclude the person; lab outcomes use the first value within 730 days), and half the participants are sealed for one-shot replication of the pre-registered candidates. Set design to window for the earlier outcome-anchored design. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically.",
   "outcome": {
     "kind": "measurement",
     "name": "hba1c",
@@ -9,8 +9,13 @@
     "value_min": 3.0,
     "value_max": 20.0
   },
+  "design": "incident",
   "window_days": 180,
-  "min_wear_days": 30,
+  "min_wear_days": 60,
+  "lag_days": 90,
+  "horizon_days": 730,
+  "valid_day": {"column": "steps", "min": 100, "max": 45000},
+  "holdout_fraction": 0.5,
   "include_demographics": true,
   "covariates": [
     {"name": "bmi_cov", "kind": "measurement", "concept_ids": [3038553], "lookback_days": null,

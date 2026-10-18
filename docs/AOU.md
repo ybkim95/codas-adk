@@ -70,6 +70,33 @@ python scripts/aou/run_codas_aou.py run --csv .codas_runs/aou/hba1c_fitbit.csv \
 The report and round summary land in `.codas_runs/aou/`, which is git-ignored. Do not commit or push
 anything from that directory: pushing to GitHub is an export.
 
+## Prospective design and sealed replication (default)
+
+The example spec uses `design: "incident"`, the design of the landmark All of Us wearable papers
+(e.g. Master et al., Nat Med 2022; Zheng et al., Nat Med 2024):
+
+* **One index rule for everyone.** The index date is `window_days` after the first valid wear day
+  (`valid_day`, e.g. 100-45,000 steps); features summarise that baseline window.
+* **Prevalent cases and early events excluded.** Anyone with the outcome before `index + lag_days` is
+  dropped (a guard against reverse causation).
+* **Outcome.** A condition becomes time to a new diagnosis: the target is 1/0 and `followup_days` runs
+  from `index + lag_days` to the diagnosis or the last EHR visit (`visit_occurrence`). A measurement
+  becomes the first value at or after `index + lag_days` (within `horizon_days` if set). In this design
+  a baseline value of the outcome's own measure is allowed as a covariate.
+* **Sealed holdout.** `holdout_fraction` of participants (a deterministic hash of the person id; the
+  flag is computed apart from the selected columns and dropped before writing) goes to
+  `<cohort>.holdout.csv`, which no agent or tool reads.
+* **Pre-registration and one-shot confirmation** (`codas/aou/confirm.py`). After the agents finish,
+  the final round's validated candidates are written to `<cohort>_prereg.json` with their definitions,
+  discovery direction, confounders and a SHA-256 hash, before the holdout is opened. Each is then
+  tested once on the holdout: Cox hazard ratio per SD with 95% CI and E-value for a time-to-event
+  outcome (`codas/core/survival.py`, Efron ties, matches lifelines), partial Spearman otherwise, with
+  Benjamini-Hochberg correction across the pre-registered set. The results
+  (`<cohort>_confirmation.json`) are appended to the report as a deterministic section; the agents
+  never see them.
+
+Set `design: "window"` and `holdout_fraction: 0` for the earlier outcome-anchored design.
+
 ## Cohort specs
 
 A spec names an outcome by OMOP concept id and the wearable tables to summarise; see

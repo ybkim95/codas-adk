@@ -24,6 +24,14 @@ from codas.core.discovery import DiscoveryRequest, run_discovery
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "examples" / "sample_dataset.csv"
 SPEC = ROOT / "scripts" / "aou" / "hba1c_fitbit.example.json"
+
+def _window_spec() -> CohortSpec:
+    """The example spec with the outcome-anchored design these tests characterise (no split, no lag)."""
+    from dataclasses import replace
+
+    return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
+                   holdout_fraction=0.0, min_wear_days=30)
+
 CDR = "fc-aou-cdr-prod.R2025Q4R6"
 
 
@@ -127,12 +135,12 @@ def test_backend_check_is_noop_outside_aou(monkeypatch):
 # --- cohort extractor ---
 
 def test_example_spec_loads():
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     assert spec.outcome.kind == "measurement" and len(spec.wearables) == 2
 
 
 def test_measurement_sql_binds_values_and_omits_identifiers():
-    sql, params = build_cohort_sql(CohortSpec.from_json(SPEC), CDR)
+    sql, params = build_cohort_sql(_window_spec(), CDR)
     assert f"`{CDR}.measurement`" in sql and f"`{CDR}.sleep_daily_summary`" in sql
     assert "concept_ancestor" in sql and "ROW_NUMBER()" in sql
     names = {n: v for n, _, v in params}
@@ -175,7 +183,7 @@ def test_cdr_must_be_project_dataset(monkeypatch):
 
 
 def test_missing_columns_reports_schema_gaps():
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     present = [("activity_summary", c) for c in ["person_id", "date", *spec.wearables[0].columns]]
     missing = missing_columns(spec, present)
     assert "sleep_daily_summary.minute_asleep" in missing and not any(m.startswith("activity") for m in missing)
@@ -192,7 +200,7 @@ def _synthetic_cohort(spec: CohortSpec, n: int = 400) -> pd.DataFrame:
 
 
 def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     table = _synthetic_cohort(spec)
     schema = pd.DataFrame(
         [(s.table, c) for s in spec.wearables
@@ -220,7 +228,7 @@ def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
 
 
 def test_engine_runs_on_extractor_shaped_table():
-    spec = CohortSpec.from_json(SPEC)
+    spec = _window_spec()
     report = run_discovery(_synthetic_cohort(spec), DiscoveryRequest(
         target_column="hba1c", confounder_columns=["age", "female"], validation_resamples=50))
     assert any(c.feature.startswith("act_steps_mean") for c in report.candidates)

@@ -14,6 +14,17 @@ Index date:
   everyone else; the outcome is 1 for cases and 0 otherwise. Cases and controls get index dates by
   different rules, so treat associations as hypothesis-generating.
 
+With ``design = "incident"`` the cohort is prospective instead: everyone's index date is the end of a
+baseline window that starts at their first valid wear day (``window_days`` long), the features
+summarise that baseline window, and the outcome is observed after ``index + lag_days``. For a
+condition, anyone diagnosed before ``index + lag_days`` is excluded, the target is a new diagnosis
+(1/0) and ``followup_days`` runs from ``index + lag_days`` to the diagnosis or the last EHR visit; for
+a measurement, the target is the first value at or after ``index + lag_days`` (within
+``horizon_days`` if set). Cases and non-cases share one index rule.
+
+``holdout_fraction`` seals a deterministic share of participants (by a hash of the person id) into a
+separate replication table that the agents never see.
+
 Covariates (optional, ``CohortSpec.covariates``) are clinical context for confounder adjustment, not
 candidate biomarkers: a measurement covariate is the most recent value in the ``lookback_days`` up
 to and including the index date; a condition or drug covariate is 1 if a record starts in the
@@ -150,6 +161,13 @@ class CohortSpec:
     include_demographics: bool = True
     covariates: list[CovariateSpec] = field(default_factory=list)
     notes: str = ""
+    design: str = "window"  # "window": outcome-anchored window; "incident": prospective, shared index rule
+    lag_days: int = 0  # incident: outcomes before index + lag exclude the person (reverse-causation guard)
+    horizon_days: int | None = None  # incident measurement: first value within this many days after the lag
+    # Optional valid-day rule for the primary wearable, e.g. {"column": "steps", "min": 100, "max": 45000}.
+    valid_day: dict[str, Any] | None = None
+    holdout_fraction: float = 0.0  # share of participants sealed for replication (0 = no split)
+    split_salt: int = 0
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
@@ -166,6 +184,16 @@ class CohortSpec:
             raise ValueError("window_days and min_wear_days must be positive.")
         if self.min_wear_days > self.window_days:
             raise ValueError("min_wear_days cannot exceed window_days.")
+        if self.design not in {"window", "incident"}:
+            raise ValueError(f"design must be 'window' or 'incident', not {self.design!r}.")
+        if self.lag_days < 0 or (self.horizon_days is not None and self.horizon_days < 1):
+            raise ValueError("lag_days must be non-negative and horizon_days positive.")
+        if not 0.0 <= self.holdout_fraction < 1.0:
+            raise ValueError("holdout_fraction must be in [0, 1).")
+        if self.valid_day is not None:
+            _ident(str(self.valid_day.get("column", "")), "valid_day column")
+            if self.valid_day.get("column") not in self.wearables[0].columns:
+                raise ValueError("valid_day.column must be one of the primary wearable's columns.")
         taken = set(_base_columns(self))
         for covariate in self.covariates:
             covariate.validate()
@@ -173,7 +201,9 @@ class CohortSpec:
                 raise ValueError(f"Covariate name {covariate.name!r} clashes with another column.")
             taken.add(covariate.name)
             shared = set(covariate.concept_ids) & set(self.outcome.concept_ids)
-            if shared:
+            # In the incident design a covariate is fixed at the index date, before the outcome is
+            # observed, so a baseline value of the outcome's own measure is a legitimate covariate.
+            if shared and self.design == "window":
                 raise ValueError(f"Covariate {covariate.name!r} shares concept ids {sorted(shared)} with the "
                                  "outcome; a covariate cannot be the outcome itself.")
 
@@ -188,6 +218,12 @@ class CohortSpec:
             include_demographics=bool(data.get("include_demographics", True)),
             covariates=[CovariateSpec(**c) for c in data.get("covariates", [])],
             notes=str(data.get("notes", "")),
+            design=str(data.get("design", "window")),
+            lag_days=int(data.get("lag_days", 0)),
+            horizon_days=None if data.get("horizon_days") is None else int(data["horizon_days"]),
+            valid_day=data.get("valid_day"),
+            holdout_fraction=float(data.get("holdout_fraction", 0.0)),
+            split_salt=int(data.get("split_salt", 0)),
         )
         spec.validate()
         return spec
@@ -213,6 +249,8 @@ def _scalar_type(value: Any) -> str:
 
 def _base_columns(spec: CohortSpec) -> list[str]:
     cols = [spec.outcome.name]
+    if is_survival(spec):
+        cols.append(FOLLOWUP_COLUMN)
     if spec.include_demographics:
         cols += ["age", "female"]
     for source in spec.wearables:
@@ -225,6 +263,15 @@ def _base_columns(spec: CohortSpec) -> list[str]:
 def output_columns(spec: CohortSpec) -> list[str]:
     """The columns of the extracted table, in order."""
     return _base_columns(spec) + [c.name for c in spec.covariates]
+
+
+FOLLOWUP_COLUMN = "followup_days"
+HOLDOUT_COLUMN = "_holdout"
+
+
+def is_survival(spec: CohortSpec) -> bool:
+    """An incident condition: the outcome is time to a new diagnosis (event + follow-up days)."""
+    return spec.design == "incident" and spec.outcome.kind == "condition"
 
 
 def covariates_without(covariates: list[CovariateSpec], outcome: OutcomeSpec) -> tuple[list[CovariateSpec], list[str]]:
@@ -255,14 +302,83 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
     ctes = [f"outcome_concepts AS (\n  {concepts}\n)"]
 
     primary = spec.wearables[0]
+    valid = ""  # optional valid-day rule on the primary wearable's rows, aliased as {a}
+    if spec.valid_day is not None:
+        column = spec.valid_day["column"]
+        if spec.valid_day.get("min") is not None:
+            valid += f"\n      AND {{a}}.{column} >= @valid_min"
+            params.append(("valid_min", "FLOAT64", float(spec.valid_day["min"])))
+        if spec.valid_day.get("max") is not None:
+            valid += f"\n      AND {{a}}.{column} <= @valid_max"
+            params.append(("valid_max", "FLOAT64", float(spec.valid_day["max"])))
+    bounds = ""
     if spec.outcome.kind == "measurement":
-        bounds = ""
         if spec.outcome.value_min is not None:
             bounds += "\n    AND m.value_as_number >= @value_min"
             params.append(("value_min", "FLOAT64", float(spec.outcome.value_min)))
         if spec.outcome.value_max is not None:
             bounds += "\n    AND m.value_as_number <= @value_max"
             params.append(("value_max", "FLOAT64", float(spec.outcome.value_max)))
+
+    if spec.design == "incident":
+        # One index rule for everyone: the end of a baseline window that starts at the first valid
+        # wear day. Outcomes are observed from index + lag; earlier ones exclude the person.
+        params.append(("outcome_from", "INT64", int(spec.window_days + spec.lag_days)))
+        ctes.append(
+            "first_wear AS (\n"
+            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear\n"
+            f"  FROM {t(primary.table)} w\n"
+            f"  WHERE TRUE{valid.format(a='w')}\n"
+            "  GROUP BY w.person_id\n"
+            ")"
+        )
+        if spec.outcome.kind == "measurement":
+            horizon = ""
+            if spec.horizon_days is not None:
+                params.append(("outcome_until", "INT64", int(spec.window_days + spec.lag_days + spec.horizon_days)))
+                horizon = "\n    AND m.measurement_date < DATE_ADD(f.first_wear, INTERVAL @outcome_until DAY)"
+            ctes.append(
+                "outcome_events AS (\n"
+                "  SELECT m.person_id, f.first_wear, m.value_as_number AS outcome_value,\n"
+                "    ROW_NUMBER() OVER (PARTITION BY m.person_id ORDER BY m.measurement_date, m.measurement_id) AS rn\n"
+                f"  FROM {t('measurement')} m\n"
+                "  JOIN outcome_concepts oc ON m.measurement_concept_id = oc.concept_id\n"
+                "  JOIN first_wear f ON f.person_id = m.person_id\n"
+                f"  WHERE m.value_as_number IS NOT NULL{bounds}\n"
+                f"    AND m.measurement_date >= DATE_ADD(f.first_wear, INTERVAL @outcome_from DAY){horizon}\n"
+                ")"
+            )
+            ctes.append("index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date,"
+                        " outcome_value\n  FROM outcome_events WHERE rn = 1\n)")
+        else:
+            ctes.append(
+                "cases AS (\n"
+                "  SELECT co.person_id, MIN(co.condition_start_date) AS dx_date\n"
+                f"  FROM {t('condition_occurrence')} co\n"
+                "  JOIN outcome_concepts oc ON co.condition_concept_id = oc.concept_id\n"
+                "  GROUP BY co.person_id\n"
+                ")"
+            )
+            ctes.append(
+                "last_seen AS (\n"
+                f"  SELECT person_id, MAX(visit_start_date) AS last_seen FROM {t('visit_occurrence')}\n"
+                "  GROUP BY person_id\n"
+                ")"
+            )
+            start_fu = "DATE_ADD(f.first_wear, INTERVAL @outcome_from DAY)"
+            ctes.append(
+                "index_events AS (\n"
+                "  SELECT f.person_id, DATE_ADD(f.first_wear, INTERVAL @window_days DAY) AS index_date,\n"
+                "    IF(c.dx_date IS NULL, 0, 1) AS outcome_value,\n"
+                f"    DATE_DIFF(COALESCE(c.dx_date, l.last_seen), {start_fu}, DAY) AS {FOLLOWUP_COLUMN}\n"
+                "  FROM first_wear f\n"
+                "  JOIN last_seen l ON l.person_id = f.person_id\n"
+                "  LEFT JOIN cases c ON c.person_id = f.person_id\n"
+                f"  WHERE (c.dx_date IS NULL OR c.dx_date >= {start_fu})\n"
+                f"    AND COALESCE(c.dx_date, l.last_seen) > {start_fu}\n"
+                ")"
+            )
+    elif spec.outcome.kind == "measurement":
         ctes.append(
             "outcome_events AS (\n"
             "  SELECT m.person_id, m.measurement_date AS index_date, m.value_as_number AS outcome_value,\n"
@@ -272,7 +388,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
             f"  WHERE m.value_as_number IS NOT NULL{bounds}\n"
             f"    AND EXISTS (SELECT 1 FROM {t(primary.table)} w WHERE w.person_id = m.person_id\n"
             f"      AND DATE(w.{primary.date_column}) >= DATE_SUB(m.measurement_date, INTERVAL @window_days DAY)\n"
-            f"      AND DATE(w.{primary.date_column}) < m.measurement_date)\n"
+            f"      AND DATE(w.{primary.date_column}) < m.measurement_date{valid.format(a='w')})\n"
             ")"
         )
         ctes.append("index_events AS (\n  SELECT person_id, index_date, outcome_value FROM outcome_events WHERE rn = 1\n)")
@@ -287,9 +403,10 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         )
         ctes.append(
             "wear_persons AS (\n"
-            f"  SELECT person_id, MAX(DATE({primary.date_column})) AS last_wear_date\n"
-            f"  FROM {t(primary.table)}\n"
-            "  GROUP BY person_id\n"
+            f"  SELECT w.person_id, MAX(DATE(w.{primary.date_column})) AS last_wear_date\n"
+            f"  FROM {t(primary.table)} w\n"
+            f"  WHERE TRUE{valid.format(a='w')}\n"
+            "  GROUP BY w.person_id\n"
             ")"
         )
         ctes.append(
@@ -305,13 +422,13 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         for column in source.columns:
             aggregates.append(f"AVG(s.{column}) AS {source.prefix}_{column}_mean")
             aggregates.append(f"STDDEV_SAMP(s.{column}) AS {source.prefix}_{column}_sd")
-        filt = ""
+        filt = valid.format(a="s") if i == 0 else ""
         if source.filter_column is not None:
             name = f"w{i}_filter"
             # Compare as lowercase text: CDR flag columns differ in type between releases (the
             # Registered Tier v9 stores is_main_sleep as STRING 'true'/'false', not BOOL).
-            filt = (f"\n    AND LOWER(CAST(s.{source.filter_column} AS STRING))"
-                    f" = LOWER(CAST(@{name} AS STRING))")
+            filt += (f"\n    AND LOWER(CAST(s.{source.filter_column} AS STRING))"
+                     f" = LOWER(CAST(@{name} AS STRING))")
             params.append((name, _scalar_type(source.filter_value), source.filter_value))
         ctes.append(
             f"w{i} AS (\n"
@@ -369,6 +486,8 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
             )
 
     select = [f"ie.outcome_value AS {spec.outcome.name}"]
+    if is_survival(spec):
+        select.append(f"ie.{FOLLOWUP_COLUMN}")
     joins = []
     if spec.include_demographics:
         select += [
@@ -390,6 +509,15 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         else:
             select.append(f"IF(c{i}.person_id IS NULL, 0, 1) AS {covariate.name}")
         joins.append(f"LEFT JOIN c{i} ON c{i}.person_id = ie.person_id")
+    if spec.holdout_fraction > 0:
+        # Deterministic, roughly uniform split on the person id, computed apart from the selected
+        # columns so the output carries only the flag; extract_cohort drops it before the agents see rows.
+        params += [("holdout_permille", "INT64", int(round(spec.holdout_fraction * 1000))),
+                   ("split_salt", "INT64", int(spec.split_salt))]
+        ctes.append("split AS (\n  SELECT person_id, MOD(person_id * 2654435761 + @split_salt, 1000) < @holdout_permille"
+                    f" AS {HOLDOUT_COLUMN}\n  FROM index_events\n)")
+        select.append(f"sp.{HOLDOUT_COLUMN}")
+        joins.append("JOIN split sp ON sp.person_id = ie.person_id")
 
     sql = (
         "WITH " + ",\n".join(ctes) + "\n"
@@ -403,7 +531,8 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
 def schema_check_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
     """SQL listing the (table, column) pairs the spec needs that exist in the CDR."""
     cdr = resolve_cdr(cdr)
-    tables = sorted({s.table for s in spec.wearables} | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates})
+    tables = sorted({s.table for s in spec.wearables} | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates}
+                    | ({"visit_occurrence"} if is_survival(spec) else set()))
     sql = (f"SELECT table_name, column_name FROM `{cdr}.INFORMATION_SCHEMA.COLUMNS`\n"
            "WHERE table_name IN UNNEST(@tables)")
     return sql, [("tables", "ARRAY<STRING>", tables)]
@@ -421,6 +550,8 @@ def missing_columns(spec: CohortSpec, present: list[tuple[str, str]]) -> list[st
         needed += [(table, col) for col in ("person_id", concept_col, date_col)]
         if c.kind == "measurement":
             needed += [(table, "value_as_number"), (table, "measurement_id")]
+    if is_survival(spec):
+        needed += [("visit_occurrence", "person_id"), ("visit_occurrence", "visit_start_date")]
     return [f"{tbl}.{col}" for tbl, col in dict.fromkeys(needed) if (tbl, col) not in have]
 
 
@@ -461,7 +592,10 @@ def extract_cohort(
     client: Any = None,
     check_schema: bool = True,
 ) -> Path:
-    """Run the extraction in BigQuery and write ``<out_dir>/<spec.name>.csv`` on the workspace disk."""
+    """Run the extraction in BigQuery and write ``<out_dir>/<spec.name>.csv`` on the workspace disk.
+
+    With ``holdout_fraction`` the sealed share goes to ``holdout_path(...)`` instead, and the returned
+    table (the one the agents analyse) holds only the discovery share."""
     spec.validate()
     cdr = resolve_cdr(cdr)
     out = _check_out_dir(Path(out_dir))
@@ -480,7 +614,16 @@ def extract_cohort(
 
     sql, params = build_cohort_sql(spec, cdr)
     frame = _query(client, sql, params)
-    frame = frame[output_columns(spec)]
     path = out / f"{spec.name}.csv"
-    frame.to_csv(path, index=False)
+    if spec.holdout_fraction > 0:
+        sealed = frame[HOLDOUT_COLUMN].astype(bool)
+        frame.loc[sealed, output_columns(spec)].to_csv(holdout_path(path), index=False)
+        frame = frame.loc[~sealed]
+    frame[output_columns(spec)].to_csv(path, index=False)
     return path
+
+
+def holdout_path(discovery_csv: str | Path) -> Path:
+    """The sealed replication table next to a discovery table (``<name>.holdout.csv``)."""
+    p = Path(discovery_csv)
+    return p.with_name(p.stem + ".holdout.csv")

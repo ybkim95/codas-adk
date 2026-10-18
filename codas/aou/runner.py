@@ -21,7 +21,9 @@ from typing import Any
 
 from codas.aou import cohort
 from codas.aou import feasibility as feas
-from codas.aou.cohort import DEFAULT_OUT_DIR, CohortSpec, extract_cohort, resolve_cdr
+from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
+                              is_survival, resolve_cdr)
+from codas.aou.confirm import confirm, confirmation_markdown, preregister
 from codas.aou.privacy import check_llm_backend, mask_small_counts, mask_small_counts_in_text
 from codas.aou.trace import TraceRecorder
 
@@ -39,6 +41,13 @@ INDEX_NOTES = {
                  "everyone else, so a case's window ends before the first recorded diagnosis (which can "
                  "postdate onset); cases and non-cases get index dates by different rules.",
 }
+INCIDENT_NOTE = (
+    "This is a prospective design: everyone's index date is {window} days after their first valid wear day, "
+    "the features summarise those baseline days, and the outcome is observed from {lag} days after the index "
+    "date{outcome_rule}. Cases and non-cases share this index rule."
+)
+HOLDOUT_NOTE = (" A sealed share of participants is held out: your candidates are pre-registered and tested once "
+                "on it after you finish, so report what this discovery share supports.")
 COVARIATE_NOTE = (
     " These columns are clinical covariates recorded up to the index date, available for confounder "
     "adjustment and not candidate biomarkers: {columns}. Declare as confounders the ones you judge to "
@@ -49,12 +58,24 @@ COVARIATE_NOTE = (
 def goal_for(spec: CohortSpec, label: str | None = None) -> str:
     kind = spec.outcome.kind
     note = "first qualifying lab value" if kind == "measurement" else "1 = diagnosed, 0 = not"
+    index_note = INDEX_NOTES[kind]
+    if spec.design == "incident":
+        if is_survival(spec):
+            note = "1 = new diagnosis during follow-up, 0 = none"
+            rule = (f"; anyone diagnosed before then is excluded, and {FOLLOWUP_COLUMN} is each participant's "
+                    "follow-up time (longer follow-up means more opportunity for a diagnosis)")
+        else:
+            note = "first value measured after the baseline and lag"
+            rule = "; the target is the first value measured from then on"
+        index_note = INCIDENT_NOTE.format(window=spec.window_days, lag=spec.lag_days, outcome_rule=rule)
+    if spec.holdout_fraction > 0:
+        index_note += HOLDOUT_NOTE
     covariates = ""
     if spec.covariates:
         columns = ", ".join(f"{c.name} ({_describe(c)})" for c in spec.covariates)
         covariates = COVARIATE_NOTE.format(columns=columns)
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
-                                target_note=note, window=spec.window_days, index_note=INDEX_NOTES[kind],
+                                target_note=note, window=spec.window_days, index_note=index_note,
                                 covariates=covariates)
 
 
@@ -145,7 +166,8 @@ def _publish(paths: dict[str, str], out: Path) -> dict[str, str]:
 # Session-state keys each phase publishes (the agents' output_key values plus the engine's records).
 STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "context_columns", "exclusion_log",
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
-              "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet")
+              "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
+              "confirmation")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -197,6 +219,8 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
         "report_path": str(out / f"{stem}_report.md"),
         "files": files,
         "coverage_missing": coverage_missing,
+        "replication": (f"{state['confirmation']['replicated']}/{state['confirmation']['tested']}"
+                        if state.get("confirmation") else None),
     })
 
 
@@ -255,7 +279,8 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]]) -> Path:
         confounders, excluded = r.get("confounders") or [], r.get("excluded") or []
         unused = [c for c in coverage if c not in confounders and c not in excluded]
         lines += [f"### {r['cohort']}", f"- participants: {r['rows']}, rounds: {r['rounds']}, "
-                  f"validated: {r['validated_count']}, {r['ml_metric']}",
+                  f"validated: {r['validated_count']}, {r['ml_metric']}"
+                  + (f", replicated on the sealed holdout: {r['replication']}" if r.get("replication") else ""),
                   f"- adjusted for: {_with_coverage(confounders, coverage)}; "
                   f"excluded as leakage: {', '.join(excluded) or 'none'}"]
         if unused:
@@ -275,8 +300,15 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
     """Extract one cohort, run the agents on it, save the masked outputs and the agent trace."""
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
     recorder = TraceRecorder()
-    state = run_agents(csv, goal_for(spec, label), on_tool_call, [c.name for c in spec.covariates],
-                       recorder=recorder)
+    context = [c.name for c in spec.covariates] + ([FOLLOWUP_COLUMN] if is_survival(spec) else [])
+    state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder)
+    sealed = holdout_path(csv)
+    if spec.holdout_fraction > 0 and sealed.exists():
+        out = Path(out_dir).expanduser().resolve()
+        prereg = preregister(state, out, spec.name, survival_time=FOLLOWUP_COLUMN if is_survival(spec) else None)
+        result = confirm(prereg, sealed, out)  # the pre-registration is on disk before the holdout is read
+        state["confirmation"] = result
+        state["report"] = f"{state.get('report') or ''}\n\n{confirmation_markdown(result)}"
     return save_outputs(state, spec.name, out_dir, recorder)
 
 

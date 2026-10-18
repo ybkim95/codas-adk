@@ -22,7 +22,7 @@ Counts are returned as integers for the ranking; ``feasibility_table`` masks 1-2
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -66,16 +66,11 @@ def spec_for(outcome: CatalogOutcome, base: CohortSpec, *, prefix: str = "explor
     """A cohort spec for ``outcome`` that reuses the wearables, window, demographics and covariates of
     ``base``; a covariate that shares a concept id with the outcome is left out."""
     target = outcome.outcome_spec()
-    covariates, _dropped = covariates_without(base.covariates, target)
-    spec = CohortSpec(
-        name=f"{prefix}_{outcome.name}",
-        outcome=target,
-        wearables=list(base.wearables),
-        window_days=base.window_days,
-        min_wear_days=base.min_wear_days,
-        include_demographics=base.include_demographics,
-        covariates=covariates,
-    )
+    covariates = list(base.covariates)
+    if base.design == "window":  # outcome-anchored: a covariate on the outcome's own concept is the outcome
+        covariates, _dropped = covariates_without(base.covariates, target)
+    spec = replace(base, name=f"{prefix}_{outcome.name}", outcome=target, wearables=list(base.wearables),
+                   covariates=covariates, notes="")
     spec.validate()
     return spec
 
@@ -120,9 +115,7 @@ def verify_covariates(base: CohortSpec, cdr: str, client: Any) -> tuple[CohortSp
     problems = verify_catalog(base.covariates, cdr, client)
     failed = {name: reason for name, reason in problems.items() if reason}
     kept = [c for c in base.covariates if c.name not in failed]
-    spec = CohortSpec(name=base.name, outcome=base.outcome, wearables=list(base.wearables),
-                      window_days=base.window_days, min_wear_days=base.min_wear_days,
-                      include_demographics=base.include_demographics, covariates=kept, notes=base.notes)
+    spec = replace(base, wearables=list(base.wearables), covariates=kept)
     spec.validate()
     return spec, failed
 
@@ -134,12 +127,12 @@ def feasibility_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[cohort.QueryP
     what an extraction would produce without computing every feature.
     """
     primary = spec.wearables[0]
-    slim = CohortSpec(
-        name=spec.name, outcome=spec.outcome,
-        wearables=[WearableSource(table=primary.table, date_column=primary.date_column,
-                                  columns=primary.columns[:1], prefix=primary.prefix,
-                                  filter_column=primary.filter_column, filter_value=primary.filter_value)],
-        window_days=spec.window_days, min_wear_days=spec.min_wear_days, include_demographics=False,
+    keep = [primary.columns[0]] + ([spec.valid_day["column"]] if spec.valid_day else [])
+    slim = replace(
+        spec, wearables=[WearableSource(table=primary.table, date_column=primary.date_column,
+                                        columns=list(dict.fromkeys(keep)), prefix=primary.prefix,
+                                        filter_column=primary.filter_column, filter_value=primary.filter_value)],
+        include_demographics=False, covariates=[], holdout_fraction=0.0,
     )
     inner, params = build_cohort_sql(slim, cdr)
     sql = (f"SELECT COUNT(*) AS n_participants, SUM({spec.outcome.name}) AS outcome_sum\n"
