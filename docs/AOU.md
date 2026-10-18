@@ -124,6 +124,19 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
    screen table and, for each run, the validated candidates, the confounders adjusted for and the
    features excluded as leakage.
 
+### When the model service is busy
+
+Vertex AI answers `429 RESOURCE_EXHAUSTED` when shared capacity is short (preview models on the
+`global` endpoint are the most exposed). Three layers keep an exploration going:
+
+* each model call retries with exponential backoff and jitter for about three minutes
+  (`CODAS_MODEL_RETRY_ATTEMPTS`, `CODAS_MODEL_RETRY_INITIAL_DELAY`, `CODAS_MODEL_RETRY_MAX_DELAY`);
+* if it is still refused (or the model is not served), the call goes to the next model: the fast tier
+  backs up the reasoning tier, and `CODAS_GEMINI_FALLBACK_MODELS` can add more;
+* an outcome that still fails is recorded as failed and the others continue. Running the exploration
+  again resumes: outcomes already finished with the same spec, goal and code commit are reused
+  (`<cohort>_run.json`), so only the failed or missing ones run; `rerun=True` forces all of them.
+
 ### Choosing outcomes yourself
 
 The ranking favours whichever outcomes have the largest effective sample. To run specific catalog

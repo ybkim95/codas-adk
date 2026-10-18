@@ -9,9 +9,12 @@ counts of 1-20.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import subprocess
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +156,57 @@ def _with_coverage(confounders: list[str] | None, coverage: dict[str, Any] | Non
     return ", ".join(parts) or "none"
 
 
+def _code_version() -> str:
+    """The checkout's commit, so results produced by older code are not reused."""
+    try:
+        head = subprocess.run(["git", "-C", str(cohort.ROOT), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, timeout=10)
+        return head.stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001 - no git: fall back to a constant
+        return "unknown"
+
+
+def _run_key(spec: CohortSpec, goal: str) -> str:
+    payload = json.dumps({"spec": asdict(spec), "goal": goal, "code": _code_version()}, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _finished_run(out: Path, name: str, key: str) -> dict[str, Any] | None:
+    """The saved summary of a run of ``name`` with this exact ``key`` whose report is still on disk."""
+    try:
+        saved = json.loads((out / f"{name}_run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    summary = saved.get("summary") or {}
+    if saved.get("key") != key or not Path(str(summary.get("report_path", ""))).exists():
+        return None
+    return summary
+
+
+def _write_summary(out: Path, table: str, runs: list[dict[str, Any]]) -> Path:
+    lines = ["# CoDaS free exploration on All of Us", "",
+             "Counts of 1-20 are masked. Review before anything leaves the Workbench.", "",
+             "## Feasibility screen", "", table, "", "## Runs", ""]
+    for r in runs:
+        if r.get("failed"):
+            lines += [f"### {r['cohort']}", f"- failed: {r['failed']}",
+                      "- run the exploration again to retry; finished outcomes are reused", ""]
+            continue
+        coverage = r.get("covariate_coverage") or {}
+        confounders, excluded = r.get("confounders") or [], r.get("excluded") or []
+        unused = [c for c in coverage if c not in confounders and c not in excluded]
+        lines += [f"### {r['cohort']}", f"- participants: {r['rows']}, rounds: {r['rounds']}, "
+                  f"validated: {r['validated_count']}, {r['ml_metric']}",
+                  f"- adjusted for: {_with_coverage(confounders, coverage)}; "
+                  f"excluded as leakage: {', '.join(excluded) or 'none'}"]
+        if unused:
+            lines.append(f"- covariates not adjusted for: {_with_coverage(unused, coverage)}")
+        lines += [*[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}", ""]
+    path = out / "explore_summary.md"
+    path.write_text(mask_small_counts_in_text("\n".join(lines)), encoding="utf-8")
+    return path
+
+
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None) -> dict[str, Any]:
     """Extract one cohort, run the agents on it, save the masked outputs."""
@@ -176,6 +230,7 @@ def explore(
     outcome_names: list[str] | None = None,
     on_tool_call: Any = None,
     log: Any = print,
+    rerun: bool = False,
 ) -> dict[str, Any]:
     """Verify the catalog, screen feasibility, then run CoDaS on the top-K outcomes.
 
@@ -183,8 +238,14 @@ def explore(
     run covers measurements and conditions alike. ``outcome_names`` names catalog entries to run instead of the ranked top K; they still have to pass the
     concept check and have at least one qualifying participant.
 
-    Returns the masked screen table, the chosen outcomes and one summary per run, and writes
-    ``explore_summary.md`` next to the per-outcome reports.
+    An outcome whose run fails (a model that stays out of capacity, a query error) is recorded as
+    failed and the exploration moves on; ``explore_summary.md`` is rewritten after every outcome. Calling
+    again with the same arguments resumes: an outcome already finished with the same spec, goal and code
+    version is reused rather than run again, so only failed or missing outcomes run. ``rerun`` forces
+    every outcome to run.
+
+    Returns the masked screen table, the chosen outcomes and one summary per run (with ``failed`` set
+    for a failed one), and writes ``explore_summary.md`` next to the per-outcome reports.
     """
     if client is None:
         from google.cloud import bigquery
@@ -221,31 +282,33 @@ def explore(
     table = feas.feasibility_table(rows, problems, chosen)
     log(table)
 
-    runs = []
+    out = Path(out_dir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    runs: list[dict[str, Any]] = []
+    summary_path = _write_summary(out, table, runs)
     if not screen_only:
         by_name = {o.name: o for o in verified}
         for row in chosen:
             o = by_name[row["name"]]
-            log(f"\n=== {o.label} ===")
-            runs.append(run_spec(feas.spec_for(o, base), cdr, label=o.label, client=client, out_dir=out_dir,
-                                 check_schema=False, on_tool_call=on_tool_call))
+            spec = feas.spec_for(o, base)
+            key = _run_key(spec, goal_for(spec, o.label))
+            done = None if rerun else _finished_run(out, spec.name, key)
+            if done:
+                log(f"\n=== {o.label} === finished earlier with this code; reusing its report")
+                runs.append(done)
+            else:
+                log(f"\n=== {o.label} ===")
+                try:
+                    result = run_spec(spec, cdr, label=o.label, client=client, out_dir=out, check_schema=False,
+                                      on_tool_call=on_tool_call)
+                except Exception as exc:  # noqa: BLE001 - one outcome's failure must not discard the others
+                    reason = mask_small_counts_in_text(f"{type(exc).__name__}: {str(exc)[:300]}")
+                    log(f"  failed: {reason}\n  Run again to retry; finished outcomes are reused.")
+                    runs.append({"cohort": spec.name, "failed": reason})
+                else:
+                    (out / f"{spec.name}_run.json").write_text(json.dumps({"key": key, "summary": result}),
+                                                               encoding="utf-8")
+                    runs.append(result)
+            summary_path = _write_summary(out, table, runs)
 
-    out = Path(out_dir).expanduser().resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    lines = ["# CoDaS free exploration on All of Us", "",
-             "Counts of 1-20 are masked. Review before anything leaves the Workbench.", "",
-             "## Feasibility screen", "", table, "", "## Runs", ""]
-    for r in runs:
-        coverage = r.get("covariate_coverage") or {}
-        confounders, excluded = r.get("confounders") or [], r.get("excluded") or []
-        unused = [c for c in coverage if c not in confounders and c not in excluded]
-        lines += [f"### {r['cohort']}", f"- participants: {r['rows']}, rounds: {r['rounds']}, "
-                  f"validated: {r['validated_count']}, {r['ml_metric']}",
-                  f"- adjusted for: {_with_coverage(confounders, coverage)}; "
-                  f"excluded as leakage: {', '.join(excluded) or 'none'}"]
-        if unused:
-            lines.append(f"- covariates not adjusted for: {_with_coverage(unused, coverage)}")
-        lines += [*[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}", ""]
-    summary_path = out / "explore_summary.md"
-    summary_path.write_text(mask_small_counts_in_text("\n".join(lines)), encoding="utf-8")
     return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path)}

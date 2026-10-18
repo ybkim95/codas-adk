@@ -28,8 +28,9 @@ Prompts live in ``prompts.py``; guardrails/logging in ``callbacks.py``; session 
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import Any
+from typing import Any, AsyncGenerator
 
 # ADK 2.4 marks SequentialAgent / LoopAgent / ParallelAgent as deprecated in favour of Workflow, but
 # — per ADK's own deprecation notice — "Workflow cannot yet be used as an LlmAgent sub-agent". CoDaS
@@ -39,7 +40,7 @@ from typing import Any
 # nested sub-agents. The corresponding DeprecationWarnings are filtered in the pytest config so a
 # run's output is not mistaken for staleness.
 from google.adk.agents import LlmAgent, LoopAgent, ParallelAgent, SequentialAgent
-from google.adk.models import BaseLlm, Gemini
+from google.adk.models import BaseLlm, Gemini, LlmRequest, LlmResponse
 from google.genai.types import HttpRetryOptions
 
 from codas.aou.privacy import check_llm_backend
@@ -78,27 +79,72 @@ _REASONING_MODEL_NAME = os.getenv("CODAS_GEMINI_REASONING_MODEL", "gemini-3.1-pr
 _FAST_MODEL_NAME = os.getenv("CODAS_GEMINI_FAST_MODEL", "gemini-3-flash-preview")
 if os.getenv("CODAS_GEMINI_MODEL"):  # single-model override applies to both tiers
     _REASONING_MODEL_NAME = _FAST_MODEL_NAME = os.environ["CODAS_GEMINI_MODEL"]
+# A 429 on shared capacity reflects load across the service, not this project's quota, and can last
+# minutes; the backoff (2, 4, 8, 16, 32, 60, 60 s, with jitter) rides out about three minutes of it
+# before the call gives up and the next configured model is tried.
 _MODEL_RETRY = HttpRetryOptions(
-    attempts=int(os.getenv("CODAS_MODEL_RETRY_ATTEMPTS", "5")),
-    initial_delay=1.0,
-    max_delay=30.0,
+    attempts=int(os.getenv("CODAS_MODEL_RETRY_ATTEMPTS", "8")),
+    initial_delay=float(os.getenv("CODAS_MODEL_RETRY_INITIAL_DELAY", "2")),
+    max_delay=float(os.getenv("CODAS_MODEL_RETRY_MAX_DELAY", "60")),
     exp_base=2.0,
     http_status_codes=[408, 429, 500, 502, 503, 504],
 )
+# Status codes after which another model may succeed where this one did not: capacity exhausted, or
+# the model is not served here.
+_FALLBACK_CODES = {404, 429}
+LOGGER = logging.getLogger("codas.agents")
 
 
-def _make_model(name: str) -> BaseLlm:
+class FallbackLlm(BaseLlm):
+    """Tries ``models`` in order: when one fails with a capacity or not-found error before it has
+    produced any output (its own retries already spent), the same request goes to the next one.
+
+    Any other error, or one raised after part of a response was streamed, is raised unchanged, so two
+    models' answers are never spliced together. ``model`` is the first model's name.
+    """
+
+    models: list[BaseLlm]
+
+    async def generate_content_async(self, llm_request: LlmRequest, stream: bool = False
+                                     ) -> AsyncGenerator[LlmResponse, None]:
+        for i, llm in enumerate(self.models):
+            request = llm_request.model_copy(update={"model": llm.model})
+            produced = False
+            try:
+                async for response in llm.generate_content_async(request, stream=stream):
+                    produced = True
+                    yield response
+                return
+            except Exception as exc:  # noqa: BLE001 - re-raised unless another model can serve the call
+                code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                if produced or code not in _FALLBACK_CODES or i == len(self.models) - 1:
+                    raise
+                LOGGER.warning("model %s unavailable (%s); retrying the call on %s",
+                               llm.model, code, self.models[i + 1].model)
+
+
+def _single_model(name: str) -> BaseLlm:
     """Gemini by default; a ``claude-*`` name is served as Claude on Vertex AI (Model Garden), using
     GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION and requiring the ``anthropic[vertex]`` package."""
     if name.strip().lower().startswith("claude"):
         from google.adk.models.anthropic_llm import Claude
 
         return Claude(model=name.strip())
-    return Gemini(model=name, retry_options=_MODEL_RETRY)
+    return Gemini(model=name.strip(), retry_options=_MODEL_RETRY)
+
+
+def _make_model(name: str, *fallbacks: str) -> BaseLlm:
+    """``name``, falling back to ``fallbacks`` and then to CODAS_GEMINI_FALLBACK_MODELS (comma-separated)
+    when it is out of capacity or not served."""
+    extra = [m.strip() for m in os.getenv("CODAS_GEMINI_FALLBACK_MODELS", "").split(",") if m.strip()]
+    names = list(dict.fromkeys(n.strip() for n in (name, *fallbacks, *extra) if n and n.strip()))
+    if len(names) == 1:
+        return _single_model(names[0])
+    return FallbackLlm(model=names[0], models=[_single_model(n) for n in names])
 
 
 check_llm_backend()  # AoU mode: refuse to build the graph on a backend outside the workspace project
-REASONING_MODEL = _make_model(_REASONING_MODEL_NAME)
+REASONING_MODEL = _make_model(_REASONING_MODEL_NAME, _FAST_MODEL_NAME)  # the fast tier backs up the reasoning tier
 FAST_MODEL = _make_model(_FAST_MODEL_NAME)
 # The orchestrator's loop runs at most this many deepening rounds; the GapChecker usually stops it
 # earlier via escalate once deeper search saturates. Bounded so a live run stays within the timeout.
