@@ -49,7 +49,9 @@ def test_tool_run_discovery():
 
 def test_tool_preview_columns():
     out = preview_columns(str(SAMPLE), limit=10)
-    assert out["columns"] and len(out["preview_rows"]) == 3
+    # Schema only: column names and dtypes, no participant rows.
+    assert out["columns"] and out["dtypes"]
+    assert "preview_rows" not in out
 
 
 # --- engine logging / trace ---

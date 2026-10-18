@@ -100,7 +100,7 @@ def profile_dataset(csv_path: str = "", target_column: str = "", tool_context: T
 
 
 def preview_columns(csv_path: str = "", limit: int = 20, tool_context: ToolContext | None = None) -> dict[str, Any]:
-    """Return a small preview of column names, dtypes, and the first few rows for orientation. The
+    """Return column names and dtypes, without participant values, for orientation. The
     dataset path lives in shared memory, so call this with no path; pass ``csv_path`` only to preview
     a different file."""
     state_path = tool_context.state.get("csv_path") if tool_context is not None else None
@@ -111,7 +111,6 @@ def preview_columns(csv_path: str = "", limit: int = 20, tool_context: ToolConte
     return _json_safe({
         "columns": list(df.columns),
         "dtypes": {column: str(dtype) for column, dtype in df.dtypes.items()},
-        "preview_rows": df.head(3).to_dict(orient="records"),
     })
 
 
