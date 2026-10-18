@@ -124,6 +124,27 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
    screen table and, for each run, the validated candidates, the confounders adjusted for and the
    features excluded as leakage.
 
+### Outputs of a run
+
+Each outcome writes, under `.codas_runs/aou/` (and, for everything except participant-level tables,
+mirrored to `codas_reports/aou/`, because Jupyter does not serve files inside hidden directories):
+
+* `<cohort>_report.pdf`: the compiled report: cover (participants, code commit, models), the final
+  report, Phase A design (target, confounders, exclusions with reasons) and hypotheses, the round
+  table and every round's critic/defender debate, mechanisms and novelty, strategy and artifacts,
+  and an appendix with the candidates' effect sizes, the phase coverage and the fact sheet. Built
+  with `fpdf2` and `markdown` (pure Python); a Unicode font is used when installed.
+* `<cohort>_trace.jsonl` / `<cohort>_trace.md`: the full agent trace, every agent's text, tool call
+  and tool response in order, labelled with phase (a child of the root agent) and discovery round.
+  The responses are the ones the model received, masked for counts of 1-20.
+* `<cohort>_state.json`: every phase's output (hypotheses, interpretations, critique, defense,
+  mechanisms, novelty, strategy, artifacts, report, rounds, fact sheet, exclusion and confounder logs).
+* Phase coverage (in the trace, the PDF and `explore_summary.md`): which agents produced output in
+  each phase and round, with any silent step listed, so a reader can check that every step ran.
+
+`codas_reports/` and `.codas_runs/` are git-ignored. Both hold only masked aggregates and LLM text,
+but review them against the Dissemination Policy before anything leaves the Workbench.
+
 ### When the model service is busy
 
 Vertex AI answers `429 RESOURCE_EXHAUSTED` when shared capacity is short (preview models on the
@@ -131,8 +152,8 @@ Vertex AI answers `429 RESOURCE_EXHAUSTED` when shared capacity is short (previe
 
 * each model call retries with exponential backoff and jitter for about three minutes
   (`CODAS_MODEL_RETRY_ATTEMPTS`, `CODAS_MODEL_RETRY_INITIAL_DELAY`, `CODAS_MODEL_RETRY_MAX_DELAY`);
-* if it is still refused (or the model is not served), the call goes to the next model: the fast tier
-  backs up the reasoning tier, and `CODAS_GEMINI_FALLBACK_MODELS` can add more;
+* if it is still refused (or the model is not served), the call goes to the next model: the two tiers
+  back each other up, and `CODAS_GEMINI_FALLBACK_MODELS` can add more;
 * an outcome that still fails is recorded as failed and the others continue. Running the exploration
   again resumes: outcomes already finished with the same spec, goal and code commit are reused
   (`<cohort>_run.json`), so only the failed or missing ones run; `rerun=True` forces all of them.

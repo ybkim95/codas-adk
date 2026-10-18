@@ -16,6 +16,7 @@ venv/
 
 # Runtime artifacts
 .codas_runs/
+codas_reports/
 *.log
 tmp_*
 

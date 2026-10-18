@@ -95,7 +95,7 @@ def synthetic_explore(monkeypatch):
     calls: list[str] = []
     failing: set[str] = set()
 
-    def fake_run_agents(csv, goal, on_tool_call=None, context_columns=None):
+    def fake_run_agents(csv, goal, on_tool_call=None, context_columns=None, recorder=None):
         name = Path(csv).stem
         calls.append(name)
         if name in failing:
@@ -142,3 +142,13 @@ def test_rerun_resumes_and_redoes_only_what_is_missing_or_stale(synthetic_explor
     calls.clear()
     explore(rerun=True)                         # forced
     assert calls == ["explore_hdl", "explore_depression"]
+
+
+def test_each_model_tier_backs_up_the_other():
+    from codas.agents import agent
+
+    reasoning, fast = agent.REASONING_MODEL, agent.FAST_MODEL
+    if reasoning.model == fast.model:
+        pytest.skip("a single model serves both tiers")
+    assert [m.model for m in reasoning.models][:2] == [reasoning.model, fast.model]
+    assert [m.model for m in fast.models][:2] == [fast.model, reasoning.model]

@@ -238,6 +238,14 @@ def test_explore_end_to_end_on_synthetic_cdr(aou_env, monkeypatch):
     # The base spec's covariate was extracted, and stayed out of the candidates.
     table = pd.read_csv(RUN_DIR / "explore_hdl.csv")
     assert table["bmi_cov"].notna().any() and not any("bmi_cov" in c for c in hdl["top_candidates"])
+    # Each run leaves its full agent trace and every phase's output next to the report.
+    for kind in ("trace_jsonl", "trace_md", "state", "pdf", "report_md"):
+        assert Path(hdl["files"][kind]).exists(), kind
+    # Links point at the mirror outside the hidden run directory (Jupyter will not serve hidden files),
+    # and no participant-level table is mirrored.
+    mirror = runner.reports_dir(RUN_DIR)
+    assert all(Path(hdl["files"][k]).parent == mirror for k in ("pdf", "trace_md", "state"))
+    assert (mirror / "explore_summary.md").exists() and not list(mirror.glob("*.csv"))
     assert "preview_rows" not in "\n".join(_serialize(req) for _, req in aou_env)
     summary = Path(result["summary_path"]).read_text(encoding="utf-8")
     assert "explore_hdl" in summary and "explore_depression" in summary and "adjusted for:" in summary
@@ -315,3 +323,51 @@ def test_declared_covariate_confounder_is_adjusted_for_and_never_a_candidate(aou
     assert "act_calories_out_mean" not in passing(last)
     assert "act_steps_mean" in passing(last)
     assert 0 < last["adjustment_covariates"]["bmi_cov"]["non_missing_fraction"] <= 1
+
+
+def test_full_trace_and_phase_outputs_are_saved_and_masked(aou_env):
+    from codas.aou.trace import TraceRecorder
+
+    csv = RUN_DIR / "cohort.csv"
+    table = _cohort_table()
+    table.to_csv(csv, index=False)
+    recorder = TraceRecorder()
+    state = runner.run_agents(csv, runner.goal_for(CohortSpec.from_json(SPEC), "HbA1c"), recorder=recorder)
+    summary = runner.save_outputs(state, "cohort", RUN_DIR, recorder)
+
+    events = [json.loads(line) for line in Path(summary["files"]["trace_jsonl"]).read_text().splitlines()]
+    authors = {e["author"] for e in events}
+    every_agent = {a.name for a in _llm_agents(agent_module.root_agent)}
+    assert every_agent <= authors, every_agent - authors  # including the agents that call no tool
+    kinds = {e["kind"] for e in events}
+    assert kinds == {"text", "tool_call", "tool_response"}
+    # Phases are the root's children; rounds number the discovery-loop iterations.
+    assert {e["phase"] for e in events} == {p.name for p in agent_module.root_agent.sub_agents}
+    loop_rounds = {e["round"] for e in events if e["phase"] == "discovery_loop"}
+    assert loop_rounds == set(range(1, len(state["rounds"]) + 1))
+    assert all(e["round"] is None for e in events if e["phase"] != "discovery_loop")
+
+    # Every phase's output is on disk.
+    phases = json.loads(Path(summary["files"]["state"]).read_text())
+    for key in ("hypotheses", "statistical_interpretation", "ml_interpretation", "critique", "defense",
+                "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet"):
+        assert key in phases, key
+
+    # The same privacy audit as for model requests: no rows, no counts of 1-20, masked text.
+    for path in (summary["files"]["trace_jsonl"], summary["files"]["trace_md"], summary["files"]["state"]):
+        text = Path(path).read_text(encoding="utf-8")
+        assert "preview_rows" not in text and "n = 7" not in text and "15 cases" not in text
+        for value in table.head(5).select_dtypes("float").to_numpy().ravel():
+            if np.isfinite(value):
+                assert repr(float(value)) not in text
+    for e in events:
+        assert not _small_counts(e.get("response") or {}), e
+    # ...and the 15-participant column and the report's small counts are there, masked rather than dropped.
+    assert MASK in Path(summary["files"]["trace_jsonl"]).read_text(encoding="utf-8")
+    cov = recorder.coverage()
+    assert cov["missing"] == [] and summary["coverage_missing"] == []
+    # The compiled PDF: a valid file with one page per section at least.
+    assert "pdf_error" not in summary["files"], summary["files"].get("pdf_error")
+    pdf = Path(summary["files"]["pdf"]).read_bytes()
+    assert pdf.startswith(b"%PDF") and pdf.count(b"/Type /Page\n") + pdf.count(b"/Type /Page ") >= 6
+    assert "Phase coverage" in Path(summary["files"]["trace_md"]).read_text()

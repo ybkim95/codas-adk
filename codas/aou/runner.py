@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import uuid
 from dataclasses import asdict
@@ -22,6 +23,7 @@ from codas.aou import cohort
 from codas.aou import feasibility as feas
 from codas.aou.cohort import DEFAULT_OUT_DIR, CohortSpec, extract_cohort, resolve_cdr
 from codas.aou.privacy import check_llm_backend, mask_small_counts, mask_small_counts_in_text
+from codas.aou.trace import TraceRecorder
 
 GOAL_TEMPLATE = (
     "Discover and validate wearable biomarkers of {label} in this All of Us cohort. The target column is "
@@ -64,12 +66,16 @@ def _describe(covariate: Any) -> str:
 
 
 async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
-                            context_columns: list[str] | None = None) -> dict[str, Any]:
+                            context_columns: list[str] | None = None,
+                            recorder: TraceRecorder | None = None) -> dict[str, Any]:
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
 
     from codas.agents.agent import root_agent  # AoU mode checks the model backend on import
+
+    if recorder is not None:
+        recorder.bind(root_agent)
 
     sessions = InMemorySessionService()
     sid = uuid.uuid4().hex[:12]
@@ -78,6 +84,8 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
     runner = Runner(app_name="codas_aou", agent=root_agent, session_service=sessions)
     message = types.Content(role="user", parts=[types.Part(text=goal)])
     async for event in runner.run_async(user_id="aou", session_id=sid, new_message=message):
+        if recorder is not None:
+            recorder.record(event)
         for part in getattr(getattr(event, "content", None), "parts", None) or []:
             call = getattr(part, "function_call", None)
             if call and on_tool_call:
@@ -87,14 +95,15 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
 
 
 def run_agents(csv: str | Path, goal: str, on_tool_call: Any = None,
-               context_columns: list[str] | None = None) -> dict[str, Any]:
+               context_columns: list[str] | None = None, recorder: TraceRecorder | None = None) -> dict[str, Any]:
     """Run the CoDaS agent graph on ``csv`` with the AoU guard on, and return the final session state.
 
     ``context_columns`` are adjustment-only columns (the spec's covariates): never screened as
-    candidates, available to be declared as confounders."""
+    candidates, available to be declared as confounders. ``recorder`` collects the full agent trace."""
     os.environ["CODAS_AOU_MODE"] = "1"
     check_llm_backend()  # the graph may have been imported before AoU mode was switched on
-    return _run_sync(_run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call, context_columns))
+    return _run_sync(_run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call, context_columns,
+                                       recorder))
 
 
 def _run_sync(coro: Any) -> Any:
@@ -113,8 +122,36 @@ def _run_sync(coro: Any) -> Any:
         return pool.submit(asyncio.run, coro).result()
 
 
-def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR) -> dict[str, Any]:
-    """Write the masked report and round summary; return a masked one-line summary of the run."""
+def reports_dir(out: Path) -> Path:
+    """Where a run's aggregate outputs are mirrored for viewing: ``codas_reports/<run folder>`` in the
+    checkout (or CODAS_REPORTS_DIR). Jupyter does not serve files inside hidden directories such as
+    ``.codas_runs``, so links point here. Participant-level tables are never copied."""
+    base = Path(os.getenv("CODAS_REPORTS_DIR") or cohort.ROOT / "codas_reports")
+    return base.expanduser().resolve() / out.name
+
+
+def _publish(paths: dict[str, str], out: Path) -> dict[str, str]:
+    target = reports_dir(out)
+    target.mkdir(parents=True, exist_ok=True)
+    published = {}
+    for kind, path in paths.items():
+        src = Path(path)
+        if src.suffix.lower() == ".csv" or not src.exists():
+            continue
+        published[kind] = str(shutil.copy2(src, target / src.name))
+    return published
+
+
+# Session-state keys each phase publishes (the agents' output_key values plus the engine's records).
+STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "context_columns", "exclusion_log",
+              "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
+              "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet")
+
+
+def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
+                 recorder: TraceRecorder | None = None) -> dict[str, Any]:
+    """Write the masked report, round summary, every phase's output and (with ``recorder``) the full
+    agent trace; return a masked one-line summary of the run."""
     out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     report = mask_small_counts_in_text(str(state.get("report") or ""))
@@ -124,6 +161,26 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
     (out / f"{stem}_rounds.json").write_text(
         json.dumps(mask_small_counts({"rounds": rounds, "fact_sheet": fact_sheet}), indent=2, default=str),
         encoding="utf-8")
+    phases = {k: (mask_small_counts_in_text(v) if isinstance(v, str) else mask_small_counts(v))
+              for k, v in state.items() if k in STATE_KEYS}
+    (out / f"{stem}_state.json").write_text(json.dumps(phases, indent=2, default=str), encoding="utf-8")
+    files = {"state": str(out / f"{stem}_state.json")}
+    coverage_missing = None
+    if recorder is not None:
+        files.update(recorder.write(out, stem))
+        coverage_missing = recorder.coverage()["missing"]
+    try:
+        from codas.aou.pdf_report import build_pdf
+
+        meta = {"rows": fact_sheet.get("rows"), "code_version": _code_version()[:12],
+                "models": ", ".join(dict.fromkeys(filter(None, (os.getenv("CODAS_GEMINI_REASONING_MODEL"),
+                                                                 os.getenv("CODAS_GEMINI_FAST_MODEL")))))}
+        files["pdf"] = str(build_pdf(out, stem, phases, recorder.events if recorder else [],
+                                     recorder.coverage_markdown() if recorder else "", meta))
+    except Exception as exc:  # noqa: BLE001 - the PDF is a convenience; the run's files are already written
+        files["pdf_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    files["report_md"] = str(out / f"{stem}_report.md")
+    files.update(_publish({k: v for k, v in files.items() if not k.endswith("_error")}, out))
     last = rounds[-1] if rounds else {}
     return mask_small_counts({
         "cohort": stem,
@@ -138,6 +195,8 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
         "top_candidates": [f"{c.get('feature')} (rho={c.get('rho')}, {c.get('verdict')})"
                            for c in (last.get("passing_candidates") or [])[:5]],
         "report_path": str(out / f"{stem}_report.md"),
+        "files": files,
+        "coverage_missing": coverage_missing,
     })
 
 
@@ -201,18 +260,24 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]]) -> Path:
                   f"excluded as leakage: {', '.join(excluded) or 'none'}"]
         if unused:
             lines.append(f"- covariates not adjusted for: {_with_coverage(unused, coverage)}")
-        lines += [*[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}", ""]
+        if r.get("coverage_missing"):
+            lines.append(f"- steps without output: {'; '.join(r['coverage_missing'])}")
+        lines += [*[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}"]
+        lines += [f"- {kind}: {path}" for kind, path in (r.get("files") or {}).items()] + [""]
     path = out / "explore_summary.md"
     path.write_text(mask_small_counts_in_text("\n".join(lines)), encoding="utf-8")
+    _publish({"summary": str(path)}, out)
     return path
 
 
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None) -> dict[str, Any]:
-    """Extract one cohort, run the agents on it, save the masked outputs."""
+    """Extract one cohort, run the agents on it, save the masked outputs and the agent trace."""
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
-    state = run_agents(csv, goal_for(spec, label), on_tool_call, [c.name for c in spec.covariates])
-    return save_outputs(state, spec.name, out_dir)
+    recorder = TraceRecorder()
+    state = run_agents(csv, goal_for(spec, label), on_tool_call, [c.name for c in spec.covariates],
+                       recorder=recorder)
+    return save_outputs(state, spec.name, out_dir, recorder)
 
 
 def explore(

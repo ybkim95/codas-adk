@@ -145,7 +145,7 @@ def _make_model(name: str, *fallbacks: str) -> BaseLlm:
 
 check_llm_backend()  # AoU mode: refuse to build the graph on a backend outside the workspace project
 REASONING_MODEL = _make_model(_REASONING_MODEL_NAME, _FAST_MODEL_NAME)  # the fast tier backs up the reasoning tier
-FAST_MODEL = _make_model(_FAST_MODEL_NAME)
+FAST_MODEL = _make_model(_FAST_MODEL_NAME, _REASONING_MODEL_NAME)  # and the reasoning tier backs up the fast one
 # The orchestrator's loop runs at most this many deepening rounds; the GapChecker usually stops it
 # earlier via escalate once deeper search saturates. Bounded so a live run stays within the timeout.
 MAX_DISCOVERY_ROUNDS = int(os.getenv("CODAS_MAX_DISCOVERY_ROUNDS", "3"))
