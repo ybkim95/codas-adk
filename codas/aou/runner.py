@@ -23,8 +23,9 @@ from codas.aou import cohort
 from codas.aou import feasibility as feas
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
-from codas.aou.confirm import confirm, confirmation_markdown, preregister
+from codas.aou.confirm import confirm, confirmation_markdown, ledger_summary, preregister
 from codas.aou.privacy import check_llm_backend, mask_small_counts, mask_small_counts_in_text
+from codas.aou.table1 import cohort_table
 from codas.aou.trace import TraceRecorder
 
 GOAL_TEMPLATE = (
@@ -167,7 +168,7 @@ def _publish(paths: dict[str, str], out: Path) -> dict[str, str]:
 STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "context_columns", "exclusion_log",
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
-              "confirmation")
+              "confirmation", "cohort_table")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -221,6 +222,7 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
         "coverage_missing": coverage_missing,
         "replication": (f"{state['confirmation']['replicated']}/{state['confirmation']['tested']}"
                         if state.get("confirmation") else None),
+        "robust": state["confirmation"].get("robust") if state.get("confirmation") else None,
     })
 
 
@@ -266,7 +268,27 @@ def _finished_run(out: Path, name: str, key: str) -> dict[str, Any] | None:
     return summary
 
 
-def _write_summary(out: Path, table: str, runs: list[dict[str, Any]]) -> Path:
+def holdout_key(spec: CohortSpec, cdr: str | None) -> str:
+    """Which participants a spec's holdout holds: the split depends only on the person id, the salt and
+    the share, so every spec with the same three seals the same people."""
+    return f"{resolve_cdr(cdr)}|salt={spec.split_salt}|permille={int(round(spec.holdout_fraction * 1000))}"
+
+
+def _ledger_lines(out: Path, keys: list[str]) -> list[str]:
+    lines = []
+    for key in dict.fromkeys(keys):
+        led = ledger_summary(out, key)
+        if not led["hypotheses"]:
+            continue
+        lines += ["## Sealed holdout ledger", "",
+                  f"{led['hypotheses']} hypotheses from {led['registrations']} pre-registrations have been tested on "
+                  "this holdout. Corrected together (BH, q <= 0.05, same direction as discovery), "
+                  f"{len(led['replicated'])} replicate" + (": " + "; ".join(led["replicated"]) if led["replicated"] else "")
+                  + ".", ""]
+    return lines
+
+
+def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_keys: list[str] | None = None) -> Path:
     lines = ["# CoDaS free exploration on All of Us", "",
              "Counts of 1-20 are masked. Review before anything leaves the Workbench.", "",
              "## Feasibility screen", "", table, "", "## Runs", ""]
@@ -280,7 +302,8 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]]) -> Path:
         unused = [c for c in coverage if c not in confounders and c not in excluded]
         lines += [f"### {r['cohort']}", f"- participants: {r['rows']}, rounds: {r['rounds']}, "
                   f"validated: {r['validated_count']}, {r['ml_metric']}"
-                  + (f", replicated on the sealed holdout: {r['replication']}" if r.get("replication") else ""),
+                  + (f", replicated on the sealed holdout: {r['replication']}" if r.get("replication") else "")
+                  + (f" ({r['robust']} also passed the falsification tests)" if r.get("robust") is not None else ""),
                   f"- adjusted for: {_with_coverage(confounders, coverage)}; "
                   f"excluded as leakage: {', '.join(excluded) or 'none'}"]
         if unused:
@@ -289,6 +312,7 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]]) -> Path:
             lines.append(f"- steps without output: {'; '.join(r['coverage_missing'])}")
         lines += [*[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}"]
         lines += [f"- {kind}: {path}" for kind, path in (r.get("files") or {}).items()] + [""]
+    lines += _ledger_lines(out, ledger_keys or [])
     path = out / "explore_summary.md"
     path.write_text(mask_small_counts_in_text("\n".join(lines)), encoding="utf-8")
     _publish({"summary": str(path)}, out)
@@ -302,11 +326,15 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
     recorder = TraceRecorder()
     context = [c.name for c in spec.covariates] + ([FOLLOWUP_COLUMN] if is_survival(spec) else [])
     state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder)
+    state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
     if spec.holdout_fraction > 0 and sealed.exists():
         out = Path(out_dir).expanduser().resolve()
-        prereg = preregister(state, out, spec.name, survival_time=FOLLOWUP_COLUMN if is_survival(spec) else None)
-        result = confirm(prereg, sealed, out)  # the pre-registration is on disk before the holdout is read
+        prereg = preregister(state, out, spec.name, survival_time=FOLLOWUP_COLUMN if is_survival(spec) else None,
+                             negative_controls=[c.name for c in spec.negative_controls],
+                             positive_controls=list(spec.positive_controls))
+        # The pre-registration is on disk before the holdout is read.
+        result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr))
         state["confirmation"] = result
         state["report"] = f"{state.get('report') or ''}\n\n{confirmation_markdown(result)}"
     return save_outputs(state, spec.name, out_dir, recorder)
@@ -382,7 +410,8 @@ def explore(
     out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, Any]] = []
-    summary_path = _write_summary(out, table, runs)
+    keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
+    summary_path = _write_summary(out, table, runs, keys)
     if not screen_only:
         by_name = {o.name: o for o in verified}
         for row in chosen:
@@ -406,6 +435,6 @@ def explore(
                     (out / f"{spec.name}_run.json").write_text(json.dumps({"key": key, "summary": result}),
                                                                encoding="utf-8")
                     runs.append(result)
-            summary_path = _write_summary(out, table, runs)
+            summary_path = _write_summary(out, table, runs, keys)
 
     return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path)}

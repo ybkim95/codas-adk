@@ -4,7 +4,8 @@ No row here describes a real person. The tables carry the OMOP and Fitbit column
 reads, with planted associations (more steps -> lower HbA1c and less type 2 diabetes; shorter,
 more variable sleep -> more depression) so an end-to-end run has something to find. A separate latent
 body size raises calories burned, BMI and HbA1c and lowers HDL, so calories look like a biomarker
-until BMI is adjusted for.
+until BMI is adjusted for. One negative-control condition (impacted cerumen) is diagnosed at random,
+unrelated to anything else, so a confirmation step should find no association with it.
 
 ``duckdb_query`` runs the extractor's BigQuery SQL against this database: it inlines the bound
 parameters and transpiles BigQuery to DuckDB with sqlglot. Install ``duckdb`` and ``sqlglot`` to use
@@ -31,11 +32,15 @@ CONCEPTS = [
     (4193704, "Type 2 diabetes mellitus without complication", "S", "Condition"),
     (3038553, "Body mass index (BMI) [Ratio]", "S", "Measurement"),
     (1503297, "metformin", "S", "Drug"),
+    (374375, "Impacted cerumen", "S", "Condition"),
+    (380706, "Regular astigmatism", "S", "Condition"),
+    (140641, "Verruca vulgaris", "S", "Condition"),
     (1585847, "Female", None, "Gender"),
     (1585846, "Male", None, "Gender"),
 ]
 _ANCESTRY = [(201826, 201826), (201826, 4193704), (3004410, 3004410), (3007070, 3007070),
-             (440383, 440383), (3038553, 3038553), (1503297, 1503297)]
+             (440383, 440383), (3038553, 3038553), (1503297, 1503297), (374375, 374375), (380706, 380706),
+             (140641, 140641)]
 
 
 def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: int = 0) -> None:
@@ -94,6 +99,12 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
             cond_rows.append((pid, rng.choice([201826, 4193704]), start + timedelta(days=int(rng.integers(120, n_days + 30)))))
         if rng.random() < 1 / (1 + np.exp(3.0 - 0.03 * sleep_var[i])):
             cond_rows.append((pid, 440383, start + timedelta(days=int(rng.integers(120, n_days + 30)))))
+
+    # The negative-control condition draws from its own stream and depends on nothing.
+    control_rng = np.random.default_rng(seed + 3)
+    for pid in people.person_id:
+        if control_rng.random() < 0.3:
+            cond_rows.append((pid, 374375, start + timedelta(days=int(control_rng.integers(0, n_days + 400)))))
 
     frames = {
         "person": people,

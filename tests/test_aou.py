@@ -30,7 +30,7 @@ def _window_spec() -> CohortSpec:
     from dataclasses import replace
 
     return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
-                   holdout_fraction=0.0, min_wear_days=30)
+                   holdout_fraction=0.0, min_wear_days=30, negative_controls=[])
 
 CDR = "fc-aou-cdr-prod.R2025Q4R6"
 

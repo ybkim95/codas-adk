@@ -94,6 +94,26 @@ The example spec uses `design: "incident"`, the design of the landmark All of Us
   Benjamini-Hochberg correction across the pre-registered set. The results
   (`<cohort>_confirmation.json`) are appended to the report as a deterministic section; the agents
   never see them.
+* **Falsification on the holdout.** Every candidate is also tested, with the same confounders, for:
+  * *negative-control outcomes* (`negative_controls`): conditions the exposures should not cause.
+    The example uses impacted cerumen, regular astigmatism and verruca vulgaris (OMOP 374375, 380706,
+    140641, from the OHDSI negative-control lists). Each control is extracted into the sealed table
+    only, as `nc_<name>` (new diagnosis after `index + lag_days`; empty for anyone diagnosed earlier)
+    and `nc_<name>_days`. An association (Cox p below 0.05 divided by the number of controls tested)
+    flags confounding or differences in health-care contact. A control is checked against the
+    concept table like a covariate, and one that is the outcome itself is dropped.
+  * *dose-response*: the effect across quintiles of the feature must change monotonically in the
+    pre-registered direction;
+  * *lag sensitivity* (time to event): dropping the first 365 days of follow-up must keep the
+    direction.
+  A candidate that replicates and passes every test that could run is reported as *robust*.
+  *Positive controls* (`positive_controls`, columns with a known association with the outcome, e.g.
+  age and BMI) are tested the same way, to show the holdout can detect a real effect.
+* **Holdout ledger.** Every hypothesis tested on a holdout is appended to
+  `.codas_runs/aou/holdout_ledger.jsonl`, keyed by which participants it holds (CDR, `split_salt`,
+  `holdout_fraction`). Replication is judged on the Benjamini-Hochberg q across every hypothesis ever
+  tested on those participants, so re-running, or running other outcomes on the same people, cannot
+  buy extra chances at a false replication. `explore_summary.md` ends with the pooled result.
 
 Set `design: "window"` and `holdout_fraction: 0` for the earlier outcome-anchored design.
 
@@ -156,10 +176,12 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
 Each outcome writes, under `.codas_runs/aou/` (and, for everything except participant-level tables,
 mirrored to `codas_reports/aou/`, because Jupyter does not serve files inside hidden directories):
 
-* `<cohort>_report.pdf`: the compiled report: cover (participants, code commit, models), the final
+* `<cohort>_report.pdf`: the compiled report: cover (participants, code commit, models, holdout
+  replication), cohort characteristics of the discovery and sealed shares (masked), the final
   report, Phase A design (target, confounders, exclusions with reasons) and hypotheses, the round
   table and every round's critic/defender debate, mechanisms and novelty, strategy and artifacts,
-  and an appendix with the candidates' effect sizes, the phase coverage and the fact sheet. Built
+  and an appendix with forest plots of the holdout effects (candidates and positive controls), the
+  candidates' discovery effect sizes, the phase coverage and the fact sheet. Built
   with `fpdf2` and `markdown` (pure Python); a Unicode font is used when installed.
 * `<cohort>_trace.jsonl` / `<cohort>_trace.md`: the full agent trace, every agent's text, tool call
   and tool response in order, labelled with phase (a child of the root agent) and discovery round.

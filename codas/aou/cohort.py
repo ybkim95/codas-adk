@@ -25,6 +25,13 @@ a measurement, the target is the first value at or after ``index + lag_days`` (w
 ``holdout_fraction`` seals a deterministic share of participants (by a hash of the person id) into a
 separate replication table that the agents never see.
 
+Negative-control outcomes (optional, ``CohortSpec.negative_controls``, incident design only) are
+conditions chosen in advance as ones the exposures should not cause. Each adds two columns to the
+sealed table only, ``nc_<name>`` (a new diagnosis during follow-up, 1/0; empty for anyone diagnosed
+before follow-up starts) and ``nc_<name>_days`` (follow-up to that diagnosis or the last EHR visit).
+The confirmation step tests every pre-registered candidate against them: an association with an
+outcome the exposure cannot cause points to confounding or to differences in health-care contact.
+
 Covariates (optional, ``CohortSpec.covariates``) are clinical context for confounder adjustment, not
 candidate biomarkers: a measurement covariate is the most recent value in the ``lookback_days`` up
 to and including the index date; a condition or drug covariate is 1 if a record starts in the
@@ -106,6 +113,8 @@ class OutcomeSpec:
     # Plausibility bounds for a measurement value (drop unit errors and sentinels).
     value_min: float | None = None
     value_max: float | None = None
+    # Text the concept name must contain, checked against the CDR concept table before a run.
+    expect_name: str = ""
 
     def validate(self) -> None:
         if self.kind not in {"measurement", "condition"}:
@@ -168,6 +177,11 @@ class CohortSpec:
     valid_day: dict[str, Any] | None = None
     holdout_fraction: float = 0.0  # share of participants sealed for replication (0 = no split)
     split_salt: int = 0
+    # Conditions the exposures should not cause, tested on the sealed table only (incident design).
+    negative_controls: list[OutcomeSpec] = field(default_factory=list)
+    # Columns of the table with a known association with the outcome, tested on the sealed table the
+    # same way as the candidates to show the confirmation can detect a real effect.
+    positive_controls: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
@@ -206,6 +220,20 @@ class CohortSpec:
             if shared and self.design == "window":
                 raise ValueError(f"Covariate {covariate.name!r} shares concept ids {sorted(shared)} with the "
                                  "outcome; a covariate cannot be the outcome itself.")
+        if self.negative_controls and self.design != "incident":
+            raise ValueError("negative_controls need the incident design (follow-up after a shared index date).")
+        for control in self.negative_controls:
+            control.validate()
+            if control.kind != "condition":
+                raise ValueError(f"negative control {control.name!r}: kind must be 'condition'.")
+            if set(control.concept_ids) & set(self.outcome.concept_ids):
+                raise ValueError(f"negative control {control.name!r} shares concept ids with the outcome.")
+        nc_columns = negative_control_columns(self)
+        if len(set(nc_columns)) != len(nc_columns) or set(nc_columns) & taken:
+            raise ValueError("Negative-control names must be unique and must not clash with other columns.")
+        for column in self.positive_controls:
+            if column not in taken:
+                raise ValueError(f"positive control {column!r} is not a column of the table.")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CohortSpec":
@@ -224,6 +252,8 @@ class CohortSpec:
             valid_day=data.get("valid_day"),
             holdout_fraction=float(data.get("holdout_fraction", 0.0)),
             split_salt=int(data.get("split_salt", 0)),
+            negative_controls=[OutcomeSpec(**{"kind": "condition", **c}) for c in data.get("negative_controls", [])],
+            positive_controls=[str(c) for c in data.get("positive_controls", [])],
         )
         spec.validate()
         return spec
@@ -267,6 +297,22 @@ def output_columns(spec: CohortSpec) -> list[str]:
 
 FOLLOWUP_COLUMN = "followup_days"
 HOLDOUT_COLUMN = "_holdout"
+NC_PREFIX = "nc_"
+
+
+def negative_control_columns(spec: CohortSpec) -> list[str]:
+    """The sealed table's negative-control columns: an event flag and its follow-up days per control."""
+    return [col for c in spec.negative_controls for col in (f"{NC_PREFIX}{c.name}", f"{NC_PREFIX}{c.name}_days")]
+
+
+def holdout_columns(spec: CohortSpec) -> list[str]:
+    """The columns of the sealed replication table: the analysis columns plus the negative controls."""
+    return output_columns(spec) + negative_control_columns(spec)
+
+
+def negative_controls_without(controls: list[OutcomeSpec], outcome: OutcomeSpec) -> list[OutcomeSpec]:
+    """``controls`` minus any that shares a concept id with ``outcome`` (it cannot be its own control)."""
+    return [c for c in controls if not set(c.concept_ids) & set(outcome.concept_ids)]
 
 
 def is_survival(spec: CohortSpec) -> bool:
@@ -282,6 +328,12 @@ def covariates_without(covariates: list[CovariateSpec], outcome: OutcomeSpec) ->
         (dropped.append(covariate.name) if set(covariate.concept_ids) & set(outcome.concept_ids)
          else keep.append(covariate))
     return keep, dropped
+
+
+_LAST_SEEN = ("last_seen AS (\n"
+              "  SELECT person_id, MAX(visit_start_date) AS last_seen FROM {visits}\n"
+              "  GROUP BY person_id\n"
+              ")")
 
 
 def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
@@ -350,6 +402,8 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
             )
             ctes.append("index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date,"
                         " outcome_value\n  FROM outcome_events WHERE rn = 1\n)")
+            if spec.negative_controls:
+                ctes.append(_LAST_SEEN.format(visits=t("visit_occurrence")))
         else:
             ctes.append(
                 "cases AS (\n"
@@ -359,12 +413,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
                 "  GROUP BY co.person_id\n"
                 ")"
             )
-            ctes.append(
-                "last_seen AS (\n"
-                f"  SELECT person_id, MAX(visit_start_date) AS last_seen FROM {t('visit_occurrence')}\n"
-                "  GROUP BY person_id\n"
-                ")"
-            )
+            ctes.append(_LAST_SEEN.format(visits=t("visit_occurrence")))
             start_fu = "DATE_ADD(f.first_wear, INTERVAL @outcome_from DAY)"
             ctes.append(
                 "index_events AS (\n"
@@ -509,6 +558,33 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         else:
             select.append(f"IF(c{i}.person_id IS NULL, 0, 1) AS {covariate.name}")
         joins.append(f"LEFT JOIN c{i} ON c{i}.person_id = ie.person_id")
+    if spec.negative_controls:
+        # Follow-up for a negative control starts where the outcome's does (index + lag); a diagnosis
+        # before then leaves that control empty for the person rather than excluding them.
+        params.append(("nc_lag_days", "INT64", int(spec.lag_days)))
+        start = "DATE_ADD(ie.index_date, INTERVAL @nc_lag_days DAY)"
+        joins.append("LEFT JOIN last_seen ls ON ls.person_id = ie.person_id")
+        for i, control in enumerate(spec.negative_controls):
+            ids = f"n{i}_concept_ids"
+            params.append((ids, "ARRAY<INT64>", list(control.concept_ids)))
+            concepts = f"SELECT concept_id FROM UNNEST(@{ids}) AS concept_id"
+            if control.include_descendants:
+                concepts += (f"\n    UNION DISTINCT\n    SELECT descendant_concept_id FROM {t('concept_ancestor')}"
+                             f"\n    WHERE ancestor_concept_id IN UNNEST(@{ids})")
+            ctes.append(
+                f"n{i} AS (\n"
+                "  SELECT co.person_id, MIN(co.condition_start_date) AS dx_date\n"
+                f"  FROM {t('condition_occurrence')} co\n"
+                f"  JOIN (\n    {concepts}\n  ) nc ON co.condition_concept_id = nc.concept_id\n"
+                "  GROUP BY co.person_id\n"
+                ")"
+            )
+            col = f"{NC_PREFIX}{control.name}"
+            prevalent = f"n{i}.dx_date < {start}"
+            select += [f"CASE WHEN {prevalent} THEN NULL WHEN n{i}.dx_date IS NULL THEN 0 ELSE 1 END AS {col}",
+                       f"CASE WHEN {prevalent} THEN NULL ELSE DATE_DIFF(COALESCE(n{i}.dx_date, ls.last_seen), {start}, DAY)"
+                       f" END AS {col}_days"]
+            joins.append(f"LEFT JOIN n{i} ON n{i}.person_id = ie.person_id")
     if spec.holdout_fraction > 0:
         # Deterministic, roughly uniform split on the person id, computed apart from the selected
         # columns so the output carries only the flag; extract_cohort drops it before the agents see rows.
@@ -532,7 +608,8 @@ def schema_check_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
     """SQL listing the (table, column) pairs the spec needs that exist in the CDR."""
     cdr = resolve_cdr(cdr)
     tables = sorted({s.table for s in spec.wearables} | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates}
-                    | ({"visit_occurrence"} if is_survival(spec) else set()))
+                    | ({"visit_occurrence"} if is_survival(spec) or spec.negative_controls else set())
+                    | ({"condition_occurrence"} if spec.negative_controls else set()))
     sql = (f"SELECT table_name, column_name FROM `{cdr}.INFORMATION_SCHEMA.COLUMNS`\n"
            "WHERE table_name IN UNNEST(@tables)")
     return sql, [("tables", "ARRAY<STRING>", tables)]
@@ -550,8 +627,10 @@ def missing_columns(spec: CohortSpec, present: list[tuple[str, str]]) -> list[st
         needed += [(table, col) for col in ("person_id", concept_col, date_col)]
         if c.kind == "measurement":
             needed += [(table, "value_as_number"), (table, "measurement_id")]
-    if is_survival(spec):
+    if is_survival(spec) or spec.negative_controls:
         needed += [("visit_occurrence", "person_id"), ("visit_occurrence", "visit_start_date")]
+    if spec.negative_controls:
+        needed += [("condition_occurrence", c) for c in ("person_id", "condition_concept_id", "condition_start_date")]
     return [f"{tbl}.{col}" for tbl, col in dict.fromkeys(needed) if (tbl, col) not in have]
 
 
@@ -595,7 +674,8 @@ def extract_cohort(
     """Run the extraction in BigQuery and write ``<out_dir>/<spec.name>.csv`` on the workspace disk.
 
     With ``holdout_fraction`` the sealed share goes to ``holdout_path(...)`` instead, and the returned
-    table (the one the agents analyse) holds only the discovery share."""
+    table (the one the agents analyse) holds only the discovery share. Negative-control columns are
+    written to the sealed table only."""
     spec.validate()
     cdr = resolve_cdr(cdr)
     out = _check_out_dir(Path(out_dir))
@@ -617,7 +697,7 @@ def extract_cohort(
     path = out / f"{spec.name}.csv"
     if spec.holdout_fraction > 0:
         sealed = frame[HOLDOUT_COLUMN].astype(bool)
-        frame.loc[sealed, output_columns(spec)].to_csv(holdout_path(path), index=False)
+        frame.loc[sealed, holdout_columns(spec)].to_csv(holdout_path(path), index=False)
         frame = frame.loc[~sealed]
     frame[output_columns(spec)].to_csv(path, index=False)
     return path

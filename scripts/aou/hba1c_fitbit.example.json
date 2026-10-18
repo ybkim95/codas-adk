@@ -1,10 +1,12 @@
 {
   "name": "hba1c_fitbit",
-  "notes": "Example spec. Prospective (incident) design: everyone is indexed 180 days after their first valid wear day (100-45,000 steps), features summarise that baseline, outcomes are counted from 90 days after the index (earlier diagnoses exclude the person; lab outcomes use the first value within 730 days), and half the participants are sealed for one-shot replication of the pre-registered candidates. Set design to window for the earlier outcome-anchored design. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically.",
+  "notes": "Example spec. Prospective (incident) design: everyone is indexed 180 days after their first valid wear day (100-45,000 steps), features summarise that baseline, outcomes are counted from 90 days after the index (earlier diagnoses exclude the person; lab outcomes use the first value within 730 days), and half the participants are sealed for one-shot replication of the pre-registered candidates. Set design to window for the earlier outcome-anchored design. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically. Negative controls are conditions the wearable measures should not cause (from the OHDSI negative-control outcome lists); they are extracted into the sealed table only and every pre-registered candidate is tested against them, so an association flags confounding or differences in health-care contact. Positive controls are columns with a known association with the outcome, tested the same way to show the holdout can detect a real effect.",
   "outcome": {
     "kind": "measurement",
     "name": "hba1c",
-    "concept_ids": [3004410],
+    "concept_ids": [
+      3004410
+    ],
     "include_descendants": true,
     "value_min": 3.0,
     "value_max": 20.0
@@ -14,27 +16,79 @@
   "min_wear_days": 60,
   "lag_days": 90,
   "horizon_days": 730,
-  "valid_day": {"column": "steps", "min": 100, "max": 45000},
+  "valid_day": {
+    "column": "steps",
+    "min": 100,
+    "max": 45000
+  },
   "holdout_fraction": 0.5,
   "include_demographics": true,
   "covariates": [
-    {"name": "bmi_cov", "kind": "measurement", "concept_ids": [3038553], "lookback_days": null,
-     "value_min": 12.0, "value_max": 80.0, "expect_name": "body mass"}
+    {
+      "name": "bmi_cov",
+      "kind": "measurement",
+      "concept_ids": [
+        3038553
+      ],
+      "lookback_days": null,
+      "value_min": 12.0,
+      "value_max": 80.0,
+      "expect_name": "body mass"
+    }
+  ],
+  "negative_controls": [
+    {
+      "name": "impacted_cerumen",
+      "concept_ids": [
+        374375
+      ],
+      "expect_name": "cerumen"
+    },
+    {
+      "name": "regular_astigmatism",
+      "concept_ids": [
+        380706
+      ],
+      "expect_name": "astigmatism"
+    },
+    {
+      "name": "verruca_vulgaris",
+      "concept_ids": [
+        140641
+      ],
+      "expect_name": "verruca"
+    }
+  ],
+  "positive_controls": [
+    "age",
+    "bmi_cov"
   ],
   "wearables": [
     {
       "table": "activity_summary",
       "date_column": "date",
       "prefix": "act",
-      "columns": ["steps", "very_active_minutes", "fairly_active_minutes", "lightly_active_minutes",
-                  "sedentary_minutes", "calories_out"]
+      "columns": [
+        "steps",
+        "very_active_minutes",
+        "fairly_active_minutes",
+        "lightly_active_minutes",
+        "sedentary_minutes",
+        "calories_out"
+      ]
     },
     {
       "table": "sleep_daily_summary",
       "date_column": "sleep_date",
       "prefix": "sleep",
-      "columns": ["minute_asleep", "minute_in_bed", "minute_deep", "minute_light", "minute_rem",
-                  "minute_awake"],
+      "columns": [
+        "minute_asleep",
+        "minute_in_bed",
+        "minute_deep",
+        "minute_light",
+        "minute_rem",
+        "minute_awake"
+      ],
       "filter_column": "is_main_sleep",
       "filter_value": true
     }

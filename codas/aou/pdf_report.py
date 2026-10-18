@@ -9,6 +9,7 @@ Everything it prints comes from files the run already wrote (masked for counts o
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -141,6 +142,59 @@ class _Doc:
         pdf.ln(3)
 
 
+    def forest(self, items: list[tuple[str, float, float, float, bool]], *, log: bool) -> None:
+        """Point estimates with 95% CIs, one row each; a vertical line marks no effect (1 on a log
+        scale, 0 otherwise). Filled marks are replicated estimates, open marks the rest."""
+        items = [i for i in items if all(isinstance(v, (int, float)) and math.isfinite(v) for v in i[1:4])
+                 and (not log or min(i[1:4]) > 0)]
+        if not items:
+            self.plain("(no estimates)")
+            return
+        f = math.log if log else (lambda v: v)
+        null = f(1.0) if log else 0.0
+        lo_all = min([f(i[2]) for i in items] + [null])
+        hi_all = max([f(i[3]) for i in items] + [null])
+        span = (hi_all - lo_all) or 1.0
+        pdf = self.pdf
+        label_w, chart_w, h = 80.0, 70.0, 5.0
+        x_of = lambda v: pdf.l_margin + label_w + chart_w * (f(v) - lo_all) / span  # noqa: E731
+        pdf.set_font(self.family, "", 7)
+        top = pdf.get_y()
+        for label, est, lo, hi, replicated in items:
+            if pdf.get_y() > pdf.h - 25:
+                pdf.add_page()
+                top = pdf.get_y()
+            y = pdf.get_y()
+            pdf.set_xy(pdf.l_margin, y)
+            pdf.cell(label_w - 2, h, self.text(label[:55]), align="R")
+            pdf.set_draw_color(40, 60, 110)
+            pdf.line(x_of(lo), y + h / 2, x_of(hi), y + h / 2)
+            pdf.set_fill_color(40, 60, 110)
+            pdf.rect(x_of(est) - 1, y + h / 2 - 1, 2, 2, style="F" if replicated else "D")
+            pdf.set_xy(pdf.l_margin + label_w + chart_w + 1, y)
+            pdf.cell(40, h, f"{est:.3g} ({lo:.3g}-{hi:.3g})")
+            pdf.ln(h)
+        pdf.set_draw_color(150, 150, 150)
+        pdf.line(x_of(1.0 if log else 0.0), top, x_of(1.0 if log else 0.0), pdf.get_y())
+        pdf.set_draw_color(0, 0, 0)
+        pdf.set_fill_color(255, 255, 255)
+        pdf.ln(3)
+
+
+def _forest_items(confirmation: dict[str, Any]) -> tuple[list[tuple], list[tuple]]:
+    """(hazard-ratio rows, correlation rows) from a confirmation result: candidates, then positive controls."""
+    cox, rank = [], []
+    rows = [(r["feature"], r, bool(r.get("replicated"))) for r in confirmation.get("hypotheses") or []]
+    rows += [(f"positive control: {r['control']}", r, bool(r.get("detected"))) for r in confirmation.get("positive_controls") or []]
+    for label, r, filled in rows:
+        ci = r.get("ci95") or [None, None]
+        if r.get("test") == "cox":
+            cox.append((label, r.get("hr_per_sd"), ci[0], ci[1], filled))
+        elif "rho" in r:
+            rank.append((label, r.get("rho"), ci[0], ci[1], filled))
+    return cox, rank
+
+
 def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dict[str, Any]],
               coverage_md: str, meta: dict[str, Any]) -> Path:
     """Write ``<stem>_report.pdf`` and return its path.
@@ -154,15 +208,24 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
     doc.heading(f"CoDaS report: {stem}")
     rounds = phases.get("rounds") or []
     last = rounds[-1] if rounds else {}
+    conf = phases.get("confirmation") or {}
     cover = [["target", phases.get("target_column")], ["participants", meta.get("rows")],
              ["discovery rounds", len(rounds)], ["validated candidates (final round)", last.get("validated_count")],
              ["held-out model", f"{last.get('ml_metric_name')} = {last.get('ml_metric_value')}" if last else None],
+             *([["replicated on the sealed holdout", f"{conf.get('replicated')} of {conf.get('tested')}"],
+                ["also passed falsification", conf.get("robust")]] if conf else []),
              ["code version", meta.get("code_version")], ["models", meta.get("models")],
              ["compiled", _dt.datetime.now().strftime("%Y-%m-%d %H:%M")]]
     doc.table(None, cover, widths=[60, 120])
     doc.plain("Counts of 1-20 are masked. Every number comes from the deterministic engine; the agents "
               "plan, interpret and write. Review against the Data and Statistics Dissemination Policy "
               "before anything leaves the Workbench.", size=8, style="I")
+
+    table1 = phases.get("cohort_table")
+    if table1:
+        doc.heading("Cohort characteristics", 2)
+        doc.table(table1["columns"], table1["rows"])
+        doc.plain(table1.get("note", ""), size=8, style="I")
 
     pdf.add_page()
     doc.heading("Final report")
@@ -219,6 +282,16 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
 
     pdf.add_page()
     doc.heading("Appendix")
+    if conf:
+        cox, rank = _forest_items(conf)
+        if cox:
+            doc.heading("Sealed holdout: hazard ratio per SD (95% CI)", 2)
+            doc.forest(cox, log=True)
+        if rank:
+            doc.heading("Sealed holdout: rank correlation (95% CI)", 2)
+            doc.forest(rank, log=False)
+        doc.plain("Filled marks replicated (candidates) or were detected (positive controls); open marks did not.",
+                  size=8, style="I")
     doc.heading("Candidates in the final round (Spearman rho)", 2)
     doc.bars([(c.get("feature") or "", float(c["rho"])) for c in (last.get("passing_candidates") or [])
               if isinstance(c.get("rho"), (int, float))])

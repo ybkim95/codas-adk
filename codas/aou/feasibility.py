@@ -12,9 +12,9 @@ Three steps, all aggregate-only:
    sample (participants for a measurement, cases and controls for a condition), order by that
    sample, and take the top K, overall or for each outcome kind.
 
-The base spec's covariates are checked against the concept table the same way
-(``verify_covariates``), and each outcome's spec carries the verified covariates that are not the
-outcome itself.
+The base spec's covariates and negative controls are checked against the concept table the same
+way (``verify_covariates``), and each outcome's spec carries the verified covariates and negative
+controls that are not the outcome itself.
 
 Counts are returned as integers for the ranking; ``feasibility_table`` masks 1-20 for display.
 """
@@ -28,7 +28,7 @@ from typing import Any
 
 from codas.aou import cohort
 from codas.aou.cohort import (CohortSpec, OutcomeSpec, WearableSource, build_cohort_sql, covariates_without,
-                              resolve_cdr)
+                              negative_controls_without, output_columns, resolve_cdr)
 from codas.aou.privacy import MASK, SMALL_CELL_MAX
 
 _DOMAIN = {"measurement": "Measurement", "condition": "Condition", "drug": "Drug"}
@@ -70,7 +70,15 @@ def spec_for(outcome: CatalogOutcome, base: CohortSpec, *, prefix: str = "explor
     if base.design == "window":  # outcome-anchored: a covariate on the outcome's own concept is the outcome
         covariates, _dropped = covariates_without(base.covariates, target)
     spec = replace(base, name=f"{prefix}_{outcome.name}", outcome=target, wearables=list(base.wearables),
-                   covariates=covariates, notes="")
+                   covariates=covariates, notes="",
+                   negative_controls=negative_controls_without(base.negative_controls, target))
+    return _keep_positive_controls(spec)
+
+
+def _keep_positive_controls(spec: CohortSpec) -> CohortSpec:
+    """``spec`` with only the positive controls that are still columns of its table."""
+    columns = set(output_columns(spec))
+    spec = replace(spec, positive_controls=[c for c in spec.positive_controls if c in columns])
     spec.validate()
     return spec
 
@@ -102,22 +110,24 @@ def check_concepts(outcomes: list[CatalogOutcome], rows: list[dict[str, Any]]) -
     return result
 
 
-def verify_catalog(outcomes: list[CatalogOutcome], cdr: str, client: Any) -> dict[str, str | None]:
+def verify_catalog(outcomes: list[Any], cdr: str, client: Any) -> dict[str, str | None]:
+    if not outcomes:
+        return {}
     frame = cohort._query(client, *concept_check_sql(outcomes, cdr))
     return check_concepts(outcomes, frame.to_dict(orient="records"))
 
 
 def verify_covariates(base: CohortSpec, cdr: str, client: Any) -> tuple[CohortSpec, dict[str, str]]:
-    """``base`` with only the covariates whose concepts pass the catalog's concept check, and the
-    reason each dropped covariate failed."""
-    if not base.covariates:
+    """``base`` with only the covariates and negative controls whose concepts pass the catalog's concept
+    check, and the reason each dropped one failed (negative controls are keyed ``negative control <name>``)."""
+    if not base.covariates and not base.negative_controls:
         return base, {}
-    problems = verify_catalog(base.covariates, cdr, client)
-    failed = {name: reason for name, reason in problems.items() if reason}
-    kept = [c for c in base.covariates if c.name not in failed]
-    spec = replace(base, wearables=list(base.wearables), covariates=kept)
-    spec.validate()
-    return spec, failed
+    failed = {name: reason for name, reason in verify_catalog(base.covariates, cdr, client).items() if reason}
+    bad_nc = {f"negative control {name}": reason
+              for name, reason in verify_catalog(base.negative_controls, cdr, client).items() if reason}
+    spec = replace(base, wearables=list(base.wearables), covariates=[c for c in base.covariates if c.name not in failed],
+                   negative_controls=[c for c in base.negative_controls if f"negative control {c.name}" not in bad_nc])
+    return _keep_positive_controls(spec), {**failed, **bad_nc}
 
 
 def feasibility_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[cohort.QueryParam]]:
@@ -132,7 +142,7 @@ def feasibility_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[cohort.QueryP
         spec, wearables=[WearableSource(table=primary.table, date_column=primary.date_column,
                                         columns=list(dict.fromkeys(keep)), prefix=primary.prefix,
                                         filter_column=primary.filter_column, filter_value=primary.filter_value)],
-        include_demographics=False, covariates=[], holdout_fraction=0.0,
+        include_demographics=False, covariates=[], holdout_fraction=0.0, negative_controls=[], positive_controls=[],
     )
     inner, params = build_cohort_sql(slim, cdr)
     sql = (f"SELECT COUNT(*) AS n_participants, SUM({spec.outcome.name}) AS outcome_sum\n"

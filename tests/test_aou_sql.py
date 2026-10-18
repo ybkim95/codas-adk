@@ -28,7 +28,7 @@ def _window_spec() -> CohortSpec:
     from dataclasses import replace
 
     return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
-                   holdout_fraction=0.0, min_wear_days=30)
+                   holdout_fraction=0.0, min_wear_days=30, negative_controls=[])
 
 CATALOG = ROOT / "scripts" / "aou" / "outcomes_catalog.json"
 
@@ -405,3 +405,49 @@ def test_incident_holdout_sql_selects_no_identifier():
     sql, _ = build_cohort_sql(spec, SYNTHETIC_CDR)
     selected = sql[sql.rindex("\nSELECT"):sql.index("\nFROM index_events ie")]
     assert "person_id" not in selected and "_holdout" in selected
+
+
+def test_negative_control_outcomes_reach_only_the_sealed_table(incident_cdr, monkeypatch):
+    incident_cdr.execute("INSERT INTO condition_occurrence VALUES (1, 700, DATE '2023-03-01'), "
+                         "(2, 700, DATE '2023-04-01')")
+    incident_cdr.execute("INSERT INTO concept_ancestor VALUES (700, 700), (701, 701)")
+    controls = [{"name": "ctl_a", "concept_ids": [700]}, {"name": "ctl_b", "concept_ids": [701]}]
+    for outcome in (INCIDENT["outcome"], {"kind": "measurement", "name": "lab", "concept_ids": [600]}):
+        spec = CohortSpec.from_dict({**INCIDENT, "outcome": outcome, "negative_controls": controls})
+        out = duckdb_query(incident_cdr)(None, *build_cohort_sql(spec, SYNTHETIC_CDR))
+        assert list(out.columns) == cohort.holdout_columns(spec)
+        p1, p2 = (out.sort_values("act_steps_mean").iloc[i] for i in (0, 1))
+        # Follow-up starts at index + lag: P1 on Feb 11, P2 on Apr 10.
+        assert p1.nc_ctl_a == 1 and p1.nc_ctl_a_days == (date(2023, 3, 1) - date(2023, 2, 11)).days
+        assert pd.isna(p2.nc_ctl_a) and pd.isna(p2.nc_ctl_a_days)  # diagnosed before follow-up: left empty
+        assert p1.nc_ctl_b == 0 and p1.nc_ctl_b_days == (date(2023, 12, 1) - date(2023, 2, 11)).days
+        assert p2.nc_ctl_b == 0 and p2.nc_ctl_b_days == (date(2024, 1, 10) - date(2023, 4, 10)).days
+    spec = CohortSpec.from_dict({**INCIDENT, "negative_controls": controls, "holdout_fraction": 0.5, "split_salt": 7})
+    monkeypatch.setattr(cohort, "_query", duckdb_query(incident_cdr))
+    out_dir = ROOT / ".codas_runs" / "nc_test"
+    try:
+        path = cohort.extract_cohort(spec, SYNTHETIC_CDR, out_dir, client=object(), check_schema=False)
+        assert list(pd.read_csv(path).columns) == output_columns(spec)  # the agents never see the controls
+        assert list(pd.read_csv(cohort.holdout_path(path)).columns) == cohort.holdout_columns(spec)
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+    present = [("activity_summary", c) for c in ("person_id", "date", "steps")]
+    assert "condition_occurrence.condition_concept_id" in cohort.missing_columns(spec, present)
+
+
+def test_negative_controls_are_validated_and_dropped_for_their_own_outcome():
+    with pytest.raises(ValueError, match="incident"):
+        CohortSpec.from_dict({**INCIDENT, "design": "window", "negative_controls": [{"name": "c", "concept_ids": [9]}]})
+    with pytest.raises(ValueError, match="outcome"):
+        CohortSpec.from_dict({**INCIDENT, "negative_controls": [{"name": "c", "concept_ids": [500]}]})
+    with pytest.raises(ValueError, match="positive control"):
+        CohortSpec.from_dict({**INCIDENT, "positive_controls": ["no_such_column"]})
+    base = CohortSpec.from_dict({**INCIDENT, "negative_controls": [{"name": "c", "concept_ids": [9]}],
+                                 "positive_controls": ["age"]})
+    same = feas.CatalogOutcome(name="nine", label="Nine", kind="condition", concept_ids=[9], expect_name="")
+    assert feas.spec_for(same, base).negative_controls == []
+    other = feas.CatalogOutcome(name="ten", label="Ten", kind="condition", concept_ids=[10], expect_name="")
+    spec = feas.spec_for(other, base)
+    assert [c.name for c in spec.negative_controls] == ["c"] and spec.positive_controls == ["age"]
+    slim, _ = feas.feasibility_sql(spec, SYNTHETIC_CDR)
+    assert "n0_concept_ids" not in slim  # the feasibility count does not compute the controls

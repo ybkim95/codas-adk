@@ -35,7 +35,7 @@ def _window_spec() -> CohortSpec:
     from dataclasses import replace
 
     return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
-                   holdout_fraction=0.0, min_wear_days=30)
+                   holdout_fraction=0.0, min_wear_days=30, negative_controls=[])
 
 CATALOG = ROOT / "scripts" / "aou" / "outcomes_catalog.json"
 RUN_DIR = ROOT / ".codas_runs" / "aou_e2e_test"
@@ -411,9 +411,25 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
         # The agents analysed only the discovery share; the sealed share never reached a model request.
         discovery, sealed = pd.read_csv(RUN_DIR / f"{stem}.csv"), pd.read_csv(RUN_DIR / f"{stem}.holdout.csv")
         assert len(discovery) and len(sealed)
+        # Negative controls reach the sealed table only, and every candidate is tested against them.
+        assert "nc_impacted_cerumen" in sealed.columns and not any(c.startswith("nc_") for c in discovery.columns)
+        assert prereg["negative_controls"] == ["impacted_cerumen", "regular_astigmatism", "verruca_vulgaris"]
+        assert prereg["positive_controls"] == ["age", "bmi_cov"]
+        for h in confirmation["hypotheses"]:
+            if "replicated" in h:
+                statuses = {nc["control"]: nc["status"] for nc in h["negative_controls"]}
+                assert statuses["regular_astigmatism"] == "too few events to test"  # no diagnoses planted
+                assert statuses["impacted_cerumen"] in {"no association", "associated"}
+        assert [pc["control"] for pc in confirmation["positive_controls"]] == ["age", "bmi_cov"]
+        assert confirmation["ledger"]["registrations"] >= 1
         kinds[stem] = prereg["survival_time"]
     # One measurement (value outcome) and one condition (time to event, tested with Cox).
     assert sorted(kinds.values(), key=str) == [None, "followup_days"]
     sent = "\n".join(_serialize(req) for _, req in aou_env)
     assert "prospective design" in sent and "sealed share" in sent
     assert "Holdout replication" not in sent  # confirmation results are never shown to an agent
+    assert "cerumen" not in sent  # nor are the negative controls
+    # Every outcome's hypotheses share one ledger, since the same participants are sealed for all of them.
+    ledger = [json.loads(line) for line in (RUN_DIR / "holdout_ledger.jsonl").read_text().splitlines()]
+    assert {e["stem"] for e in ledger} <= set(kinds) and len({e["key"] for e in ledger}) == 1
+    assert "Sealed holdout ledger" in Path(result["summary_path"]).read_text()
