@@ -41,3 +41,11 @@ def test_environment_table_lists_settings_and_machine():
            "memory_available_gb": 12, "disk_free_gb": 80, "packages": {"pandas": "2"}, "settings": {"CODAS_X": "1"}}
     table = views.environment_table(env, project="p")
     assert table.iloc[0].tolist() == ["project", "p"] and "package pandas" in set(table["setting"])
+
+
+def test_confirmation_table_with_nothing_registered(tmp_path):
+    import json
+
+    (tmp_path / "x_confirmation.json").write_text(json.dumps({"hypotheses": []}))
+    table = views.confirmation_table({"summary_path": str(tmp_path / "s.md")}, "x")
+    assert table.empty and "failed checks" in table.columns

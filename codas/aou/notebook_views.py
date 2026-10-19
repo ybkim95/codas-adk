@@ -271,7 +271,9 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
                      "status": h.get("status"), "robust": h.get("robust"),
                      "dose-response": (h.get("dose_response") or {}).get("monotone"),
                      "failed checks": ", ".join(h.get("falsification_failed") or []) or "-"})
-    return pd.DataFrame(rows)
+    columns = ["feature", "discovery rho", "holdout effect", "95% CI", "q", "status", "robust", "dose-response",
+               "failed checks"]
+    return pd.DataFrame(rows, columns=columns)  # keeps its columns when nothing was pre-registered
 
 
 def forest_figure(result: dict[str, Any]):
