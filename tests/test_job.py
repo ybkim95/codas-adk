@@ -73,3 +73,42 @@ def test_the_job_records_its_result_or_its_masked_error(tmp_path, monkeypatch):
         sys.stdout, sys.stderr = stdout, stderr
     st = job.status(out)
     assert st["state"] == "failed" and "200001110695" not in st["error"] and "<id>" in st["error"]
+
+
+def test_heartbeat_and_environment_snapshot(tmp_path):
+    beats = tmp_path / "beats.jsonl"
+    hb = job._Heartbeat(beats, period=0.05).start()
+    hb.now.update(outcome="Some outcome", agent="scout_agent")
+    time.sleep(0.3)
+    hb.stop()
+    rows = [json.loads(line) for line in beats.read_text().splitlines()]
+    assert len(rows) >= 2 and rows[-1]["outcome"] == "Some outcome" and rows[-1]["agent"] == "scout_agent"
+    assert {"elapsed_min", "rss_gb", "memory_available_gb", "load_1min"} <= set(rows[-1])
+    env = job.environment(tmp_path)
+    assert env["cpus"] and len(env["analysis_code"]) == 12 and "packages" in env
+    assert all(k.startswith(("GOOGLE_CLOUD", "CODAS_")) for k in env["settings"])  # never secrets
+
+
+def test_the_notebook_stops_when_the_page_is_an_older_copy(tmp_path):
+    """Cell 1's guard, run against a repository whose committed notebook carries another version."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    cells = json.loads((root / "notebooks/aou_codas_quickstart.ipynb").read_text())["cells"]
+    setup = next("".join(c["source"]) for c in cells if "def check_this_page_is_current" in "".join(c["source"]))
+    stamped = __import__("re").search(r'NOTEBOOK_VERSION = "([0-9a-f]+)"', setup).group(1)
+    assert stamped != "__NOTEBOOK_VERSION__"
+    definitions = setup.split("\nupdate_checkout()\n")[0]
+    repo = tmp_path / "repo"
+    (repo / "notebooks").mkdir(parents=True)
+    (repo / "notebooks/aou_codas_quickstart.ipynb").write_text(json.dumps({"cells": [{"source": setup}]}))
+    for cmd in (["init", "-q"], ["add", "."], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True)
+    ns: dict = {}
+    exec(definitions.replace("assert (REPO", "# assert (REPO"), ns)
+    ns["REPO"] = repo
+    ns["check_this_page_is_current"]()          # the page matches the checkout: carries on
+    ns["NOTEBOOK_VERSION"] = "0123456789ab"     # an older page
+    with pytest.raises(SystemExit, match="older copy of the notebook"):
+        ns["check_this_page_is_current"]()

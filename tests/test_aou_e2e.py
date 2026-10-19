@@ -433,3 +433,74 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
     ledger = [json.loads(line) for line in (RUN_DIR / "holdout_ledger.jsonl").read_text().splitlines()]
     assert {e["stem"] for e in ledger} <= set(kinds) and len({e["key"] for e in ledger}) == 1
     assert "Sealed holdout ledger" in Path(result["summary_path"]).read_text()
+    _check_views(result)
+
+
+def _check_views(result):
+    """The notebook's tables and figures build from a real exploration's outputs, and show nothing
+    participant-level. CODAS_VIEW_SNAPSHOTS=<dir> also saves each figure as a PNG to look at."""
+    import os
+
+    from codas.aou import notebook_views as views
+
+    snapshots = os.getenv("CODAS_VIEW_SNAPSHOTS")
+    figures = {"feasibility": views.feasibility_figure(result["rows"], result["chosen"]),
+               "timing": views.timing_figure(result), "forest": views.forest_figure(result)}
+    runs = views.runs_table(result)
+    assert list(runs["outcome"]) == [r["cohort"] for r in result["runs"]] and (runs["status"] == "finished").all()
+    assert (views.timing_table(result).to_numpy() >= 0).all()
+    for r in result["runs"]:
+        figures[f"candidates_{r['cohort']}"] = views.candidates_figure(result, r["cohort"])
+        table1, conf = views.cohort_table(result, r["cohort"]), views.confirmation_table(result, r["cohort"])
+        assert table1 is not None and list(table1.columns) == ["characteristic", "discovery", "holdout"]
+        assert conf is not None and {"feature", "status", "failed checks"} <= set(conf.columns)
+    assert figures["feasibility"] is not None and figures["timing"] is not None
+    _run_result_cells(result)
+    for name, fig in figures.items():
+        if fig is not None and snapshots:
+            os.makedirs(snapshots, exist_ok=True)
+            fig.savefig(f"{snapshots}/{name}.png", dpi=110)
+
+
+def _run_result_cells(result):
+    """Execute the notebook's own cells that run after the exploration (results, holdout forest, output
+    links, status) against a real result, so an error in notebook code fails a test, not a Workbench run."""
+    import os
+
+    import nbformat
+
+    from codas.aou import job, notebook_views as views
+
+    def Markdown(text):  # noqa: N802 - stands in for IPython.display.Markdown
+        assert isinstance(text, str)
+        return ("markdown", text)
+
+    def FileLink(path, result_html_prefix=""):  # noqa: N802
+        assert Path(path).exists(), path
+        return ("link", path)
+
+    nb = nbformat.read(ROOT / "notebooks" / "aou_codas_quickstart.ipynb", as_version=4)
+    shown = []
+    ns = {"result": result, "views": views, "job": job, "Markdown": Markdown, "display": shown.append,
+          "Path": Path, "os": os, "FileLink": FileLink}
+    code = [c.source for c in nb.cells if c.cell_type == "code"]
+    after = code[code.index(next(c for c in code if "job.run_or_attach" in c)) + 1:]
+    exploration = next(c for c in code if "job.run_or_attach" in c).split("\n", 2)[2]  # skip the run itself
+    import sys
+    import types
+
+    fake = types.ModuleType("IPython.display")  # the notebook imports these; Jupyter is not needed here
+    fake.Markdown, fake.FileLink, fake.display = Markdown, FileLink, shown.append
+    saved = {k: sys.modules.get(k) for k in ("IPython", "IPython.display")}
+    sys.modules["IPython"], sys.modules["IPython.display"] = types.ModuleType("IPython"), fake
+    sys.modules["IPython"].display = fake
+    try:
+        for source in [exploration, *after]:
+            exec(compile(source, "notebook-cell", "exec"), ns)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    assert any(getattr(x, "savefig", None) for x in shown)  # figures were displayed

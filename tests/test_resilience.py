@@ -146,7 +146,10 @@ def test_rerun_resumes_and_redoes_only_what_is_missing_or_stale(synthetic_explor
     explore()                                   # everything finished: nothing runs
     assert calls == []
     monkeypatch.setattr(runner, "_code_version", lambda: "a-later-commit")
-    explore()                                   # the code changed: results are stale, both run again
+    explore()                                   # a commit that leaves the analysis code alone: reused
+    assert calls == []
+    monkeypatch.setattr(runner, "_analysis_version", lambda root=None: "changed-analysis")
+    explore()                                   # the analysis code changed: results are stale, both run again
     assert calls == ["explore_hdl", "explore_depression"]
     calls.clear()
     explore(rerun=True)                         # forced
@@ -219,3 +222,14 @@ def test_identifiers_in_error_text_are_masked():
     text = mask_identifiers("int64 overflow: 200001110695 * 2654435761; 15 participants; p=0.000123456789")
     assert "200001110695" not in text and "2654435761" not in text and "<id> * <id>" in text
     assert "<=20 participants" in text and "0.000123456789" in text
+
+
+def test_the_resume_key_follows_the_analysis_code_only(tmp_path):
+    for rel in ("codas/core/engine.py", "codas/agents/prompts.py", "codas/aou/cohort.py", "codas/aou/job.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x = 1\n")
+    before = runner._analysis_version(tmp_path)
+    (tmp_path / "codas/aou/job.py").write_text("x = 2\n")     # orchestration / display code
+    assert runner._analysis_version(tmp_path) == before
+    (tmp_path / "codas/agents/prompts.py").write_text("x = 2\n")  # analysis code
+    assert runner._analysis_version(tmp_path) != before

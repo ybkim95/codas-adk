@@ -222,6 +222,24 @@ calls to `codas_reports/aou/explore.log`, masked for counts of 1-20 and for long
 database error can quote an identifier). Each outcome's trace (`<cohort>_trace.jsonl`) is appended as
 events happen, so a run that dies midway still shows where it stopped.
 
+For debugging, the job also writes `codas_reports/aou/explore_env.json` (commit, analysis-code
+version, package versions, CPUs, memory, free disk, the run's settings) and a heartbeat every minute
+to `explore_heartbeat.jsonl` (elapsed time, current outcome and agent, process and machine memory,
+load). A log whose heartbeat simply stops, with no error, means the process or machine was stopped
+(for example by the app's autostop idle time); memory falling towards zero before that means it ran
+out of memory. The Status cell charts it.
+
+Finished outcomes are reused when the exploration runs again with the same spec, goal and analysis
+code (a hash of `codas/core`, `codas/agents` and the AoU cohort, feasibility, confirmation, privacy
+and Table 1 modules); changes to the notebook, the job, the views or the PDF do not force reruns.
+
+The notebook stamps its own version into the first cell and stops when the page shows an older copy
+than the checkout holds (the browser does not refresh a notebook that changed on disk). Each step
+shows tables and figures (`codas/aou/notebook_views.py`): the environment and model probe, the
+schema and concept checks, a feasibility chart, the runs table and time per phase, per-outcome
+cohort characteristics, candidates and holdout results, a forest plot across outcomes, and the job's
+memory over time.
+
 ### Choosing outcomes yourself
 
 The ranking favours whichever outcomes have the largest effective sample. To run specific catalog

@@ -267,8 +267,27 @@ def _code_version() -> str:
         return "unknown"
 
 
+# The code that decides what an outcome's results are. Changes elsewhere (the notebook, the background
+# job, report rendering, views) leave finished outcomes reusable; a change here reruns them.
+ANALYSIS_CODE = ("codas/core", "codas/agents", "codas/aou/cohort.py", "codas/aou/feasibility.py",
+                 "codas/aou/confirm.py", "codas/aou/privacy.py", "codas/aou/table1.py")
+
+
+def _analysis_version(root: Path | None = None) -> str:
+    """A hash of the analysis code's source files."""
+    base = Path(root or cohort.ROOT)
+    digest = hashlib.sha256()
+    for entry in ANALYSIS_CODE:
+        path = base / entry
+        for f in sorted(path.rglob("*.py")) if path.is_dir() else [path]:
+            if f.exists():
+                digest.update(f.relative_to(base).as_posix().encode() + b"\0" + f.read_bytes())
+    return digest.hexdigest()
+
+
 def _run_key(spec: CohortSpec, goal: str) -> str:
-    payload = json.dumps({"spec": asdict(spec), "goal": goal, "code": _code_version()}, sort_keys=True, default=str)
+    payload = json.dumps({"spec": asdict(spec), "goal": goal, "code": _analysis_version()}, sort_keys=True,
+                         default=str)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -455,4 +474,5 @@ def explore(
                     runs.append(result)
             summary_path = _write_summary(out, table, runs, keys)
 
-    return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path)}
+    return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path),
+            "rows": mask_small_counts(rows)}

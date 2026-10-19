@@ -32,6 +32,97 @@ from codas.aou.privacy import mask_identifiers
 STATE_NAME = "explore_job.json"
 RESULT_NAME = "explore_result.json"
 LOG_NAME = "explore.log"
+ENV_NAME = "explore_env.json"
+HEARTBEAT_NAME = "explore_heartbeat.jsonl"
+HEARTBEAT_S = float(os.getenv("CODAS_HEARTBEAT_S", "60"))
+# Settings worth recording for debugging; nothing else from the environment is written.
+_SETTINGS = ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "CODAS_AOU_CDR", "CODAS_GEMINI_REASONING_MODEL",
+             "CODAS_GEMINI_FAST_MODEL", "CODAS_GEMINI_FALLBACK_MODELS", "CODAS_MODEL_TIMEOUT_S",
+             "CODAS_MODEL_TIMEOUT_RETRIES", "CODAS_OUTCOME_TIMEOUT_MIN", "CODAS_MODEL_RETRY_ATTEMPTS")
+
+
+def _meminfo() -> dict[str, float]:
+    """Total and available memory of the machine, in GB (Linux)."""
+    out: dict[str, float] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, value = line.split(":", 1)
+            if key in ("MemTotal", "MemAvailable"):
+                out[key] = round(int(value.split()[0]) / 1024 / 1024, 2)
+    except OSError:
+        pass
+    return out
+
+
+def _rss_gb() -> float | None:
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return round(int(line.split()[1]) / 1024 / 1024, 3)
+    except OSError:
+        pass
+    return None
+
+
+def environment(out_dir: str | Path = DEFAULT_OUT_DIR) -> dict[str, Any]:
+    """What the run is running on: code versions, packages, machine size and the run's settings."""
+    import platform
+    import shutil
+    from importlib import metadata
+
+    from codas.aou import runner
+
+    packages = {}
+    for name in ("google-adk", "google-genai", "google-cloud-bigquery", "pandas", "numpy", "scikit-learn", "scipy"):
+        try:
+            packages[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            packages[name] = None
+    mem = _meminfo()
+    out = Path(out_dir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    return {"commit": runner._code_version()[:12], "analysis_code": runner._analysis_version()[:12],
+            "python": platform.python_version(), "packages": packages, "cpus": os.cpu_count(),
+            "memory_total_gb": mem.get("MemTotal"), "memory_available_gb": mem.get("MemAvailable"),
+            "disk_free_gb": round(shutil.disk_usage(out).free / 1e9, 1),
+            "settings": {k: os.environ[k] for k in _SETTINGS if os.environ.get(k)}}
+
+
+class _Heartbeat:
+    """Writes a status line every HEARTBEAT_S seconds: how long the run has gone, what it is doing, and
+    the memory it uses. A log that just stops, with no error, means the process or machine was stopped."""
+
+    def __init__(self, path: Path, period: float = HEARTBEAT_S):
+        import threading
+
+        self.path, self.period, self.started = path, period, time.time()
+        self.now = {"outcome": None, "agent": None, "tool": None}
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> "_Heartbeat":
+        self.path.write_text("", encoding="utf-8")
+        self._thread.start()
+        return self
+
+    def beat(self) -> dict[str, Any]:
+        mem = _meminfo()
+        load = os.getloadavg()[0] if hasattr(os, "getloadavg") else None
+        record = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "elapsed_min": round((time.time() - self.started) / 60, 1),
+                  **self.now, "rss_gb": _rss_gb(), "memory_available_gb": mem.get("MemAvailable"),
+                  "load_1min": None if load is None else round(load, 2)}
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+        return record
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.period):
+            r = self.beat()
+            _say(f"heartbeat: {r['elapsed_min']} min, outcome {r['outcome']}, agent {r['agent']}, "
+                 f"process memory {r['rss_gb']} GB, machine memory free {r['memory_available_gb']} GB, load {r['load_1min']}")
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 def _paths(out_dir: str | Path) -> tuple[Path, Path, Path]:
@@ -77,7 +168,11 @@ def status(out_dir: str | Path = DEFAULT_OUT_DIR, tail: int = 20) -> dict[str, A
     if state.get("state") == "running" and not _alive(int(state.get("pid") or 0)):
         state["state"] = "stopped"
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.exists() else []
-    state["log_path"], state["log_tail"] = str(log_path), lines[-tail:]
+    state["log_path"], state["log_tail"] = str(log_path), lines[-tail:] if tail else []
+    beats = log_path.with_name(HEARTBEAT_NAME)
+    if beats.exists():
+        rows = [json.loads(line) for line in beats.read_text(encoding="utf-8").splitlines() if line.strip()]
+        state["last_heartbeat"] = rows[-1] if rows else None
     if state["state"] == "finished":
         state["result"] = _read(result_path)
     return state
@@ -171,9 +266,32 @@ def main(argv: list[str]) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")
     args = json.loads(argv[0])
     out = Path(args["out_dir"])
-    state_path, _, result_path = _paths(out)
+    state_path, log_path, result_path = _paths(out)
     ending: dict[str, Any] = {}
+    heartbeat = _Heartbeat(log_path.with_name(HEARTBEAT_NAME))
     try:
+        env = environment(out)
+        _write(log_path.with_name(ENV_NAME), env)
+        _say(f"environment: commit {env['commit']}, analysis code {env['analysis_code']}, python {env['python']}, "
+             f"{env['cpus']} CPUs, memory {env['memory_available_gb']} of {env['memory_total_gb']} GB free, "
+             f"disk {env['disk_free_gb']} GB free")
+        _say(f"settings: {json.dumps(env['settings'])}")
+        heartbeat.start()
+
+        def on_log(message: str) -> None:
+            text = str(message)
+            if text.strip().startswith("=== ") and text.strip().endswith(" ==="):
+                heartbeat.now.update(outcome=text.strip()[4:-4], agent=None, tool=None)
+            _say(text.strip("\n") if text.strip() else text)
+
+        def on_agent(agent: str) -> None:
+            heartbeat.now.update(agent=agent, tool=None)
+            _say(f"  {agent} is working")
+
+        def on_tool(agent: str, tool: str) -> None:
+            heartbeat.now.update(tool=tool)
+            _say(f"    {agent:24s} -> {tool}()")
+
         from google.cloud import bigquery
 
         from codas.aou import runner
@@ -182,9 +300,8 @@ def main(argv: list[str]) -> int:
         client = bigquery.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
         result = runner.explore(
             args["catalog"], CohortSpec.from_json(args["spec"]), args.get("cdr"), client=client,
-            top_k=int(args.get("top_k", 3)), outcome_names=args.get("outcomes") or None, out_dir=out, log=_say,
-            on_tool_call=lambda agent, tool: _say(f"    {agent:24s} -> {tool}()"),
-            on_agent=lambda agent: _say(f"  {agent} is working"))
+            top_k=int(args.get("top_k", 3)), outcome_names=args.get("outcomes") or None, out_dir=out, log=on_log,
+            on_tool_call=on_tool, on_agent=on_agent)
         _write(result_path, result)
         ending = {"state": "finished", "summary_path": result["summary_path"]}
         _say("exploration finished")
@@ -194,6 +311,7 @@ def main(argv: list[str]) -> int:
         ending = {"state": "failed", "error": mask_identifiers(f"{type(exc).__name__}: {str(exc)[:300]}")}
         return 1
     finally:
+        heartbeat.stop()
         # Re-read the state: the launcher may have written it after this process started.
         _write(state_path, {**_read(state_path), **ending, "ended": time.strftime("%Y-%m-%d %H:%M:%S")})
         sys.stdout.flush()

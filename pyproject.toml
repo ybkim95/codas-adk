@@ -30,10 +30,10 @@ agent = ["google-adk>=2.4,<2.5", "google-genai"]
 service = ["fastapi", "uvicorn", "pydantic", "python-multipart"]
 # All of Us Researcher Workbench: BigQuery cohort extraction (codas.aou) and Claude on Vertex AI.
 aou = ["google-adk>=2.4,<2.5", "google-genai", "google-cloud-bigquery", "db-dtypes", "anthropic[vertex]",
-       "fpdf2>=2.8", "markdown>=3.5"]
+       "fpdf2>=2.8", "markdown>=3.5", "matplotlib>=3.7"]
 # duckdb + sqlglot run the All of Us extractor's BigQuery SQL on a synthetic CDR in tests (optional;
 # those tests skip without them).
-dev = ["pytest", "duckdb", "sqlglot", "fpdf2>=2.8", "markdown>=3.5"]
+dev = ["pytest", "duckdb", "sqlglot", "fpdf2>=2.8", "markdown>=3.5", "matplotlib>=3.7", "nbformat"]
 all = ["google-adk>=2.4,<2.5", "google-genai", "fastapi", "uvicorn", "pydantic", "python-multipart"]
 
 # Only the importable Python package is installed. examples/ and tests/ are not shipped.
