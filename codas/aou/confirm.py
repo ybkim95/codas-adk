@@ -245,10 +245,8 @@ def ledger_summary(out_dir: Path, key: str, alpha: float = 0.05) -> dict[str, An
     tested, from how many registrations, and which replicate on that pooled correction."""
     entries = _ledger_entries(Path(out_dir) / LEDGER_NAME, key)
     q = _bh([e["p"] for e in entries])
-    hits = [f"{e['stem']}: {e['feature']}" for e, qv in zip(entries, q)
-            if e.get("same_direction") and np.isfinite(qv) and qv <= alpha]
-    # A feature registered by several runs is listed once, with how many registrations replicated it.
-    replicated = [name if hits.count(name) == 1 else f"{name} (x{hits.count(name)})" for name in dict.fromkeys(hits)]
+    replicated = [f"{e['stem']}: {e['feature']}" for e, qv in zip(entries, q)
+                  if e.get("same_direction") and np.isfinite(qv) and qv <= alpha]
     return {"key": key, "hypotheses": len(entries), "registrations": len({e["prereg"] for e in entries}),
             "replicated": replicated}
 

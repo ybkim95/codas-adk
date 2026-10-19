@@ -345,6 +345,9 @@ def _ledger_lines(out: Path, keys: list[str]) -> list[str]:
         led = ledger_summary(out, key)
         if not led["hypotheses"]:
             continue
+        # A candidate registered by several runs is listed once, with how many registrations replicated it.
+        hits = led["replicated"]
+        led["replicated"] = [h if hits.count(h) == 1 else f"{h} (x{hits.count(h)})" for h in dict.fromkeys(hits)]
         lines += ["## Sealed holdout ledger", "",
                   f"{led['hypotheses']} hypotheses from {led['registrations']} pre-registrations have been tested on "
                   "this holdout. Corrected together (BH, q <= 0.05, same direction as discovery), "
