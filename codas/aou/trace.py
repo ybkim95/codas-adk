@@ -36,8 +36,13 @@ def _is_loop(node: Any) -> bool:
 class TraceRecorder:
     """Collects masked events from one run of ``root_agent`` and summarises phase coverage."""
 
-    def __init__(self, root_agent: Any = None):
+    def __init__(self, root_agent: Any = None, stream_path: str | Path | None = None):
         self.events: list[dict[str, Any]] = []
+        # Events are also appended here as they happen, so a run that dies midway still leaves its trace.
+        self.stream_path = Path(stream_path) if stream_path else None
+        if self.stream_path:
+            self.stream_path.parent.mkdir(parents=True, exist_ok=True)
+            self.stream_path.write_text("", encoding="utf-8")
         self.phase_of: dict[str, str] = {}
         self.loop_of: dict[str, str] = {}
         self.loop_first: dict[str, str] = {}
@@ -67,6 +72,14 @@ class TraceRecorder:
         return found
 
     def record(self, event: Any) -> None:
+        start = len(self.events)
+        self._record(event)
+        if self.stream_path and len(self.events) > start:
+            with self.stream_path.open("a", encoding="utf-8") as fh:
+                for e in self.events[start:]:
+                    fh.write(json.dumps(e, default=str) + "\n")
+
+    def _record(self, event: Any) -> None:
         author = str(getattr(event, "author", "") or "")
         loop = self.loop_of.get(author)
         round_no = None

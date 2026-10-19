@@ -126,6 +126,16 @@ def mask_small_counts_in_text(text: str) -> str:
     return _N_NOUN.sub(_noun, _N_EQUALS.sub(_eq, text))
 
 
+# A run of 9 or more digits in an error message is an identifier (All of Us person ids have 12 digits);
+# a database error can quote one, and an identifier must not leave the engine either.
+_LONG_NUMBER = re.compile(r"(?<![\d.])\d{9,}(?![\d.])")
+
+
+def mask_identifiers(text: str) -> str:
+    """Replace long digit runs (identifiers) and participant counts of 1-20 in free text."""
+    return mask_small_counts_in_text(_LONG_NUMBER.sub("<id>", text or ""))
+
+
 def sanitize_shared_state(state: Any) -> None:
     """Mask small counts in the memory keys that prompts interpolate ({fact_sheet?}, {rounds?})."""
     for key in ("fact_sheet", "rounds"):

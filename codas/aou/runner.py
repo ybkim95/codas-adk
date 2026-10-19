@@ -24,7 +24,7 @@ from codas.aou import feasibility as feas
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
 from codas.aou.confirm import confirm, confirmation_markdown, ledger_summary, preregister
-from codas.aou.privacy import check_llm_backend, mask_small_counts, mask_small_counts_in_text
+from codas.aou.privacy import check_llm_backend, mask_identifiers, mask_small_counts, mask_small_counts_in_text
 from codas.aou.table1 import cohort_table
 from codas.aou.trace import TraceRecorder
 
@@ -87,9 +87,13 @@ def _describe(covariate: Any) -> str:
     return f"1 if a {covariate.kind} record starts {span} before the index date"
 
 
+# Wall-clock budget for one outcome's agent run; a run past it is stopped and reported as failed.
+OUTCOME_TIMEOUT_MIN = float(os.getenv("CODAS_OUTCOME_TIMEOUT_MIN", "120"))
+
+
 async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
                             context_columns: list[str] | None = None,
-                            recorder: TraceRecorder | None = None) -> dict[str, Any]:
+                            recorder: TraceRecorder | None = None, on_agent: Any = None) -> dict[str, Any]:
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
@@ -105,9 +109,13 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
                                   state={"csv_path": str(csv), "context_columns": list(context_columns or [])})
     runner = Runner(app_name="codas_aou", agent=root_agent, session_service=sessions)
     message = types.Content(role="user", parts=[types.Part(text=goal)])
+    speaking = None
     async for event in runner.run_async(user_id="aou", session_id=sid, new_message=message):
         if recorder is not None:
             recorder.record(event)
+        if on_agent and event.author != speaking:
+            speaking = event.author
+            on_agent(speaking)
         for part in getattr(getattr(event, "content", None), "parts", None) or []:
             call = getattr(part, "function_call", None)
             if call and on_tool_call:
@@ -117,15 +125,23 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
 
 
 def run_agents(csv: str | Path, goal: str, on_tool_call: Any = None,
-               context_columns: list[str] | None = None, recorder: TraceRecorder | None = None) -> dict[str, Any]:
+               context_columns: list[str] | None = None, recorder: TraceRecorder | None = None,
+               on_agent: Any = None, timeout_min: float | None = None) -> dict[str, Any]:
     """Run the CoDaS agent graph on ``csv`` with the AoU guard on, and return the final session state.
 
     ``context_columns`` are adjustment-only columns (the spec's covariates): never screened as
-    candidates, available to be declared as confounders. ``recorder`` collects the full agent trace."""
+    candidates, available to be declared as confounders. ``recorder`` collects the full agent trace;
+    ``on_agent`` is called with each agent's name when it starts its turn. A run longer than
+    ``timeout_min`` (default OUTCOME_TIMEOUT_MIN) raises TimeoutError."""
     os.environ["CODAS_AOU_MODE"] = "1"
     check_llm_backend()  # the graph may have been imported before AoU mode was switched on
-    return _run_sync(_run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call, context_columns,
-                                       recorder))
+    minutes = OUTCOME_TIMEOUT_MIN if timeout_min is None else timeout_min
+    coro = _run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call, context_columns, recorder,
+                             on_agent)
+    try:
+        return _run_sync(asyncio.wait_for(coro, timeout=minutes * 60))
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"the agents did not finish within {minutes:g} minutes") from exc
 
 
 def _run_sync(coro: Any) -> Any:
@@ -320,12 +336,13 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_key
 
 
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
-             out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None) -> dict[str, Any]:
+             out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None,
+             on_agent: Any = None) -> dict[str, Any]:
     """Extract one cohort, run the agents on it, save the masked outputs and the agent trace."""
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
-    recorder = TraceRecorder()
+    recorder = TraceRecorder(stream_path=Path(out_dir).expanduser().resolve() / f"{spec.name}_trace.jsonl")
     context = [c.name for c in spec.covariates] + ([FOLLOWUP_COLUMN] if is_survival(spec) else [])
-    state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder)
+    state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder, on_agent=on_agent)
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
     if spec.holdout_fraction > 0 and sealed.exists():
@@ -356,6 +373,7 @@ def explore(
     on_tool_call: Any = None,
     log: Any = print,
     rerun: bool = False,
+    on_agent: Any = None,
 ) -> dict[str, Any]:
     """Verify the catalog, screen feasibility, then run CoDaS on the top-K outcomes.
 
@@ -426,9 +444,9 @@ def explore(
                 log(f"\n=== {o.label} ===")
                 try:
                     result = run_spec(spec, cdr, label=o.label, client=client, out_dir=out, check_schema=False,
-                                      on_tool_call=on_tool_call)
+                                      on_tool_call=on_tool_call, on_agent=on_agent)
                 except Exception as exc:  # noqa: BLE001 - one outcome's failure must not discard the others
-                    reason = mask_small_counts_in_text(f"{type(exc).__name__}: {str(exc)[:300]}")
+                    reason = mask_identifiers(f"{type(exc).__name__}: {str(exc)[:300]}")
                     log(f"  failed: {reason}\n  Run again to retry; finished outcomes are reused.")
                     runs.append({"cohort": spec.name, "failed": reason})
                 else:

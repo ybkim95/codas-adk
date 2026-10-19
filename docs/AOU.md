@@ -207,6 +207,21 @@ Vertex AI answers `429 RESOURCE_EXHAUSTED` when shared capacity is short (previe
   again resumes: outcomes already finished with the same spec, goal and code commit are reused
   (`<cohort>_run.json`), so only the failed or missing ones run; `rerun=True` forces all of them.
 
+Two time limits stop a run from hanging: a model request that sends nothing for
+`CODAS_MODEL_TIMEOUT_S` (default 600) is abandoned, retried `CODAS_MODEL_TIMEOUT_RETRIES` times
+(default 1) and then sent to the next model; an outcome whose agents run longer than
+`CODAS_OUTCOME_TIMEOUT_MIN` (default 120) is stopped and recorded as failed.
+
+### Background job and progress log
+
+The notebook runs the exploration as a background process (`codas/aou/job.py`), so it survives a
+page reload, a sleeping laptop or a dropped connection. Running the cell again re-attaches to the
+running job rather than starting a second one; `job.status()` reports running, finished, failed or
+stopped (the process died) from any kernel. The job writes a timestamped log of agent turns and tool
+calls to `codas_reports/aou/explore.log`, masked for counts of 1-20 and for long digit runs (a
+database error can quote an identifier). Each outcome's trace (`<cohort>_trace.jsonl`) is appended as
+events happen, so a run that dies midway still shows where it stopped.
+
 ### Choosing outcomes yourself
 
 The ranking favours whichever outcomes have the largest effective sample. To run specific catalog

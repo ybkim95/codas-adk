@@ -28,6 +28,7 @@ Prompts live in ``prompts.py``; guardrails/logging in ``callbacks.py``; session 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, AsyncGenerator
@@ -92,35 +93,72 @@ _MODEL_RETRY = HttpRetryOptions(
 # Status codes after which another model may succeed where this one did not: capacity exhausted, or
 # the model is not served here.
 _FALLBACK_CODES = {404, 429}
+# A request that sends nothing for this long is abandoned (a stalled connection otherwise waits
+# forever), retried once on the same model and then handed to the next one.
+MODEL_TIMEOUT_S = float(os.getenv("CODAS_MODEL_TIMEOUT_S", "600"))
+MODEL_TIMEOUT_RETRIES = int(os.getenv("CODAS_MODEL_TIMEOUT_RETRIES", "1"))
 LOGGER = logging.getLogger("codas.agents")
 
 
+class ModelTimeout(TimeoutError):
+    code = 408
+
+
+async def _within(agen: AsyncGenerator[LlmResponse, None], seconds: float) -> AsyncGenerator[LlmResponse, None]:
+    """Yield from ``agen``, raising ModelTimeout when the next chunk takes longer than ``seconds``."""
+    it = agen.__aiter__()
+    try:
+        while True:
+            try:
+                yield await asyncio.wait_for(it.__anext__(), timeout=seconds)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as exc:
+                raise ModelTimeout(f"no response within {seconds:.0f} s") from exc
+    finally:
+        await agen.aclose()
+
+
 class FallbackLlm(BaseLlm):
-    """Tries ``models`` in order: when one fails with a capacity or not-found error before it has
-    produced any output (its own retries already spent), the same request goes to the next one.
+    """Tries ``models`` in order: when one fails with a capacity or not-found error, or stays silent past
+    MODEL_TIMEOUT_S (after MODEL_TIMEOUT_RETRIES more tries), before it has produced any output, the same
+    request goes to the next one.
 
     Any other error, or one raised after part of a response was streamed, is raised unchanged, so two
     models' answers are never spliced together. ``model`` is the first model's name.
     """
 
     models: list[BaseLlm]
+    timeout_s: float = MODEL_TIMEOUT_S
+    timeout_retries: int = MODEL_TIMEOUT_RETRIES
 
     async def generate_content_async(self, llm_request: LlmRequest, stream: bool = False
                                      ) -> AsyncGenerator[LlmResponse, None]:
         for i, llm in enumerate(self.models):
             request = llm_request.model_copy(update={"model": llm.model})
-            produced = False
-            try:
-                async for response in llm.generate_content_async(request, stream=stream):
-                    produced = True
-                    yield response
-                return
-            except Exception as exc:  # noqa: BLE001 - re-raised unless another model can serve the call
-                code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-                if produced or code not in _FALLBACK_CODES or i == len(self.models) - 1:
-                    raise
-                LOGGER.warning("model %s unavailable (%s); retrying the call on %s",
-                               llm.model, code, self.models[i + 1].model)
+            for attempt in range(self.timeout_retries + 1):
+                produced = False
+                try:
+                    async for response in _within(llm.generate_content_async(request, stream=stream), self.timeout_s):
+                        produced = True
+                        yield response
+                    return
+                except ModelTimeout:
+                    if produced:
+                        raise
+                    LOGGER.warning("model %s: %s (try %d of %d)", llm.model, "no response within "
+                                   f"{self.timeout_s:.0f} s", attempt + 1, self.timeout_retries + 1)
+                    if attempt < self.timeout_retries:
+                        continue
+                    if i == len(self.models) - 1:
+                        raise
+                    break
+                except Exception as exc:  # noqa: BLE001 - re-raised unless another model can serve the call
+                    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                    if produced or code not in _FALLBACK_CODES or i == len(self.models) - 1:
+                        raise
+                    break
+            LOGGER.warning("model %s unavailable; retrying the call on %s", llm.model, self.models[i + 1].model)
 
 
 def _single_model(name: str) -> BaseLlm:
@@ -138,8 +176,7 @@ def _make_model(name: str, *fallbacks: str) -> BaseLlm:
     when it is out of capacity or not served."""
     extra = [m.strip() for m in os.getenv("CODAS_GEMINI_FALLBACK_MODELS", "").split(",") if m.strip()]
     names = list(dict.fromkeys(n.strip() for n in (name, *fallbacks, *extra) if n and n.strip()))
-    if len(names) == 1:
-        return _single_model(names[0])
+    # Even a single model is wrapped, so every call has the response timeout.
     return FallbackLlm(model=names[0], models=[_single_model(n) for n in names])
 
 

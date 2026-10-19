@@ -6,6 +6,7 @@ Offline: fake models and the synthetic DuckDB CDR; no model is called.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 from typing import AsyncGenerator
@@ -103,7 +104,7 @@ def synthetic_explore(monkeypatch):
     calls: list[str] = []
     failing: set[str] = set()
 
-    def fake_run_agents(csv, goal, on_tool_call=None, context_columns=None, recorder=None):
+    def fake_run_agents(csv, goal, on_tool_call=None, context_columns=None, recorder=None, **_):
         name = Path(csv).stem
         calls.append(name)
         if name in failing:
@@ -160,3 +161,61 @@ def test_each_model_tier_backs_up_the_other():
         pytest.skip("a single model serves both tiers")
     assert [m.model for m in reasoning.models][:2] == [reasoning.model, fast.model]
     assert [m.model for m in fast.models][:2] == [fast.model, reasoning.model]
+
+
+class _Silent(BaseLlm):
+    """A model whose connection stalls: it never sends anything."""
+
+    async def generate_content_async(self, llm_request: LlmRequest, stream: bool = False
+                                     ) -> AsyncGenerator[LlmResponse, None]:
+        SEEN.append(llm_request.model)
+        await asyncio.sleep(3600)
+        yield LlmResponse()
+
+
+def test_a_stalled_model_call_times_out_retries_and_falls_back():
+    import time
+
+    from codas.agents.agent import ModelTimeout
+
+    SEEN.clear()
+    llm = FallbackLlm(model="stuck", models=[_Silent(model="stuck"), _Fake(model="backup")], timeout_s=0.2,
+                      timeout_retries=1)
+    started = time.monotonic()
+    assert asyncio.run(_collect(llm)) == ["from backup"]
+    assert SEEN == ["stuck", "stuck", "backup"] and time.monotonic() - started < 5
+    SEEN.clear()
+    alone = FallbackLlm(model="stuck", models=[_Silent(model="stuck")], timeout_s=0.2, timeout_retries=0)
+    with pytest.raises(ModelTimeout):
+        asyncio.run(_collect(alone))
+
+
+def test_an_outcome_past_its_time_budget_is_stopped(monkeypatch):
+    async def forever(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(runner, "_run_agents_async", forever)
+    monkeypatch.setattr(runner, "check_llm_backend", lambda: None)
+    with pytest.raises(TimeoutError, match="did not finish within"):
+        runner.run_agents("x.csv", "goal", timeout_min=0.002)
+
+
+def test_trace_events_reach_disk_as_they_happen(tmp_path):
+    from types import SimpleNamespace
+
+    from codas.aou.trace import TraceRecorder
+
+    path = tmp_path / "run_trace.jsonl"
+    recorder = TraceRecorder(stream_path=path)
+    part = SimpleNamespace(thought=None, function_call=None, function_response=None, text="n = 12 so far")
+    recorder.record(SimpleNamespace(author="a", timestamp=1.0, content=SimpleNamespace(parts=[part])))
+    lines = path.read_text().splitlines()
+    assert len(lines) == 1 and "<=20" in lines[0]  # written before the run ends, and masked
+
+
+def test_identifiers_in_error_text_are_masked():
+    from codas.aou.privacy import mask_identifiers
+
+    text = mask_identifiers("int64 overflow: 200001110695 * 2654435761; 15 participants; p=0.000123456789")
+    assert "200001110695" not in text and "2654435761" not in text and "<id> * <id>" in text
+    assert "<=20 participants" in text and "0.000123456789" in text
