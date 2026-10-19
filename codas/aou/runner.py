@@ -208,16 +208,8 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
     if recorder is not None:
         files.update(recorder.write(out, stem))
         coverage_missing = recorder.coverage()["missing"]
-    try:
-        from codas.aou.pdf_report import build_pdf
-
-        meta = {"rows": fact_sheet.get("rows"), "code_version": _code_version()[:12],
-                "models": ", ".join(dict.fromkeys(filter(None, (os.getenv("CODAS_GEMINI_REASONING_MODEL"),
-                                                                 os.getenv("CODAS_GEMINI_FAST_MODEL")))))}
-        files["pdf"] = str(build_pdf(out, stem, phases, recorder.events if recorder else [],
-                                     recorder.coverage_markdown() if recorder else "", meta))
-    except Exception as exc:  # noqa: BLE001 - the PDF is a convenience; the run's files are already written
-        files["pdf_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    files.update(_compile_pdf(out, stem, phases, recorder.events if recorder else [],
+                              recorder.coverage_markdown() if recorder else "", fact_sheet.get("rows")))
     files["report_md"] = str(out / f"{stem}_report.md")
     files.update(_publish({k: v for k, v in files.items() if not k.endswith("_error")}, out))
     last = rounds[-1] if rounds else {}
@@ -240,6 +232,44 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
                         if state.get("confirmation") else None),
         "robust": state["confirmation"].get("robust") if state.get("confirmation") else None,
     })
+
+
+def _compile_pdf(out: Path, stem: str, phases: dict[str, Any], events: list[dict[str, Any]], coverage_md: str,
+                 rows: Any) -> dict[str, str]:
+    """Build ``<stem>_report.pdf``; a failure, or a section that could not be rendered, leaves its full
+    traceback in ``<stem>_pdf_error.txt``. Returns the file entries for the run summary."""
+    import traceback
+
+    error_file = out / f"{stem}_pdf_error.txt"
+    try:
+        from codas.aou.pdf_report import build_pdf
+
+        meta = {"rows": rows, "code_version": _code_version()[:12],
+                "models": ", ".join(dict.fromkeys(filter(None, (os.getenv("CODAS_GEMINI_REASONING_MODEL"),
+                                                                 os.getenv("CODAS_GEMINI_FAST_MODEL")))))}
+        files = {"pdf": str(build_pdf(out, stem, phases, events, coverage_md, meta))}
+        if error_file.exists():
+            files["pdf_warnings"] = str(error_file)
+        return files
+    except Exception as exc:  # noqa: BLE001 - the PDF is a convenience; the run's files are already written
+        error_file.write_text(mask_identifiers(traceback.format_exc()), encoding="utf-8")
+        return {"pdf_error": f"{type(exc).__name__}: {str(exc)[:200]}", "pdf_warnings": str(error_file)}
+
+
+def rebuild_pdf(out_dir: str | Path, stem: str) -> dict[str, str]:
+    """Compile an outcome's PDF again from what its run saved (``<stem>_state.json`` and the trace), without
+    running the agents. Returns the file entries (``pdf``, or ``pdf_error`` and ``pdf_warnings``), mirrored."""
+    out = Path(out_dir).expanduser().resolve()
+    state_file = out / f"{stem}_state.json"
+    if not state_file.exists():
+        state_file = reports_dir(out) / f"{stem}_state.json"
+    phases = json.loads(state_file.read_text(encoding="utf-8"))
+    trace = next((p for p in (out / f"{stem}_trace.jsonl", reports_dir(out) / f"{stem}_trace.jsonl") if p.exists()), None)
+    events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines() if line.strip()] if trace else []
+    coverage = "Rebuilt from the saved outputs; the trace file shows which agents ran in each phase and round."
+    files = _compile_pdf(out, stem, phases, events, coverage, (phases.get("fact_sheet") or {}).get("rows"))
+    files.update(_publish({k: v for k, v in files.items() if not k.endswith("_error")}, out))
+    return files
 
 
 def _with_coverage(confounders: list[str] | None, coverage: dict[str, Any] | None) -> str:
@@ -318,7 +348,8 @@ def _ledger_lines(out: Path, keys: list[str]) -> list[str]:
         lines += ["## Sealed holdout ledger", "",
                   f"{led['hypotheses']} hypotheses from {led['registrations']} pre-registrations have been tested on "
                   "this holdout. Corrected together (BH, q <= 0.05, same direction as discovery), "
-                  f"{len(led['replicated'])} replicate" + (": " + "; ".join(led["replicated"]) if led["replicated"] else "")
+                  f"{len(led['replicated'])} distinct candidates replicate"
+                  + (": " + "; ".join(led["replicated"]) if led["replicated"] else "")
                   + ".", ""]
     return lines
 

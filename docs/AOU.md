@@ -182,7 +182,11 @@ mirrored to `codas_reports/aou/`, because Jupyter does not serve files inside hi
   table and every round's critic/defender debate, mechanisms and novelty, strategy and artifacts,
   and an appendix with forest plots of the holdout effects (candidates and positive controls), the
   candidates' discovery effect sizes, the phase coverage and the fact sheet. Built
-  with `fpdf2` and `markdown` (pure Python); a Unicode font is used when installed.
+  with `fpdf2` and `markdown` (pure Python); a Unicode font is used when installed. Each section is
+  rendered on its own: one that fails is replaced by a note and its full traceback is written to
+  `<cohort>_pdf_error.txt`. `runner.rebuild_pdf(out_dir, cohort)` compiles a PDF again from the saved
+  state and trace without rerunning the agents; the notebook's outputs cell does this for any outcome
+  that has no PDF.
 * `<cohort>_trace.jsonl` / `<cohort>_trace.md`: the full agent trace, every agent's text, tool call
   and tool response in order, labelled with phase (a child of the root agent) and discovery round.
   The responses are the ones the model received, masked for counts of 1-20.

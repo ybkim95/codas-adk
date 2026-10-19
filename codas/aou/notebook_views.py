@@ -22,11 +22,28 @@ BLUE, ORANGE, AQUA, GRAY = "#2a78d6", "#eb6834", "#1baf7a", "#b5b4ad"
 INK, INK_2, SURFACE = "#0b0b0b", "#52514e", "#fcfcfb"
 
 
+class Chart:
+    """A figure that a notebook shows as an image. A bare matplotlib Figure made without pyplot has no
+    display formatter in some Jupyter setups and prints as ``<Figure size ...>``; a PNG always renders."""
+
+    def __init__(self, figure: Any):
+        self.figure = figure
+
+    def _repr_png_(self) -> bytes:
+        import io
+
+        buffer = io.BytesIO()
+        self.figure.savefig(buffer, format="png", dpi=110, facecolor=SURFACE)
+        return buffer.getvalue()
+
+    def savefig(self, *args: Any, **kwargs: Any) -> None:
+        self.figure.savefig(*args, **kwargs)
+
+
 def _figure(width: float, height: float):
     from matplotlib.figure import Figure
 
-    fig = Figure(figsize=(width, height), facecolor=SURFACE, layout="constrained")
-    return fig
+    return Figure(figsize=(width, height), facecolor=SURFACE, layout="constrained")
 
 
 def _style(ax) -> None:
@@ -119,7 +136,7 @@ def feasibility_figure(rows: list[dict[str, Any]], chosen: list[str]):
         ax.set_title(title, loc="left", fontsize=9, color=INK)
         _style(ax)
     fig.suptitle("Feasibility screen (blue = selected for CoDaS)", x=0.01, ha="left", fontsize=10, color=INK)
-    return fig
+    return Chart(fig)
 
 
 # --- runs ---------------------------------------------------------------------------------------
@@ -143,6 +160,17 @@ def run_minutes(out: Path, stem: str) -> float | None:
     return round((trace["time"].max() - trace["time"].min()) / 60, 1)
 
 
+def _metric(text: Any) -> Any:
+    """'r2=0.0309205187' -> 'r2 = 0.031'."""
+    if isinstance(text, str) and "=" in text:
+        name, value = text.split("=", 1)
+        try:
+            return f"{name} = {float(value):.3f}"
+        except ValueError:
+            return text
+    return text
+
+
 def runs_table(result: dict[str, Any]) -> pd.DataFrame:
     """One row per outcome: how it ended and its headline numbers (masked)."""
     out = _out_dir(result)
@@ -153,7 +181,7 @@ def runs_table(result: dict[str, Any]) -> pd.DataFrame:
         rows.append({
             "outcome": stem, "status": "failed" if r.get("failed") else "finished",
             "participants (discovery)": r.get("rows"), "rounds": r.get("rounds"),
-            "validated (last round)": r.get("validated_count"), "held-out model": r.get("ml_metric"),
+            "validated (last round)": r.get("validated_count"), "held-out model": _metric(r.get("ml_metric")),
             "replicated on holdout": r.get("replication"), "robust": r.get("robust"),
             "negative-control flags": sum(bool(h.get("falsification_failed")) for h in conf.get("hypotheses") or []),
             "minutes": run_minutes(out, stem), "error": r.get("failed") or "",
@@ -197,7 +225,7 @@ def timing_figure(result: dict[str, Any]):
               bbox_to_anchor=(0, 1.0))
     fig.suptitle("Time per phase and outcome", x=0.01, ha="left", fontsize=10, color=INK)
     _style(ax)
-    return fig
+    return Chart(fig)
 
 
 def candidates_figure(result: dict[str, Any], stem: str):
@@ -218,7 +246,7 @@ def candidates_figure(result: dict[str, Any], stem: str):
     ax.set_title(f"{stem}: candidates in the last round (blue = validated, gray = conditional)", loc="left",
                  fontsize=9, color=INK)
     _style(ax)
-    return fig
+    return Chart(fig)
 
 
 def cohort_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
@@ -284,7 +312,7 @@ def forest_figure(result: dict[str, Any]):
         _style(ax)
     fig.suptitle("Sealed holdout: pre-registered candidates (filled = replicated)", x=0.01, ha="left",
                  fontsize=10, color=INK)
-    return fig
+    return Chart(fig)
 
 
 # --- background job ------------------------------------------------------------------------------
@@ -316,4 +344,4 @@ def heartbeat_figure(log_path: str | Path):
     fig.suptitle("Background job: memory over time (one point per heartbeat)", x=0.01, ha="left", fontsize=10,
                  color=INK)
     _style(ax)
-    return fig
+    return Chart(fig)

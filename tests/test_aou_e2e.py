@@ -455,6 +455,7 @@ def _check_views(result):
         assert table1 is not None and list(table1.columns) == ["characteristic", "discovery", "holdout"]
         assert conf is not None and {"feature", "status", "failed checks"} <= set(conf.columns)
     assert figures["feasibility"] is not None and figures["timing"] is not None
+    assert all(f._repr_png_().startswith(b"\x89PNG") for f in figures.values() if f is not None)  # renders in Jupyter
     _run_result_cells(result)
     for name, fig in figures.items():
         if fig is not None and snapshots:
@@ -481,8 +482,12 @@ def _run_result_cells(result):
 
     nb = nbformat.read(ROOT / "notebooks" / "aou_codas_quickstart.ipynb", as_version=4)
     shown = []
+    from codas.aou import runner as aou_runner
+
+    first = result["runs"][0]
+    Path(first["files"].pop("pdf")).unlink()  # the outputs cell compiles a missing PDF from the saved files
     ns = {"result": result, "views": views, "job": job, "Markdown": Markdown, "display": shown.append,
-          "Path": Path, "os": os, "FileLink": FileLink}
+          "Path": Path, "os": os, "FileLink": FileLink, "runner": aou_runner}
     code = [c.source for c in nb.cells if c.cell_type == "code"]
     after = code[code.index(next(c for c in code if "job.run_or_attach" in c)) + 1:]
     exploration = next(c for c in code if "job.run_or_attach" in c).split("\n", 2)[2]  # skip the run itself
@@ -504,3 +509,4 @@ def _run_result_cells(result):
             else:
                 sys.modules[k] = v
     assert any(getattr(x, "savefig", None) for x in shown)  # figures were displayed
+    assert Path(first["files"]["pdf"]).read_bytes().startswith(b"%PDF")  # rebuilt without rerunning agents

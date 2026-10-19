@@ -11,19 +11,25 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import re
+import traceback
 from pathlib import Path
 from typing import Any
 
-# Font files tried in order: (regular, bold, italic, bold-italic, monospace). The first family whose
-# regular face exists is used; missing styles fall back to regular.
+# Font files tried in order: (regular, bold, italic, bold-italic, then the same four for monospace). The
+# first family whose regular face exists is used; a missing style falls back to that family's regular face.
+# Every style must be registered: Markdown such as **`code`** asks for bold monospace.
 _FONT_DIRS = ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/dejavu", "/usr/share/fonts/TTF",
               "/usr/local/share/fonts", "/Library/Fonts", str(Path.home() / ".fonts"))
 _FAMILIES = (("DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans-Oblique.ttf", "DejaVuSans-BoldOblique.ttf",
-              "DejaVuSansMono.ttf"),
+              "DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf", "DejaVuSansMono-Oblique.ttf",
+              "DejaVuSansMono-BoldOblique.ttf"),
              ("NotoSans-Regular.ttf", "NotoSans-Bold.ttf", "NotoSans-Italic.ttf", "NotoSans-BoldItalic.ttf",
-              "NotoSansMono-Regular.ttf"),
+              "NotoSansMono-Regular.ttf", "NotoSansMono-Bold.ttf", "NotoSansMono-Regular.ttf",
+              "NotoSansMono-Bold.ttf"),
              ("LiberationSans-Regular.ttf", "LiberationSans-Bold.ttf", "LiberationSans-Italic.ttf",
-              "LiberationSans-BoldItalic.ttf", "LiberationMono-Regular.ttf"))
+              "LiberationSans-BoldItalic.ttf", "LiberationMono-Regular.ttf", "LiberationMono-Bold.ttf",
+              "LiberationMono-Italic.ttf", "LiberationMono-BoldItalic.ttf"))
+_STYLES = ("", "B", "I", "BI")
 # LaTeX-style math that LLM-written reports use; rendered as plain symbols.
 _TEX = {r"\rho": "ρ", r"\alpha": "α", r"\beta": "β", r"\Delta": "Δ", r"\approx": "≈", r"\times": "×",
         r"\le": "≤", r"\leq": "≤", r"\ge": "≥", r"\geq": "≥", r"\pm": "±", r"\%": "%", r"\rightarrow": "→",
@@ -36,9 +42,11 @@ _LATIN1 = {"ρ": "rho", "α": "alpha", "β": "beta", "Δ": "Delta", "≈": "~", 
 def _find_fonts() -> list[Path] | None:
     for family in _FAMILIES:
         for d in _FONT_DIRS:
-            regular = Path(d) / family[0]
+            regular, mono = Path(d) / family[0], Path(d) / family[4]
             if regular.exists():
-                return [Path(d) / f if (Path(d) / f).exists() else regular for f in family]
+                mono = mono if mono.exists() else regular
+                return [Path(d) / f if (Path(d) / f).exists() else (regular if i < 4 else mono)
+                        for i, f in enumerate(family)]
     return None
 
 
@@ -58,9 +66,10 @@ class _Doc:
         self.pdf.set_title(title)
         fonts = _find_fonts()
         if fonts:
-            for style, path in zip(("", "B", "I", "BI"), fonts[:4]):
+            for style, path in zip(_STYLES, fonts[:4]):
                 self.pdf.add_font("Body", style, str(path))
-            self.pdf.add_font("Mono", "", str(fonts[4]))
+            for style, path in zip(_STYLES, fonts[4:]):
+                self.pdf.add_font("Mono", style, str(path))
             self.family, self.mono, self.unicode = "Body", "Mono", True
         else:
             self.family, self.mono, self.unicode = "helvetica", "courier", False
@@ -87,11 +96,15 @@ class _Doc:
             self.plain("(no output)")
             return
         html = md.markdown(value, extensions=["tables", "sane_lists"])
+        page = self.pdf.page
         try:
             self.pdf.set_font(self.family, "", 10)
             self.pdf.write_html(html, font_family=self.family, pre_code_font=self.mono,
                                 warn_on_tags_not_matching=False)
         except Exception:  # noqa: BLE001 - a rendering quirk must not lose the content
+            # fpdf2's HTML writer sets the current page to 0 while it switches fonts; an error there
+            # leaves it at 0, and every later call would fail with "No page open".
+            self.pdf.page = self.pdf.page or page
             self.plain(re.sub(r"<[^>]+>", "", html))
         self.pdf.ln(2)
 
@@ -200,108 +213,134 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
     """Write ``<stem>_report.pdf`` and return its path.
 
     ``phases`` is the saved phase output (``<stem>_state.json``), ``events`` the trace events, and
-    ``meta`` short run facts for the cover (participants, code version, models).
+    ``meta`` short run facts for the cover (participants, code version, models). Each section is
+    rendered on its own: one that fails is replaced by a note, the rest of the report is kept, and the
+    full traceback goes to ``<stem>_pdf_error.txt`` (removed again when every section renders).
     """
     doc = _Doc(f"CoDaS report: {stem}")
     pdf = doc.pdf
-    pdf.add_page()
-    doc.heading(f"CoDaS report: {stem}")
     rounds = phases.get("rounds") or []
     last = rounds[-1] if rounds else {}
     conf = phases.get("confirmation") or {}
-    cover = [["target", phases.get("target_column")], ["participants", meta.get("rows")],
-             ["discovery rounds", len(rounds)], ["validated candidates (final round)", last.get("validated_count")],
-             ["held-out model", f"{last.get('ml_metric_name')} = {last.get('ml_metric_value')}" if last else None],
-             *([["replicated on the sealed holdout", f"{conf.get('replicated')} of {conf.get('tested')}"],
-                ["also passed falsification", conf.get("robust")]] if conf else []),
-             ["code version", meta.get("code_version")], ["models", meta.get("models")],
-             ["compiled", _dt.datetime.now().strftime("%Y-%m-%d %H:%M")]]
-    doc.table(None, cover, widths=[60, 120])
-    doc.plain("Counts of 1-20 are masked. Every number comes from the deterministic engine; the agents "
-              "plan, interpret and write. Review against the Data and Statistics Dissemination Policy "
-              "before anything leaves the Workbench.", size=8, style="I")
 
-    table1 = phases.get("cohort_table")
-    if table1:
-        doc.heading("Cohort characteristics", 2)
-        doc.table(table1["columns"], table1["rows"])
-        doc.plain(table1.get("note", ""), size=8, style="I")
+    def cover() -> None:
+        doc.heading(f"CoDaS report: {stem}")
+        rows = [["target", phases.get("target_column")], ["participants", meta.get("rows")],
+                ["discovery rounds", len(rounds)], ["validated candidates (final round)", last.get("validated_count")],
+                ["held-out model", f"{last.get('ml_metric_name')} = {_fmt(last.get('ml_metric_value'))}" if last else None],
+                *([["replicated on the sealed holdout", f"{conf.get('replicated')} of {conf.get('tested')}"],
+                   ["also passed falsification", conf.get("robust")]] if conf else []),
+                ["code version", meta.get("code_version")], ["models", meta.get("models")],
+                ["compiled", _dt.datetime.now().strftime("%Y-%m-%d %H:%M")]]
+        doc.table(None, rows, widths=[60, 120])
+        doc.plain("Counts of 1-20 are masked. Every number comes from the deterministic engine; the agents "
+                  "plan, interpret and write. Review against the Data and Statistics Dissemination Policy "
+                  "before anything leaves the Workbench.", size=8, style="I")
 
-    pdf.add_page()
-    doc.heading("Final report")
-    doc.markdown(phases.get("report") or "")
+    def cohort() -> None:
+        table1 = phases.get("cohort_table")
+        if table1:
+            doc.heading("Cohort characteristics", 2)
+            doc.table(table1["columns"], table1["rows"])
+            doc.plain(table1.get("note", ""), size=8, style="I")
 
-    pdf.add_page()
-    doc.heading("Phase A: data understanding and design")
-    design = [["target", phases.get("target_column")],
-              ["confounders", ", ".join(phases.get("confounder_columns") or []) or "-"],
-              ["excluded as leakage", ", ".join(phases.get("excluded_columns") or []) or "-"],
-              ["adjustment-only covariates", ", ".join(phases.get("context_columns") or []) or "-"]]
-    doc.table(["role", "columns"], design, widths=[50, 130])
-    for title, key in (("Exclusions and reasons", "exclusion_log"), ("Confounders declared and reasons", "confounder_log")):
-        log = phases.get(key) or []
-        if log:
-            doc.heading(title, 3)
-            doc.table(["after round", "columns", "reason"],
-                      [[e.get("after_round"), ", ".join(e.get("columns") or []), e.get("reason")] for e in log],
-                      widths=[20, 55, 105])
-    doc.heading("Hypotheses and literature anchoring", 2)
-    doc.markdown(phases.get("hypotheses") or "")
+    def final_report() -> None:
+        doc.heading("Final report")
+        doc.markdown(phases.get("report") or "")
 
-    pdf.add_page()
-    doc.heading("Phases B-C: discovery loop and adversarial validation")
-    doc.table(["round", "validated", "evaluated", "held-out model", "above chance", "confounders", "excluded"],
-              [[(r["round"] if isinstance(r.get("round"), int) else i) + 1, r.get("validated_count"), r.get("evaluated_count"),
-                f"{r.get('ml_metric_name')}={_fmt(r.get('ml_metric_value'))}", r.get("ml_above_chance"),
-                ", ".join(r.get("confounders") or []), ", ".join(r.get("excluded_features") or [])]
-               for i, r in enumerate(rounds)],
-              widths=[13, 18, 18, 35, 18, 39, 39])
-    by_round: dict[int, list[dict[str, Any]]] = {}
-    for e in events:
-        if e.get("round") is not None and e.get("kind") == "text":
-            by_round.setdefault(e["round"], []).append(e)
-    for r in sorted(by_round):
-        doc.heading(f"Round {r}", 2)
-        for e in by_round[r]:
-            doc.heading(e["author"], 3)
-            doc.markdown(e["text"])
+    def phase_a() -> None:
+        doc.heading("Phase A: data understanding and design")
+        design = [["target", phases.get("target_column")],
+                  ["confounders", ", ".join(phases.get("confounder_columns") or []) or "-"],
+                  ["excluded as leakage", ", ".join(phases.get("excluded_columns") or []) or "-"],
+                  ["adjustment-only covariates", ", ".join(phases.get("context_columns") or []) or "-"]]
+        doc.table(["role", "columns"], design, widths=[50, 130])
+        for title, key in (("Exclusions and reasons", "exclusion_log"), ("Confounders declared and reasons", "confounder_log")):
+            log = phases.get(key) or []
+            if log:
+                doc.heading(title, 3)
+                doc.table(["after round", "columns", "reason"],
+                          [[e.get("after_round"), ", ".join(e.get("columns") or []), e.get("reason")] for e in log],
+                          widths=[20, 55, 105])
+        doc.heading("Hypotheses and literature anchoring", 2)
+        doc.markdown(phases.get("hypotheses") or "")
 
-    pdf.add_page()
-    doc.heading("Phase D: mechanisms and novelty")
-    doc.heading("Mechanisms", 2)
-    doc.markdown(phases.get("mechanisms") or "")
-    doc.heading("Novelty", 2)
-    doc.markdown(phases.get("novelty") or "")
+    def phases_bc() -> None:
+        doc.heading("Phases B-C: discovery loop and adversarial validation")
+        doc.table(["round", "validated", "evaluated", "held-out model", "above chance", "confounders", "excluded"],
+                  [[(r["round"] if isinstance(r.get("round"), int) else i) + 1, r.get("validated_count"), r.get("evaluated_count"),
+                    f"{r.get('ml_metric_name')}={_fmt(r.get('ml_metric_value'))}", r.get("ml_above_chance"),
+                    ", ".join(r.get("confounders") or []), ", ".join(r.get("excluded_features") or [])]
+                   for i, r in enumerate(rounds)],
+                  widths=[13, 18, 18, 35, 18, 39, 39])
+        by_round: dict[int, list[dict[str, Any]]] = {}
+        for e in events:
+            if e.get("round") is not None and e.get("kind") == "text":
+                by_round.setdefault(e["round"], []).append(e)
+        for r in sorted(by_round):
+            doc.heading(f"Round {r}", 2)
+            for e in by_round[r]:
+                doc.heading(e["author"], 3)
+                doc.markdown(e["text"])
 
-    pdf.add_page()
-    doc.heading("Phases E-F: strategy and artifacts")
-    doc.heading("Strategy", 2)
-    doc.markdown(phases.get("strategy") or "")
-    doc.heading("Artifacts", 2)
-    doc.markdown(phases.get("artifacts") or "")
+    def phase_d() -> None:
+        doc.heading("Phase D: mechanisms and novelty")
+        doc.heading("Mechanisms", 2)
+        doc.markdown(phases.get("mechanisms") or "")
+        doc.heading("Novelty", 2)
+        doc.markdown(phases.get("novelty") or "")
 
-    pdf.add_page()
-    doc.heading("Appendix")
-    if conf:
-        cox, rank = _forest_items(conf)
-        if cox:
-            doc.heading("Sealed holdout: hazard ratio per SD (95% CI)", 2)
-            doc.forest(cox, log=True)
-        if rank:
-            doc.heading("Sealed holdout: rank correlation (95% CI)", 2)
-            doc.forest(rank, log=False)
-        doc.plain("Filled marks replicated (candidates) or were detected (positive controls); open marks did not.",
-                  size=8, style="I")
-    doc.heading("Candidates in the final round (Spearman rho)", 2)
-    doc.bars([(c.get("feature") or "", float(c["rho"])) for c in (last.get("passing_candidates") or [])
-              if isinstance(c.get("rho"), (int, float))])
-    doc.heading("Phase coverage", 2)
-    doc.markdown(coverage_md)
-    doc.heading("Fact sheet", 2)
-    fact = phases.get("fact_sheet") or {}
-    doc.table(["key", "value"], [[k, _fmt(v)] for k, v in fact.items() if not isinstance(v, (dict, list))],
-              widths=[80, 100])
+    def phases_ef() -> None:
+        doc.heading("Phases E-F: strategy and artifacts")
+        doc.heading("Strategy", 2)
+        doc.markdown(phases.get("strategy") or "")
+        doc.heading("Artifacts", 2)
+        doc.markdown(phases.get("artifacts") or "")
 
+    def appendix() -> None:
+        doc.heading("Appendix")
+        if conf:
+            cox, rank = _forest_items(conf)
+            if cox:
+                doc.heading("Sealed holdout: hazard ratio per SD (95% CI)", 2)
+                doc.forest(cox, log=True)
+            if rank:
+                doc.heading("Sealed holdout: rank correlation (95% CI)", 2)
+                doc.forest(rank, log=False)
+            doc.plain("Filled marks replicated (candidates) or were detected (positive controls); open marks did not.",
+                      size=8, style="I")
+        doc.heading("Candidates in the final round (Spearman rho)", 2)
+        doc.bars([(c.get("feature") or "", float(c["rho"])) for c in (last.get("passing_candidates") or [])
+                  if isinstance(c.get("rho"), (int, float))])
+        doc.heading("Phase coverage", 2)
+        doc.markdown(coverage_md)
+        doc.heading("Fact sheet", 2)
+        fact = phases.get("fact_sheet") or {}
+        doc.table(["key", "value"], [[k, _fmt(v)] for k, v in fact.items() if not isinstance(v, (dict, list))],
+                  widths=[80, 100])
+
+    # (section, starts on a new page)
+    sections = [(cover, True), (cohort, False), (final_report, True), (phase_a, True), (phases_bc, True),
+                (phase_d, True), (phases_ef, True), (appendix, True)]
+    errors = []
+    for section, new_page in sections:
+        if new_page or not pdf.page:
+            pdf.add_page()
+        try:
+            section()
+        except Exception as exc:  # noqa: BLE001 - one section's failure must not lose the whole report
+            errors.append(f"--- section {section.__name__} ---\n{traceback.format_exc()}")
+            pdf.page = pdf.page or len(pdf.pages)
+            pdf.set_fill_color(255, 255, 255)
+            doc.plain(f"[The {section.__name__.replace('_', ' ')} section could not be rendered: "
+                      f"{type(exc).__name__}: {str(exc)[:200]}]", style="I")
+    error_file = out_dir / f"{stem}_pdf_error.txt"
+    if errors:
+        from codas.aou.privacy import mask_identifiers
+
+        error_file.write_text(mask_identifiers("\n".join(errors)), encoding="utf-8")
+    else:
+        error_file.unlink(missing_ok=True)
     path = out_dir / f"{stem}_report.pdf"
     pdf.output(str(path))
     return path

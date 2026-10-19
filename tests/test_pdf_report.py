@@ -59,3 +59,33 @@ def test_cohort_table_and_holdout_forest_plots_are_rendered(tmp_path, monkeypatc
     cox, rank = pdf_report._forest_items(confirmation)
     assert [c[0] for c in cox] == ["steps_mean", "sleep_sd", "positive control: age"] and rank == []
     assert [c[4] for c in cox] == [True, False, True]
+
+
+def _matplotlib_fonts(monkeypatch):
+    import os
+
+    import matplotlib
+
+    monkeypatch.setattr(pdf_report, "_FONT_DIRS", (os.path.join(os.path.dirname(matplotlib.__file__), "mpl-data", "fonts", "ttf"),))
+    assert pdf_report._find_fonts() is not None
+
+
+def test_bold_code_spans_with_a_unicode_font(tmp_path, monkeypatch):
+    """The Workbench failure: **`feature`** asks for bold monospace; with a TrueType font only the regular
+    monospace face was registered, fpdf2's HTML writer raised mid-way and left no page open."""
+    _matplotlib_fonts(monkeypatch)
+    report = "1. **`act_days_over_act_sedentary_minutes_mean`** ($\\rho = -0.16$) and *`x`*, ***`y`***"
+    path = pdf_report.build_pdf(tmp_path, "run", {**PHASES, "report": report}, EVENTS, "", {"rows": 100})
+    assert path.read_bytes().startswith(b"%PDF") and not (tmp_path / "run_pdf_error.txt").exists()
+    assert {"mono", "monoB", "monoI", "monoBI"} <= set(pdf_report._Doc("t").pdf.fonts)  # every style registered
+
+
+def test_a_failing_section_keeps_the_rest_of_the_report(tmp_path, monkeypatch):
+    def broken(self, *args, **kwargs):
+        raise ValueError("drawing failed")
+
+    monkeypatch.setattr(pdf_report._Doc, "bars", broken)
+    path = pdf_report.build_pdf(tmp_path, "run", PHASES, EVENTS, "", {"rows": 100})
+    assert path.read_bytes().startswith(b"%PDF")
+    error = (tmp_path / "run_pdf_error.txt").read_text()
+    assert "section appendix" in error and "drawing failed" in error and "Traceback" in error
