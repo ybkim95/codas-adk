@@ -49,3 +49,43 @@ def test_confirmation_table_with_nothing_registered(tmp_path):
     (tmp_path / "x_confirmation.json").write_text(json.dumps({"hypotheses": []}))
     table = views.confirmation_table({"summary_path": str(tmp_path / "s.md")}, "x")
     assert table.empty and "failed checks" in table.columns
+
+
+def test_charts_scale_to_the_page():
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(8, 2))
+    fig.subplots().plot([0, 1], [0, 1])
+    html = views.Chart(fig)._repr_html_()
+    assert html.startswith("<img") and "data:image/png;base64," in html and "max-width:100%" in html
+
+
+def test_tables_wrap_long_identifiers_at_underscores_only():
+    table = pd.DataFrame({"feature": ["act_days_over_act_steps_mean"], "q": [0.0417], "95% CI": ["-0.04 to 0.01"]})
+    html = views.fit(table)._repr_html_()
+    assert "act_<wbr>days_<wbr>over_<wbr>act_<wbr>steps_<wbr>mean" in html
+    assert "0.0417" in html and "-0.04 to 0.01" in html
+
+
+def test_report_tables_wrap_but_code_and_prose_stay_as_written():
+    text = "Text with `a_b` and c_d.\n\n| feature | q |\n|---|---|\n| act_days_sd | 0.1 |\n| `x_y` z_w | 2 |"
+    out = views.wrap_tables(text)
+    assert out.splitlines()[0] == "Text with `a_b` and c_d."
+    assert "| act_<wbr>days_<wbr>sd | 0.1 |" in out and "| `x_y` z_<wbr>w | 2 |" in out
+
+
+def test_forest_hazard_axis_is_labelled_across_the_data(tmp_path):
+    import json
+
+    hyps = [{"feature": f"f{i}", "test": "cox", "hr_per_sd": hr, "ci95": [hr - 0.1, hr + 0.1], "replicated": False}
+            for i, hr in enumerate((0.85, 1.0, 1.25))]
+    (tmp_path / "explore_x_confirmation.json").write_text(json.dumps({"hypotheses": hyps}))
+    chart = views.forest_figure({"summary_path": str(tmp_path / "s.md"), "runs": [{"cohort": "explore_x"}]})
+    ax = chart.figure.axes[0]
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    FigureCanvasAgg(chart.figure).draw()
+    labels = [t.get_text() for t in ax.get_xticklabels(minor=False) + ax.get_xticklabels(minor=True) if t.get_text()]
+    values = [float(t) for t in labels]
+    assert min(values) < 1 < max(values) and len(values) >= 3, labels
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["x: f0", "x: f1", "x: f2"]

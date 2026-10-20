@@ -272,6 +272,24 @@ def rebuild_pdf(out_dir: str | Path, stem: str) -> dict[str, str]:
     return files
 
 
+def _refresh_pdf(out: Path, summary: dict[str, Any], key: str) -> dict[str, Any]:
+    """A reused run whose PDF is missing (an older run's PDF step failed) gets it compiled from its saved
+    outputs; the old error goes, and the run's saved summary is updated so later summaries agree."""
+    files = dict(summary.get("files") or {})
+    if files.get("pdf") and Path(files["pdf"]).exists():
+        return summary
+    for stale in ("pdf", "pdf_error", "pdf_warnings"):
+        files.pop(stale, None)
+    try:
+        files.update(rebuild_pdf(out, summary["cohort"]))
+    except (OSError, ValueError) as exc:  # the saved state is gone or unreadable: say so, keep the rest
+        files["pdf_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    summary = {**summary, "files": files}
+    (out / f"{summary['cohort']}_run.json").write_text(json.dumps({"key": key, "summary": summary}),
+                                                       encoding="utf-8")
+    return summary
+
+
 def _with_coverage(confounders: list[str] | None, coverage: dict[str, Any] | None) -> str:
     """Confounder names, each adjustment covariate with the share of participants who have a value
     (adjusting for it drops the rest)."""
@@ -492,7 +510,7 @@ def explore(
             done = None if rerun else _finished_run(out, spec.name, key)
             if done:
                 log(f"\n=== {o.label} === finished earlier with this code; reusing its report")
-                runs.append(done)
+                runs.append(_refresh_pdf(out, done, key))
             else:
                 log(f"\n=== {o.label} ===")
                 try:

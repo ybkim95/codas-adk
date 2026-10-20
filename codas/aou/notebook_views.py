@@ -2,13 +2,18 @@
 
 Every function reads what a step already produced (the environment snapshot, the schema check, the
 feasibility rows, the run summaries and the files each run wrote) and returns a pandas DataFrame or a
-matplotlib Figure for ``display``. Nothing here reads a participant-level table. Figures are made with
+chart for ``display``; ``fit`` shows a table narrow enough for the page. Nothing here reads a
+participant-level table. Figures are made with
 ``matplotlib.figure.Figure`` (not pyplot), so a notebook shows each one once, where it is displayed.
 """
 
 from __future__ import annotations
 
+import base64
+import html
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +40,12 @@ class Chart:
         buffer = io.BytesIO()
         self.figure.savefig(buffer, format="png", dpi=110, facecolor=SURFACE)
         return buffer.getvalue()
+
+    def _repr_html_(self) -> str:
+        """The same PNG, scaled down to the output column (a bare PNG keeps its pixel width and is cut
+        off at the edge of a narrow column or a printed page). Jupyter prefers this over the PNG."""
+        data = base64.b64encode(self._repr_png_()).decode()
+        return f'<img src="data:image/png;base64,{data}" style="max-width:100%;height:auto" alt="chart">'
 
     def savefig(self, *args: Any, **kwargs: Any) -> None:
         self.figure.savefig(*args, **kwargs)
@@ -66,6 +77,50 @@ def _read(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+# --- fitting tables to the page ------------------------------------------------------------------
+
+_CODE_SPAN = re.compile(r"(`[^`]*`)")
+
+
+def _breakable(text: str) -> str:
+    """Escaped text with a line-break opportunity after each underscore, so long identifiers wrap
+    instead of pushing a table past the edge of the page. Numbers and other text are unchanged."""
+    return html.escape(text).replace("_", "_<wbr>")
+
+
+class Fitted:
+    """A table shown to fit a notebook column or a printed page: no index, a slightly smaller font, and
+    identifiers that wrap at underscores. ``table`` is the DataFrame itself."""
+
+    def __init__(self, table: pd.DataFrame):
+        self.table = table
+
+    def _repr_html_(self) -> str:
+        cells = self.table.astype(object).where(self.table.notna(), "")
+        # Text reads left to right (Jupyter right-aligns every cell); numbers keep their alignment.
+        cells = cells.apply(lambda col: col.map(  # Series.map works in every pandas version
+            lambda v: f'<div style="text-align:left">{_breakable(v)}</div>' if isinstance(v, str) else v))
+        cells.columns = [_breakable(str(c)) for c in cells.columns]
+        body = cells.to_html(index=False, escape=False, border=0)
+        return f'<div style="max-width:100%;font-size:0.85em">{body}</div>'
+
+
+def fit(table: pd.DataFrame) -> Fitted:
+    return Fitted(table)
+
+
+def wrap_tables(markdown: str) -> str:
+    """Markdown whose table rows let identifiers wrap at underscores; code spans and prose are left as
+    written."""
+    lines = []
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("|"):
+            line = "".join(part if part.startswith("`") else part.replace("_", "_<wbr>")
+                           for part in _CODE_SPAN.split(line))
+        lines.append(line)
+    return "\n".join(lines)
 
 
 # --- setup and checks -------------------------------------------------------------------------
@@ -243,8 +298,11 @@ def candidates_figure(result: dict[str, Any], stem: str):
     ax.set_yticks(range(len(cands)), [c["feature"][:60] for c in cands])
     ax.axvline(0, color=INK_2, linewidth=0.8)
     ax.set_xlabel("Spearman rho with the outcome (discovery share)", fontsize=8, color=INK_2)
-    ax.set_title(f"{stem}: candidates in the last round (blue = validated, gray = conditional)", loc="left",
-                 fontsize=9, color=INK)
+    ax.set_title(f"{stem}: candidates in the last round", loc="left", fontsize=9, color=INK)
+    from matplotlib.patches import Patch
+
+    ax.legend(handles=[Patch(color=BLUE, label="validated"), Patch(color=GRAY, label="conditional")], fontsize=7,
+              frameon=False, ncol=2, loc="lower right", bbox_to_anchor=(1, 1))
     _style(ax)
     return Chart(fig)
 
@@ -276,10 +334,16 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
     return pd.DataFrame(rows, columns=columns)  # keeps its columns when nothing was pre-registered
 
 
+_HR_TICKS = (0.25, 0.33, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0)
+
+
 def forest_figure(result: dict[str, Any]):
     """Holdout effects with 95% CIs for every pre-registered candidate across outcomes (filled = replicated)."""
     out = _out_dir(result)
     items = {"cox": [], "rank": []}
+    names = [r["cohort"] for r in result.get("runs") or []]
+    shared = os.path.commonprefix(names)
+    shared = shared[:shared.rfind("_") + 1]  # the part every outcome name starts with, e.g. a run prefix
     for r in result.get("runs") or []:
         conf = _read(out / f"{r['cohort']}_confirmation.json")
         for h in conf.get("hypotheses") or []:
@@ -288,7 +352,7 @@ def forest_figure(result: dict[str, Any]):
                 continue
             kind, est = ("cox", h.get("hr_per_sd")) if h.get("test") == "cox" else ("rank", h.get("rho"))
             if _num(est) is not None:
-                items[kind].append((f"{r['cohort']}: {h['feature']}"[:70], est, ci[0], ci[1], bool(h.get("replicated"))))
+                items[kind].append((f"{r['cohort'][len(shared):]}: {h['feature']}"[:70], est, ci[0], ci[1], bool(h.get("replicated"))))
     panels = [(k, v) for k, v in items.items() if v]
     if not panels:
         return None
@@ -304,12 +368,15 @@ def forest_figure(result: dict[str, Any]):
         null = 1.0 if kind == "cox" else 0.0
         ax.axvline(null, color=INK_2, linewidth=0.8, linestyle="--")
         if kind == "cox":
-            from matplotlib.ticker import FuncFormatter
+            from matplotlib.ticker import FixedLocator, NullLocator
 
             ax.set_xscale("log")
-            ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
-            ax.xaxis.set_minor_formatter(FuncFormatter(lambda v, _: f"{v:g}" if round(v, 1) in (0.5, 0.7, 1.5, 2.0, 3.0)
-                                                       else ""))
+            lo = min(min(r[2] for r in rows), 1.0)
+            hi = max(max(r[3] for r in rows), 1.0)
+            ticks = [t for t in _HR_TICKS if lo / 1.05 <= t <= hi * 1.05] or [1.0]
+            ax.xaxis.set_major_locator(FixedLocator(ticks))
+            ax.xaxis.set_minor_locator(NullLocator())
+            ax.set_xticks(ticks, [f"{t:g}" for t in ticks])
         ax.set_xlabel("hazard ratio per SD" if kind == "cox" else "rank correlation", fontsize=8, color=INK_2)
         _style(ax)
     fig.suptitle("Sealed holdout: pre-registered candidates (filled = replicated)", x=0.01, ha="left",

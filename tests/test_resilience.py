@@ -7,6 +7,7 @@ Offline: fake models and the synthetic DuckDB CDR; no model is called.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 from typing import AsyncGenerator
@@ -233,3 +234,22 @@ def test_the_resume_key_follows_the_analysis_code_only(tmp_path):
     assert runner._analysis_version(tmp_path) == before
     (tmp_path / "codas/agents/prompts.py").write_text("x = 2\n")  # analysis code
     assert runner._analysis_version(tmp_path) != before
+
+
+def test_a_reused_run_without_its_pdf_gets_one_and_loses_the_stale_error(synthetic_explore):
+    explore, calls, _failing = synthetic_explore
+    explore()
+    # An older run whose PDF failed: its summary still carries that error and no PDF.
+    run_file = RUN_DIR / "explore_hdl_run.json"
+    saved = json.loads(run_file.read_text(encoding="utf-8"))
+    files = saved["summary"]["files"]
+    Path(files.pop("pdf")).unlink()
+    files["pdf_error"] = "FPDFException: No page open, you need to call add_page() first"
+    run_file.write_text(json.dumps(saved), encoding="utf-8")
+    calls.clear()
+    result = explore()
+    assert calls == []                                          # reused, not rerun
+    hdl = next(r for r in result["runs"] if r["cohort"] == "explore_hdl")
+    assert Path(hdl["files"]["pdf"]).exists() and "pdf_error" not in hdl["files"]
+    assert "pdf_error" not in json.loads(run_file.read_text(encoding="utf-8"))["summary"]["files"]
+    assert "No page open" not in Path(result["summary_path"]).read_text(encoding="utf-8")

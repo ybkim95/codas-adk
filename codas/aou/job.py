@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -254,6 +255,10 @@ class _Masked:
         self.stream.flush()
 
 
+# Known, harmless library notices (the notebook filters the same ones); real errors still show.
+QUIET_WARNINGS = (".*automatic function calling.*", ".*EXPERIMENTAL.*", ".*Post-Quantum.*", ".*grpcio.*")
+
+
 def _say(message: str) -> None:
     print(f"{time.strftime('%H:%M:%S')}  {message}", flush=True)
 
@@ -261,6 +266,8 @@ def _say(message: str) -> None:
 def main(argv: list[str]) -> int:
     """The job process: run the exploration and record how it ended."""
     sys.stdout, sys.stderr = _Masked(sys.stdout), _Masked(sys.stderr)
+    for pattern in QUIET_WARNINGS:
+        warnings.filterwarnings("ignore", message=pattern)
     import logging
 
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")

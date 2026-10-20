@@ -185,8 +185,9 @@ mirrored to `codas_reports/aou/`, because Jupyter does not serve files inside hi
   with `fpdf2` and `markdown` (pure Python); a Unicode font is used when installed. Each section is
   rendered on its own: one that fails is replaced by a note and its full traceback is written to
   `<cohort>_pdf_error.txt`. `runner.rebuild_pdf(out_dir, cohort)` compiles a PDF again from the saved
-  state and trace without rerunning the agents; the notebook's outputs cell does this for any outcome
-  that has no PDF.
+  state and trace without rerunning the agents. A reused outcome whose PDF is missing gets one this
+  way when the exploration runs again (its saved summary drops the old error), and the notebook's
+  outputs cell does the same for any outcome still without a PDF.
 * `<cohort>_trace.jsonl` / `<cohort>_trace.md`: the full agent trace, every agent's text, tool call
   and tool response in order, labelled with phase (a child of the root agent) and discovery round.
   The responses are the ones the model received, masked for counts of 1-20.
@@ -242,7 +243,9 @@ than the checkout holds (the browser does not refresh a notebook that changed on
 shows tables and figures (`codas/aou/notebook_views.py`): the environment and model probe, the
 schema and concept checks, a feasibility chart, the runs table and time per phase, per-outcome
 cohort characteristics, candidates and holdout results, a forest plot across outcomes, and the job's
-memory over time.
+memory over time. Charts scale to the output column and tables (`views.fit`, and `views.wrap_tables`
+for the reports' Markdown tables) wrap long identifiers at underscores, so nothing is cut off on screen
+or in a printed copy of the notebook.
 
 ### Choosing outcomes yourself
 

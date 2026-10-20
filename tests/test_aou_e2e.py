@@ -486,6 +486,7 @@ def _run_result_cells(result):
 
     first = result["runs"][0]
     Path(first["files"].pop("pdf")).unlink()  # the outputs cell compiles a missing PDF from the saved files
+    first["files"]["pdf_error"] = "FPDFException: an older attempt"  # ...and drops the old error
     ns = {"result": result, "views": views, "job": job, "Markdown": Markdown, "display": shown.append,
           "Path": Path, "os": os, "FileLink": FileLink, "runner": aou_runner}
     code = [c.source for c in nb.cells if c.cell_type == "code"]
@@ -510,3 +511,7 @@ def _run_result_cells(result):
                 sys.modules[k] = v
     assert any(getattr(x, "savefig", None) for x in shown)  # figures were displayed
     assert Path(first["files"]["pdf"]).read_bytes().startswith(b"%PDF")  # rebuilt without rerunning agents
+    assert "pdf_error" not in first["files"]
+    tables = [x for x in shown if isinstance(x, views.Fitted)]
+    assert tables and all("<table" in t._repr_html_() for t in tables)  # every table is shown fitted to the page
+    assert not any(isinstance(x, views.pd.DataFrame) for x in shown)

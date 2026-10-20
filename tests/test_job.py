@@ -112,3 +112,13 @@ def test_the_notebook_stops_when_the_page_is_an_older_copy(tmp_path):
     ns["NOTEBOOK_VERSION"] = "0123456789ab"     # an older page
     with pytest.raises(SystemExit, match="older copy of the notebook"):
         ns["check_this_page_is_current"]()
+
+
+def test_the_job_hides_the_known_harmless_library_notices():
+    import re
+
+    from codas.aou import job
+
+    notice = "grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC ..."
+    assert any(re.match(p, notice) for p in job.QUIET_WARNINGS)
+    assert not any(re.match(p, "ValueError: something real") for p in job.QUIET_WARNINGS)
