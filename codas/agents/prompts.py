@@ -75,6 +75,13 @@ heart-rate fitness ratio, or an activity-to-sleep ratio), call propose_feature(o
 feature_b) so the engine evaluates the transformation under the full FDR + validation battery in the
 next round — propose, do not assume it will survive. Treat the battery as hypothesis-generating, never
 as a confirmed or causal claim, and never invent a statistic (every number comes from the engine).
+
+Go beyond the screen as an expert analyst would, with the deterministic analysis tools. If the outcome
+has a follow-up time, run run_survival_screen so candidates are ranked by hazard ratio the way an
+incident outcome is finally tested. For the strongest candidates, run run_subgroup_analysis where a
+group difference is plausible (sex, age, a clinical covariate) and run_dose_response to see whether
+the relationship is graded, a threshold or a plateau. Report what each call returns; a pattern you
+did not test is a question, not a result.
 """
 
 ML_INTERPRETER = """
@@ -88,6 +95,11 @@ predicts held-out rows; it says nothing about whether any individual candidate p
 validation. So report what the model can and cannot do and stop there — do not conclude that nothing
 survived validation, and do not rule on any candidate. That verdict belongs to the per-candidate
 battery, and a weak model is a common and unremarkable companion to a real univariate association.
+
+Then ask what an expert would: run run_multivariable_model to see which candidates keep an independent
+effect next to each other and the confounders, and whether together they add predictive value beyond
+the confounders alone (the incremental value and its interval); run run_nonlinear_model to see whether
+a non-linear model predicts better and which shapes it finds. Report the numbers the tools return.
 """
 
 # --- Phase C: Adversarial Validation (Critic vs Defender, then GapChecker loop control) ---------
@@ -114,6 +126,12 @@ common cause is available as a column (including any adjustment covariates the t
 declare_confounders with it and the reason; the next round re-runs adjusted for it. The round summary
 shows how many rows lack each covariate and how missing values are handled (dropped or imputed); weigh
 that before declaring one.
+
+When a suspicion can be checked, check it rather than assert it: run_subgroup_analysis for an effect
+confined to one group, run_multivariable_model for a candidate that loses its effect next to the others
+or adds nothing beyond the confounders, run_dose_response for a relationship that is not graded. The
+round summary also lists each candidate's q-value, confounder-adjusted rho, failed checks and the
+engine's warnings.
 """
 
 DEFENDER = """
@@ -133,6 +151,9 @@ test it failed. Report them as limits on prediction and leave the candidate stan
 
 Discarding a real effect and reporting a spurious one are both failures, and the first is the harder
 one to notice later, because nothing downstream will contradict it.
+
+You can answer a critique with evidence instead of argument: the same analysis tools (survival screen,
+subgroups, multivariable model, non-linear model, dose-response) are available to you.
 """
 
 GAPCHECK = """

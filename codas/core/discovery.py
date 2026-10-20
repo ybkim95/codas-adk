@@ -732,8 +732,9 @@ def _within_subject_diagnostic(screen_frame, analysis, cluster_groups, request, 
                     f"WITHIN-SUBJECT diagnostic (two-stage; per-subject correlations tested across "
                     f"{_ws_rows[0]['n_subjects']} subjects, NOT pseudo-replicated): {len(_ws_sig)} feature(s) track "
                     f"the outcome within participants — {_top}. This is the longitudinal-tracking signal the "
-                    f"cross-sectional screen cannot capture; treat as exploratory (not corrected for within-subject "
-                    f"temporal autocorrelation) and confirm with mixed-effects + external data."
+                    f"cross-sectional screen cannot capture; treat as exploratory (subjects' series are AR(1)-"
+                    f"corrected in row order, as no time column is passed here) and confirm with a mixed-effects "
+                    f"model and external data."
                 )
 
     return results
@@ -752,7 +753,7 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
     # hard-kills the streaming request at its timeout, which otherwise leaves the UI stuck
     # on "Running"). Spearman screening + bootstrap validation are statistically
     # equivalent on a stratified sample of this size; profiling above still reflects full n,
-    # and mixed-effects diagnostics re-read the full raw data separately.
+    # and the within-subject diagnostics re-read the full raw data separately.
     screen_cap = int(os.getenv("CODAS_SCREEN_MAX_ROWS", "40000"))
     analysis_df = df
     if len(df) > screen_cap:
@@ -849,7 +850,7 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
                 f"computed at a cluster design-effect effective n (outcome ICC={_icc:.2f}) ≈ {_eff} — NOT the "
                 f"inflated row count — so a per-subject trait is not declared significant on {_rows:,} "
                 f"pseudo-replicated rows. The held-out model uses participant-grouped CV. Treat associations as "
-                f"exploratory; confirm with the mixed-effects diagnostics (within-participant) and external data."
+                f"exploratory; confirm with a within-participant model and external data."
                 + (" Pass the participant id explicitly to override." if _auto_participant else "")
             )
         elif _auto_participant and _k >= 2 and _rows <= 1.5 * _k:
@@ -949,8 +950,8 @@ def _within_person_warnings(candidates, cluster_screen_info, analysis, request) 
                 f"for: {_within_summary}. "
                 f"This pattern indicates that the true signal is a deviation-from-baseline rather than "
                 f"an absolute-value predictor — common in repeated-measures studies with high inter-individual "
-                f"variability. Inspect the mixed_effects_diagnostics.csv artifact for within-person "
-                f"regression coefficients and confidence intervals."
+                f"variability. A within-person model (e.g. mixed effects with person-mean-centred "
+                f"exposures) is the next analysis; the engine does not fit one."
             )
     elif _validated_count == 0 and analysis.participant_id_column:
         # Even without cluster-screen data: if we have repeated measures and no between-person
@@ -959,9 +960,8 @@ def _within_person_warnings(candidates, cluster_screen_info, analysis, request) 
             "WITHIN-PERSON ANALYSIS ADVISORY: No significant between-person (aggregate) predictors were "
             "detected. Your dataset has repeated measurements per participant — the true signal may be a "
             "within-person deviation from baseline rather than an absolute-value difference between people. "
-            "Inspect the mixed_effects_diagnostics.csv artifact in the Files panel: a significant "
-            "fixed-effect coefficient there indicates a within-person association that the aggregate screen "
-            "cannot detect."
+            "A within-person model (e.g. mixed effects with person-mean-centred exposures) can detect an "
+            "association that the aggregate screen cannot; the engine does not fit one."
         )
 
     return results
@@ -999,11 +999,10 @@ def _opaque_schema_warnings(df, request) -> list[str]:
 def _interaction_terms_warnings(df, request) -> list[str]:
     results: list[str] = []
     # --- H4 FIX: Interaction predictors caveat ---
-    # CoDaS engineers per-feature summary statistics (mean, SD, min/max, CV, ratios) but does NOT
-    # generate multiplicative cross-feature interaction terms. This means interaction-only predictors
-    # (where the product or conditional effect of two features drives the outcome, not either
-    # main effect) are structurally outside the current search space and will not be detected.
-    # Surface this as a consistent limitation note so the boundary is explicit. This fires whenever
+    # CoDaS engineers per-feature summary statistics (mean, SD, min/max, CV, ratios) and a bounded set
+    # of products of standardised summaries (data._add_interaction_features: at most 12 pairs among up
+    # to 8 base features). Interactions outside that set are outside the search space. Surface this as
+    # a consistent limitation note so the boundary is explicit. This fires whenever
     # at least 2 numeric features exist (so interactions are even possible) — INCLUDING the
     # 0-validated-candidate case, which is precisely when an undetected interaction is the likely
     # explanation for a null result.
@@ -1014,11 +1013,11 @@ def _interaction_terms_warnings(df, request) -> list[str]:
     )
     if _n_numeric_features >= 2:
         results.append(
-            "INTERACTION TERMS NOT TESTED: CoDaS screens univariate and per-family summary "
-            "features (mean, SD, CV, ratios). Multiplicative interactions between distinct feature "
-            "families (e.g., activity_index × sleep_index) are NOT generated and will not be detected. "
-            "If no predictors were found but you expect a synergistic/conditional effect, the signal "
-            "may live in an interaction the current screen cannot see — specify the interaction term "
+            "INTERACTION TERMS ONLY PARTLY TESTED: CoDaS screens univariate and per-family summary "
+            "features (mean, SD, CV, ratios) plus products of standardised summaries for at most 12 pairs "
+            "among up to 8 base features. Other interactions between feature families (e.g., "
+            "activity_index × sleep_index) are not generated and will not be detected. If no predictors "
+            "were found but you expect a synergistic/conditional effect, specify the interaction term "
             "explicitly or request a focused interaction analysis."
         )
 

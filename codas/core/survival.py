@@ -2,8 +2,8 @@
 
 Newton-Raphson on the partial likelihood with Efron's handling of tied event times, the default in
 most survival software. Standard errors come from the inverse observed information. Used by the
-confirmation step, where a pre-registered exposure is tested on held-out data; no other part of the
-engine depends on it.
+confirmation step, where a pre-registered exposure is tested on held-out data, and by the agents'
+analysis tools (``codas.core.analyses``); the discovery screen does not depend on it.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ class CoxResult:
     n: int                    # rows used (complete cases)
     events: int
     converged: bool
+    cov: np.ndarray | None = None  # inverse observed information (covariance of coef)
 
     def hazard_ratio(self, j: int = 0, alpha: float = 0.05) -> tuple[float, float, float]:
         """HR and its (1 - alpha) Wald confidence interval for column ``j``."""
@@ -84,7 +85,7 @@ def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
     k = x.shape[1]
     if len(time) < k + 2 or event.sum() < 1:
         nan = np.full(k, np.nan)
-        return CoxResult(nan, nan, nan, int(len(time)), int(event.sum()), False)
+        return CoxResult(nan, nan, nan, int(len(time)), int(event.sum()), False, np.full((k, k), np.nan))
     order = np.argsort(-time, kind="mergesort")
     time, event, x = time[order], event[order], x[order]
     beta = np.zeros(k)
@@ -113,10 +114,11 @@ def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
         cov = np.linalg.inv(-hess)
         se = np.sqrt(np.clip(np.diag(cov), 0, None))
     except np.linalg.LinAlgError:
+        cov = np.full((k, k), np.nan)
         se = np.full(k, np.nan)
     with np.errstate(divide="ignore", invalid="ignore"):
         p = 2 * stats.norm.sf(np.abs(beta / se))
-    return CoxResult(beta, se, p, int(len(time)), int(event.sum()), converged)
+    return CoxResult(beta, se, p, int(len(time)), int(event.sum()), converged, cov)
 
 
 def e_value(rr: float) -> float:

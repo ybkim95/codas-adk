@@ -425,15 +425,30 @@ def propose_feature(
 
 def _round_summary(round_index: int, ratio_features: int, top_k: int, report: dict[str, Any]) -> dict[str, Any]:
     fact_sheet = report.get("fact_sheet", {})
+    def adjusted(c: dict[str, Any]) -> float | None:
+        test = next((t for t in c.get("tests") or [] if t.get("name") == "confounder_adjusted_robustness"
+                     and t.get("applicable", True)), None)
+        value = test.get("metric") if test else None
+        return round(float(value), 4) if isinstance(value, (int, float)) and math.isfinite(value) else None
+
     passing = [
         {
             "feature": c.get("feature"),
             "rho": round(float(c["rho"]), 4) if isinstance(c.get("rho"), (int, float)) else None,
             "verdict": c.get("verdict"),
+            # What an analyst needs to weigh a candidate: its FDR q, its confounder-adjusted rho, and
+            # the checks it failed.
+            "q": float(f"{c['q_value']:.3g}") if isinstance(c.get("q_value"), (int, float)) else None,
+            "adjusted_rho": adjusted(c),
+            "failed_checks": [t.get("name") for t in c.get("tests") or []
+                              if t.get("applicable", True) and not t.get("passed")],
         }
         for c in report.get("candidates", [])
         if c.get("verdict") in {"validated", "conditional"}
     ]
+    warnings = [str(w)[:300] for w in report.get("warnings", [])[:8]]
+    if aou_mode():
+        warnings = [mask_small_counts_in_text(w) for w in warnings]
     return {
         "round": round_index,
         "ratio_feature_budget": ratio_features,
@@ -445,6 +460,7 @@ def _round_summary(round_index: int, ratio_features: int, top_k: int, report: di
         "ml_above_chance": fact_sheet.get("ml_above_chance"),
         "passing_candidates": passing[:10],
         "warning_count": len(report.get("warnings", [])),
+        "warnings": warnings,
     }
 
 
@@ -532,6 +548,178 @@ def _coverage(path: Path, columns: list[str]) -> dict[str, Any]:
         else:
             out[c] = {"non_missing_fraction": round(have / len(frame), 3) if len(frame) else None}
     return out
+
+
+# --- analysis tools: deeper, deterministic analyses an agent chooses (codas.core.analyses) ---------
+
+_MAX_ANALYSIS_FEATURES = 12
+
+
+def _sig(obj: Any, digits: int = 4) -> Any:
+    """Round every float to ``digits`` significant digits (p-values keep their magnitude)."""
+    if isinstance(obj, float):
+        return float(f"{obj:.{digits}g}") if math.isfinite(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _sig(v, digits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sig(v, digits) for v in obj]
+    return obj
+
+
+class _Refused(ValueError):
+    pass
+
+
+def _analysis_setup(tool_context: ToolContext) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """The shared dataset and design: target, follow-up time, confounders, what is blocked, and how the
+    candidates and proposals are defined."""
+    state = tool_context.state
+    path = _resolve_csv_path(state.get("csv_path"), "")
+    target = str(state.get("target_column") or "").strip()
+    if path is None or not target:
+        raise _Refused("No dataset or target in memory yet; the Scout sets them first.")
+    frame = read_csv_dataset(path)
+    time = str(state.get("survival_time_column") or "").strip() or None
+    if time and time not in frame.columns:
+        time = None
+    excluded = set(state.get("excluded_columns") or [])
+    design = {
+        "target": target, "time": time, "imputations": int(state.get("covariate_imputations") or 0),
+        "confounders": [c for c in state.get("confounder_columns") or [] if c in frame.columns and c != time],
+        "excluded": excluded,
+        "blocked_features": {target, *excluded, *(state.get("context_columns") or []),
+                             *(state.get("confounder_columns") or []), *([time] if time else [])},
+        "definitions": {**{c.get("feature"): {"components": list(c.get("components") or [])}
+                           for c in (state.get("latest_report") or {}).get("candidates") or []},
+                        **{p.get("name"): {"op": p.get("op"), "a": p.get("a"), "b": p.get("b")}
+                           for p in state.get("proposed_features") or []}},
+        "candidates": [c.get("feature") for c in (state.get("latest_report") or {}).get("candidates") or []
+                       if c.get("verdict") in {"validated", "conditional"}],
+    }
+    return frame, design
+
+
+def _with_features(frame: pd.DataFrame, design: dict[str, Any], names: list[str]) -> pd.DataFrame:
+    from codas.core.analyses import rebuild_feature
+
+    if not names:
+        raise _Refused("Name at least one feature (a column, a proposed feature, or a candidate from the round).")
+    out = frame.copy()
+    for name in names[:_MAX_ANALYSIS_FEATURES]:
+        if name in design["blocked_features"]:
+            raise _Refused(f"{name} is the target, the follow-up time, an excluded column, or an adjustment-only "
+                           "column, so it cannot be analysed as a candidate feature.")
+        series = rebuild_feature(frame, name, design["definitions"].get(name))
+        if series is None:
+            raise _Refused(f"Unknown feature {name!r}: not a column, a proposed feature, or a candidate of the latest round.")
+        out[name] = series
+    return out
+
+
+def _covariate(frame: pd.DataFrame, design: dict[str, Any], name: str) -> str:
+    if name not in frame.columns or name in design["excluded"] or name in {design["target"], design["time"]}:
+        raise _Refused(f"{name!r} is not an available covariate (it is missing, excluded, the target or the follow-up time).")
+    return name
+
+
+def _record(tool_context: ToolContext, tool: str, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    result = _json_safe(_sig(result))
+    tool_context.state["analyses"] = list(tool_context.state.get("analyses") or []) + [
+        {"tool": tool, "args": args, "result": result}]
+    return result
+
+
+def _run_analysis(tool_context: ToolContext, tool: str, args: dict[str, Any], body: Any) -> dict[str, Any]:
+    try:
+        frame, design = _analysis_setup(tool_context)
+        return _record(tool_context, tool, args, body(frame, design))
+    except _Refused as exc:
+        return {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - an analysis failure is reported to the agent, never fatal
+        return {"error": f"{tool} failed: {type(exc).__name__}: {exc}"}
+
+
+def run_survival_screen(tool_context: ToolContext, features_csv: str = "") -> dict[str, Any]:
+    """Time-to-event screen: each feature's Cox hazard ratio per SD, adjusted for the declared confounders
+    (missing confounder values imputed), with BH q-values across the listed features. Use it for an
+    incident outcome to rank candidates the way the sealed holdout will test them (the discovery round
+    treats the event as binary and ignores follow-up time). Defaults to the latest round's candidates."""
+    def body(frame, design):
+        if not design["time"]:
+            raise _Refused("This outcome has no follow-up time; use the discovery round's rank statistics instead.")
+        names = _split_csv(features_csv) or design["candidates"]
+        data = _with_features(frame, design, names)
+        from codas.core.analyses import survival_screen
+
+        rows = survival_screen(data, names[:_MAX_ANALYSIS_FEATURES], design["target"], design["time"],
+                               design["confounders"], design["imputations"])
+        return {"adjusted_for": design["confounders"], "results": rows}
+    return _run_analysis(tool_context, "survival_screen", {"features": features_csv}, body)
+
+
+def run_subgroup_analysis(feature: str, by: str, tool_context: ToolContext) -> dict[str, Any]:
+    """The feature's association within each level of ``by`` (tertiles when it is continuous, e.g. age),
+    adjusted for the other confounders, with Cochran's Q and I^2 for heterogeneity. Use it to test
+    whether an effect is specific to a group (sex, age band, a comorbidity) or consistent across them."""
+    def body(frame, design):
+        data = _with_features(frame, design, [feature.strip()])
+        from codas.core.analyses import subgroup_analysis
+
+        return subgroup_analysis(data, feature.strip(), design["target"], _covariate(frame, design, by.strip()),
+                                 design["confounders"], design["time"], design["imputations"])
+    return _run_analysis(tool_context, "subgroup_analysis", {"feature": feature, "by": by}, body)
+
+
+def run_multivariable_model(tool_context: ToolContext, features_csv: str = "", covariates_csv: str = "") -> dict[str, Any]:
+    """Fit the features jointly with covariates (OLS, logistic or Cox, by outcome type): each feature's
+    independent effect given the others, and the cross-validated incremental value over a model of the
+    covariates alone (delta R^2, AUC or C-index with a bootstrap CI) — what the wearable features add
+    beyond what is already known. Defaults: the latest round's candidates and the declared confounders."""
+    def body(frame, design):
+        names = _split_csv(features_csv) or design["candidates"]
+        data = _with_features(frame, design, names)
+        covariates = ([_covariate(frame, design, c) for c in _split_csv(covariates_csv)] if covariates_csv.strip()
+                      else design["confounders"])
+        from codas.core.analyses import multivariable_model
+
+        return multivariable_model(data, names[:_MAX_ANALYSIS_FEATURES], design["target"], covariates,
+                                   design["time"], design["imputations"])
+    return _run_analysis(tool_context, "multivariable_model", {"features": features_csv, "covariates": covariates_csv},
+                         body)
+
+
+def run_nonlinear_model(tool_context: ToolContext, features_csv: str = "") -> dict[str, Any]:
+    """Gradient boosting against the linear model on the features plus the declared confounders (held-out
+    R^2 or AUC), held-out permutation importance, and the shape of each feature's partial dependence
+    (increasing, decreasing, U-shaped, inverted U, non-monotone, flat). Use it when an association may
+    be non-linear or a threshold, or to see which features carry the prediction."""
+    def body(frame, design):
+        names = _split_csv(features_csv) or design["candidates"]
+        data = _with_features(frame, design, names)
+        from codas.core.analyses import nonlinear_model
+
+        out = nonlinear_model(data, names[:_MAX_ANALYSIS_FEATURES], design["target"], design["confounders"])
+        out["note"] = ("time to event modelled as its event indicator (follow-up time not used)" if design["time"]
+                       else "held-out cross-validated comparison")
+        return out
+    return _run_analysis(tool_context, "nonlinear_model", {"features": features_csv}, body)
+
+
+def run_dose_response(feature: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Dose-response of one feature: a restricted cubic spline adjusted for the declared confounders, a test
+    of non-linearity, and the effect at the 10th-90th percentiles against the median (mean difference,
+    odds ratio or hazard ratio). Use it to tell a linear gradient from a threshold or a plateau."""
+    def body(frame, design):
+        data = _with_features(frame, design, [feature.strip()])
+        from codas.core.analyses import spline_dose_response
+
+        return spline_dose_response(data, feature.strip(), design["target"], design["confounders"], design["time"],
+                                    design["imputations"])
+    return _run_analysis(tool_context, "dose_response", {"feature": feature}, body)
+
+
+ANALYSIS_TOOLS = [run_survival_screen, run_subgroup_analysis, run_multivariable_model, run_nonlinear_model,
+                  run_dose_response]
 
 
 def check_convergence(tool_context: ToolContext) -> dict[str, Any]:

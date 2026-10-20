@@ -53,12 +53,11 @@ import numpy as np
 import pandas as pd
 
 from codas.aou.privacy import mask_small_counts
+from codas.core.analyses import rebuild_feature
 from codas.core.imputation import pooled_cox, pooled_partial_spearman_ci
 from codas.core.statistics import safe_spearman
 from codas.core.survival import cox_ph, e_value
 
-_OPS = {"ratio": lambda a, b: a / b.replace(0.0, np.nan), "product": lambda a, b: a * b,
-        "difference": lambda a, b: a - b, "sum": lambda a, b: a + b}
 NC_PREFIX = "nc_"
 LEDGER_NAME = "holdout_ledger.jsonl"
 DEFAULT_SENSITIVITY_LAG_DAYS = 365
@@ -117,22 +116,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
 
 def _feature(frame: pd.DataFrame, hypothesis: dict[str, Any]) -> pd.Series | None:
     """Rebuild a pre-registered feature on new rows from its recorded definition."""
-    name, definition = hypothesis["feature"], hypothesis["definition"]
-    num = lambda col: pd.to_numeric(frame[col], errors="coerce")  # noqa: E731
-    if "op" in definition:
-        if {definition["a"], definition["b"]} <= set(frame.columns):
-            return _OPS[definition["op"]](num(definition["a"]), num(definition["b"]))
-        return None
-    if name in frame.columns:
-        return num(name)
-    parts = definition.get("components") or []
-    if len(parts) == 2 and set(parts) <= set(frame.columns):
-        a, b = num(parts[0]), num(parts[1])
-        if f"{parts[0]}_over_{parts[1]}" == name:
-            return a / b.replace(0.0, np.nan)
-        if f"{parts[0]}_x_{parts[1]}" == name:  # the engine's product of standardised components
-            return ((a - a.mean()) / a.std(ddof=0)) * ((b - b.mean()) / b.std(ddof=0))
-    return None
+    return rebuild_feature(frame, hypothesis["feature"], hypothesis["definition"])
 
 
 def _bh(p: list[float]) -> list[float]:

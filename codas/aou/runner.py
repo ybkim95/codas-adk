@@ -216,7 +216,7 @@ def _publish(paths: dict[str, str], out: Path) -> dict[str, str]:
 STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "context_columns", "exclusion_log",
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
-              "confirmation", "cohort_table")
+              "confirmation", "cohort_table", "analyses")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -455,7 +455,8 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
     context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
                + ([FOLLOWUP_COLUMN] if is_survival(spec) else []))
     state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder, on_agent=on_agent,
-                       state={"covariate_imputations": COVARIATE_IMPUTATIONS})
+                       state={"covariate_imputations": COVARIATE_IMPUTATIONS,
+                              "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else ""})
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
     if spec.holdout_fraction > 0 and sealed.exists():

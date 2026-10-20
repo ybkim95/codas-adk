@@ -813,7 +813,7 @@ def build_analysis_frame(
     # and 1 under stress; a per-visit severity score) and there is no time axis to model
     # it longitudinally, collapsing to one row per participant destroys the very signal
     # we want — the target would aggregate to a near-constant. In that case keep the
-    # row-level data; within-participant correlation is handled by the mixed-effects model.
+    # row-level data; within-participant correlation is handled by the cluster-aware screen.
     _target_varies_within_participant = False
     if _has_duplicate_participants:
         _target_for_variation = pd.to_numeric(work[target_column], errors="coerce")
@@ -835,7 +835,8 @@ def build_analysis_frame(
             f"Kept row-level repeated measures: target '{target_column}' varies within "
             f"'{participant_id_column}' for a substantial fraction of participants, so participant "
             "aggregation would erase the within-person signal. Within-participant correlation is "
-            "addressed by the mixed-effects model instead."
+            "addressed by a cluster design-effect effective n, participant-grouped resampling and CV, and "
+            "a two-stage within-subject diagnostic (no mixed-effects model is fitted)."
         )
     if _should_aggregate:
         work = _aggregate_longitudinal(work, target_column, participant_id_column, time_column, excluded | context,

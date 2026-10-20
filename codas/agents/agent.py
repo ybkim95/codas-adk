@@ -53,6 +53,7 @@ from codas.agents.callbacks import (
     report_grounding_audit,
 )
 from codas.agents.tools import (
+    ANALYSIS_TOOLS,
     check_convergence,
     declare_confounders,
     exclude_features,
@@ -61,6 +62,11 @@ from codas.agents.tools import (
     propose_feature,
     run_discovery,
     run_discovery_round,
+    run_dose_response,
+    run_multivariable_model,
+    run_nonlinear_model,
+    run_subgroup_analysis,
+    run_survival_screen,
     search_literature,
     set_target,
 )
@@ -261,13 +267,14 @@ statistical_interpreter = _agent(
     "statistical_interpreter",
     "Interprets association evidence and proposes physiological feature transformations to evaluate.",
     prompts.STATISTICAL_INTERPRETER,
-    tools=[propose_feature],
+    tools=[propose_feature, run_survival_screen, run_subgroup_analysis, run_dose_response],
     output_key="statistical_interpretation",
 )
 ml_interpreter = _agent(
     "ml_interpreter",
     "Interprets the held-out predictive (cross-validated model vs null) evidence of the latest round.",
     prompts.ML_INTERPRETER,
+    tools=[run_multivariable_model, run_nonlinear_model],
     output_key="ml_interpretation",
 )
 dual_track = ParallelAgent(
@@ -280,7 +287,7 @@ critic_agent = _agent(
     "Adversarially attacks candidates for leakage, confounding, construct overlap, and overclaiming.",
     prompts.CRITIC,
     model=REASONING_MODEL,
-    tools=[declare_confounders, exclude_features],
+    tools=[declare_confounders, exclude_features, run_subgroup_analysis, run_multivariable_model, run_dose_response],
     output_key="critique",
 )
 defender_agent = _agent(
@@ -288,6 +295,7 @@ defender_agent = _agent(
     "Defends candidates only when deterministic evidence supports retention; concedes otherwise.",
     prompts.DEFENDER,
     model=REASONING_MODEL,
+    tools=list(ANALYSIS_TOOLS),
     output_key="defense",
 )
 gapcheck_agent = _agent(

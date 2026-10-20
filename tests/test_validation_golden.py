@@ -22,7 +22,9 @@ from codas.core.discovery import DiscoveryRequest, run_discovery
 _EXPECTED_SHA = "2db56e0b2b9256ef710482b627e4f46c1a3316f8c1bfafc61a0b4fd4fcb015a4"
 # Full-report fingerprint (fact sheet + warnings + audit log + candidates) — pins the WHOLE discovery
 # pipeline so _screen / _assemble_report / build_analysis_frame can also be refactored no-change.
-_EXPECTED_REPORT_SHA = "dbecd3912ff78093fe1f466461fcc34f94027d4d2bfbaf959fa45c5691d60374"
+# Re-pinned (aou branch) when the interaction-terms warning stopped claiming that no products are
+# generated (data._add_interaction_features does generate a bounded set); verdicts are unchanged.
+_EXPECTED_REPORT_SHA = "17bbd9e876c6efd7496cab7f428552c63caae04055a206749d23c4de11eeb082"
 
 
 def _fingerprint(df: pd.DataFrame, **kw) -> list:

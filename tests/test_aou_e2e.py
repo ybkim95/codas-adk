@@ -52,7 +52,11 @@ SCRIPTS: dict[str, list[types.Part]] = {
     "hypotheses_agent": [_call("search_literature", query="daily steps and HbA1c in n = 12 participants")],
     "search_agent": [_call("run_discovery_round")],
     "statistical_interpreter": [_call("propose_feature", operation="ratio", feature_a="act_steps_mean",
-                                      feature_b="sleep_rare_mean")],
+                                      feature_b="sleep_rare_mean"),
+                                _call("run_subgroup_analysis", feature="act_steps_mean", by="female"),
+                                _call("run_dose_response", feature="act_steps_mean")],
+    "ml_interpreter": [_call("run_multivariable_model", features_csv="act_steps_mean,act_steps_sd"),
+                       _call("run_nonlinear_model", features_csv="act_steps_mean,act_steps_sd")],
     "gapcheck_agent": [_call("check_convergence")],
     # The critic judges one input to be target leakage; the next round must run without it.
     "critic_agent": [_call("exclude_features", columns_csv="act_calories_out_mean,act_calories_out_sd",
@@ -213,7 +217,12 @@ def test_full_graph_sends_only_masked_aggregates(aou_env):
     assert len(state["rounds"]) >= 2 and "act_calories_out_mean" in last["excluded_features"]
     assert not any("act_calories_out" in c["feature"] for c in state["latest_report"]["candidates"])
 
-    # 5. The saved report is masked.
+    # 5. The interpreters ran the deeper analyses, which reached the model as aggregates and were kept.
+    done = {a["tool"] for a in state.get("analyses") or [] if "error" not in a["result"]}
+    assert {"subgroup_analysis", "dose_response", "multivariable_model", "nonlinear_model"} <= done, done
+    assert '"heterogeneity_p"' in everything and '"incremental"' in everything
+
+    # 6. The saved report is masked.
     report = Path(summary["report_path"]).read_text(encoding="utf-8")
     assert "n = 7" not in report and "15 cases" not in report and MASK in report
     assert "n = 7" not in str(state.get("report"))
