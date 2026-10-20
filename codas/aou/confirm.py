@@ -39,6 +39,12 @@ Every hypothesis tested on a holdout is appended to a ledger next to the outputs
 (``holdout_ledger.jsonl``), keyed by which participants the holdout holds. Replication is judged on
 the BH q-value across every hypothesis ever tested on that holdout, so re-running the analysis, or
 running other outcomes on the same participants, cannot buy extra chances at a false replication.
+
+Hypotheses the agents registered from the literature before any statistic existed (``a_priori``
+family, with their predicted direction and how established each is) are tested whatever discovery
+found and judged on BH across that family alone: they were fixed before the data could steer them,
+so they do not pay for the exploratory search. Discovery's validated candidates form the
+``exploratory`` family and are judged on the ledger.
 """
 
 from __future__ import annotations
@@ -85,16 +91,33 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
     adherence check, ``covariate_imputations`` how many times missing confounder values are imputed. The record also counts the tests the discovery ran, so the
     report can say how many looks preceded the registration."""
     report = state.get("latest_report") or {}
-    candidates = [c for c in report.get("candidates") or [] if c.get("verdict") == "validated"]
+    every = {c["feature"]: c for c in report.get("candidates") or []}
+    candidates = [c for c in every.values() if c.get("verdict") == "validated"]
     candidates.sort(key=lambda c: -abs(float(c.get("rho") or 0)))
     proposed = {p.get("name"): p for p in state.get("proposed_features") or []}
+
+    def definition(name: str) -> dict[str, Any]:
+        if name in proposed:
+            return {"op": proposed[name]["op"], "a": proposed[name]["a"], "b": proposed[name]["b"]}
+        return {"components": list((every.get(name) or {}).get("components") or [])}
+
+    def seen(name: str) -> dict[str, Any]:
+        c = every.get(name) or {}
+        rho = c.get("rho")
+        return {"discovery_rho": round(float(rho), 4) if isinstance(rho, (int, float)) else None,
+                "discovery_q": c.get("q_value")}
+
     hypotheses = []
-    for c in candidates[:max_hypotheses]:
+    for h in (state.get("a_priori_hypotheses") or [])[:max_hypotheses]:
+        hypotheses.append({"feature": h["feature"], "definition": definition(h["feature"]),
+                           "direction": 1 if int(h["direction"]) > 0 else -1, **seen(h["feature"]),
+                           "family": "a_priori", "knownness": h.get("knownness"), "construct": h.get("construct"),
+                           "citation": h.get("citation")})
+    registered = {h["feature"] for h in hypotheses}
+    for c in [c for c in candidates if c["feature"] not in registered][:max_hypotheses]:
         name = c["feature"]
-        definition = ({"op": proposed[name]["op"], "a": proposed[name]["a"], "b": proposed[name]["b"]}
-                      if name in proposed else {"components": list(c.get("components") or [])})
-        hypotheses.append({"feature": name, "definition": definition, "direction": 1 if c["rho"] > 0 else -1,
-                           "discovery_rho": round(float(c["rho"]), 4), "discovery_q": c.get("q_value")})
+        hypotheses.append({"feature": name, "definition": definition(name), "direction": 1 if c["rho"] > 0 else -1,
+                           **seen(name), "family": "exploratory"})
     rounds = state.get("rounds") or []
     record = {
         "stem": stem, "target": state.get("target_column"), "survival_time": survival_time,
@@ -265,7 +288,11 @@ def ledger_summary(out_dir: Path, key: str, alpha: float = 0.05) -> dict[str, An
 def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, Any], target: str,
                      time_col: str | None, cov: pd.DataFrame | None,
                      with_adherence: pd.DataFrame | None = None) -> dict[str, Any]:
-    row: dict[str, Any] = {"feature": h["feature"], "direction": h["direction"], "discovery_rho": h["discovery_rho"]}
+    row: dict[str, Any] = {"feature": h["feature"], "direction": h["direction"], "discovery_rho": h["discovery_rho"],
+                           "family": h.get("family", "exploratory")}
+    for key in ("knownness", "construct", "citation"):
+        if h.get(key) is not None:
+            row[key] = h[key]
     x = _feature(frame, h)
     if x is None or x.notna().sum() < _MIN_ROWS:
         row.update(status="not testable on the holdout", p=float("nan"))
@@ -331,13 +358,17 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
     rows = [_test_hypothesis(frame, h, prereg, target, time_col, cov, with_adherence) for h in prereg["hypotheses"]]
     for row, q in zip(rows, _bh([r["p"] for r in rows])):
         row["q"] = q
+    for family in {r["family"] for r in rows}:  # BH within each family as well
+        members = [r for r in rows if r["family"] == family]
+        for row, q in zip(members, _bh([r["p"] for r in members])):
+            row["q_family"] = q
 
     ledger = None
     if ledger_key is not None:
         path = Path(out_dir) / LEDGER_NAME
         prior = [e for e in _ledger_entries(path, ledger_key) if e.get("prereg") != prereg["sha256"]]
         mine = [{"key": ledger_key, "prereg": prereg["sha256"], "stem": prereg["stem"], "feature": r["feature"],
-                 "p": r["p"], "same_direction": r.get("same_direction", False)}
+                 "p": r["p"], "same_direction": r.get("same_direction", False), "family": r["family"]}
                 for r in rows if np.isfinite(r["p"])]
         pooled = _bh([e["p"] for e in prior] + [e["p"] for e in mine])[len(prior):]
         cumulative = {e["feature"]: q for e, q in zip(mine, pooled)}
@@ -352,7 +383,10 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
     for row in rows:
         if "same_direction" not in row:
             continue
-        q = row["q_ledger"] if ledger is not None else row["q"]
+        # A-priori hypotheses are judged within their own family; exploratory ones on the whole ledger.
+        q = (row["q_family"] if row["family"] == "a_priori"
+             else row["q_ledger"] if ledger is not None else row["q"])
+        row["q_used"] = q
         row["replicated"] = bool(row["same_direction"] and np.isfinite(q) and q <= prereg["alpha"])
         row["status"] = "replicated" if row["replicated"] else "not replicated"
         passed, failed = _falsification(row)
@@ -382,7 +416,11 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
         "discovery_variants_evaluated": prereg.get("discovery_variants_evaluated"),
         "replicated": sum(1 for r in rows if r.get("replicated")),
         "robust": sum(1 for r in rows if r.get("robust")),
-        "tested": sum(1 for r in rows if "replicated" in r)})
+        "tested": sum(1 for r in rows if "replicated" in r),
+        "families": {f: {"tested": sum(1 for r in rows if r["family"] == f and "replicated" in r),
+                         "replicated": sum(1 for r in rows if r["family"] == f and r.get("replicated")),
+                         "robust": sum(1 for r in rows if r["family"] == f and r.get("robust"))}
+                     for f in ("a_priori", "exploratory") if any(r["family"] == f for r in rows)}})
     (out_dir / f"{prereg['stem']}_confirmation.json").write_text(json.dumps(result, indent=2, default=str),
                                                                  encoding="utf-8")
     return result
@@ -417,17 +455,32 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
              + f"), and {result.get('robust', 0)} also passed every "
              f"falsification test that could run. The agents never saw these data or results"
              + (f"; discovery evaluated {looks} candidate variants before registering" if looks else "")
-             + f". Pre-registration hash: `{result['prereg_sha256'][:16]}`.", "",
-             "| feature | discovery rho | holdout effect | 95% CI | q | E-value | status | dose-response | "
-             "falsification failed |", "|---|---|---|---|---|---|---|---|---|"]
-    for r in result["hypotheses"]:
-        effect, ci, ev = _effect_text(r)
-        q = r.get("q_ledger", r.get("q"))
-        dose = r.get("dose_response")
-        dose_text = "" if dose is None else ("monotone" if dose["monotone"] else "not monotone")
-        status = r.get("status", "") + (" (robust)" if r.get("robust") else "")
-        lines.append(f"| {r['feature']} | {r['discovery_rho']} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
-                     f"{dose_text} | {', '.join(r.get('falsification_failed') or []) or '-'} |")
+             + f". Pre-registration hash: `{result['prereg_sha256'][:16]}`.", ""]
+    families = result.get("families") or {}
+    groups = [("a_priori", "A-priori hypotheses (registered from the literature before any statistic existed; "
+                           "direction as predicted; BH within this family of {n})"),
+              ("exploratory", "Exploratory candidates (validated in discovery; " + family + ")")]
+    for key, title in groups:
+        members = [r for r in result["hypotheses"] if r.get("family", "exploratory") == key]
+        if not members:
+            continue
+        if len(families) > 1 or key == "a_priori":
+            counts = families.get(key, {})
+            lines += [f"**{title.format(n=len(members))}**: {counts.get('replicated', 0)} of "
+                      f"{counts.get('tested', 0)} replicated, {counts.get('robust', 0)} robust.", ""]
+        lines += ["| feature | discovery rho | holdout effect | 95% CI | q | E-value | status | dose-response | "
+                  "falsification failed |", "|---|---|---|---|---|---|---|---|---|"]
+        for r in members:
+            effect, ci, ev = _effect_text(r)
+            q = r.get("q_used", r.get("q_ledger", r.get("q")))
+            dose = r.get("dose_response")
+            dose_text = "" if dose is None else ("monotone" if dose["monotone"] else "not monotone")
+            status = r.get("status", "") + (" (robust)" if r.get("robust") else "")
+            if r.get("knownness"):
+                status += f"; {r['knownness']}"
+            lines.append(f"| {r['feature']} | {r['discovery_rho']} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
+                         f"{dose_text} | {', '.join(r.get('falsification_failed') or []) or '-'} |")
+        lines.append("")
     adjusted = [r for r in result["hypotheses"] if r.get("adherence_adjusted")]
     if adjusted:
         lines += ["", "Wear adherence as a negative-control exposure: each effect re-estimated with "

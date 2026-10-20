@@ -18,6 +18,7 @@ The tools fall into two groups:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from pathlib import Path
@@ -548,6 +549,62 @@ def _coverage(path: Path, columns: list[str]) -> dict[str, Any]:
         else:
             out[c] = {"non_missing_fraction": round(have / len(frame), 3) if len(frame) else None}
     return out
+
+
+# --- a-priori hypotheses -----------------------------------------------------------------------
+
+_KNOWNNESS = ("established", "emerging", "unexplored")
+_MAX_A_PRIORI = int(os.getenv("CODAS_MAX_A_PRIORI_HYPOTHESES", "8"))
+
+
+def register_hypotheses(hypotheses_json: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Register falsifiable hypotheses BEFORE any discovery statistic exists. ``hypotheses_json`` is a
+    JSON list of objects with: ``feature`` (an existing column, or a feature you registered with
+    propose_feature), ``direction`` (positive/negative or 1/-1: the association you predict),
+    ``construct`` (what the feature measures), ``mechanism``, ``citation`` (from search_literature), and
+    ``knownness``: established (the literature already reports it), emerging (indirect or preliminary
+    evidence) or unexplored (no evidence found). Each is pre-registered and tested on the sealed holdout
+    whatever discovery finds, in its own family, so a hypothesis fixed before the data could steer it
+    does not pay for the exploratory search. Registration closes when the first discovery round runs."""
+    state = tool_context.state
+    if state.get("rounds"):
+        return {"error": "Registration is closed: a discovery round has already run, so new hypotheses would "
+                         "no longer be a priori."}
+    try:
+        items = json.loads(hypotheses_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": f"hypotheses_json is not valid JSON: {exc}"}
+    if not isinstance(items, list):
+        return {"error": "hypotheses_json must be a JSON list of hypothesis objects."}
+    path = _resolve_csv_path(state.get("csv_path"), "")
+    columns = set(read_csv_dataset(path).columns) if path is not None else set()
+    proposals = {p.get("name") for p in state.get("proposed_features") or []}
+    blocked = {str(state.get("target_column") or ""), *(state.get("excluded_columns") or []),
+               *(state.get("context_columns") or []), *(state.get("confounder_columns") or [])}
+    registered = list(state.get("a_priori_hypotheses") or [])
+    accepted, rejected = [], []
+    for item in items:
+        item = item if isinstance(item, dict) else {}
+        feature = str(item.get("feature") or "").strip()
+        raw = str(item.get("direction", "")).strip().lower()
+        direction = 1 if raw in {"1", "+1", "positive", "+"} else -1 if raw in {"-1", "negative", "-"} else 0
+        knownness = str(item.get("knownness") or "").strip().lower()
+        problem = ("it is the target, excluded, or adjustment-only" if feature in blocked
+                   else "not a column or a proposed feature" if feature not in columns | proposals
+                   else "direction must be positive or negative" if not direction
+                   else f"knownness must be one of {', '.join(_KNOWNNESS)}" if knownness not in _KNOWNNESS
+                   else "already registered" if any(h["feature"] == feature for h in registered)
+                   else f"at most {_MAX_A_PRIORI} hypotheses" if len(registered) >= _MAX_A_PRIORI else None)
+        if problem:
+            rejected.append({"feature": feature, "reason": problem})
+            continue
+        entry = {"feature": feature, "direction": direction, "knownness": knownness,
+                 **{k: str(item.get(k) or "")[:300] for k in ("construct", "mechanism", "citation")}}
+        registered.append(entry)
+        accepted.append(entry)
+    state["a_priori_hypotheses"] = registered
+    return _json_safe({"registered": accepted, "rejected": rejected, "total_registered": len(registered),
+                       "note": "Each registered hypothesis is tested once on the sealed holdout in the a-priori family."})
 
 
 # --- analysis tools: deeper, deterministic analyses an agent chooses (codas.core.analyses) ---------

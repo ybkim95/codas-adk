@@ -81,3 +81,28 @@ def test_tool_results_are_masked_in_aou_mode(tmp_path, monkeypatch):
     masked = after_tool_logger(SimpleNamespace(name="run_subgroup_analysis"), {}, ctx, tiny)
     assert masked["strata"][0]["n"] != 7
     assert "error" not in out
+
+
+def test_register_hypotheses_validates_and_stores_a_priori_hypotheses(tmp_path):
+    import json
+
+    ctx = _ctx(tmp_path)
+    tools.propose_feature("ratio", "a", "b", ctx, name="a_per_b")
+    out = tools.register_hypotheses(json.dumps([
+        {"feature": "a_per_b", "direction": "positive", "construct": "relative load", "mechanism": "m",
+         "knownness": "emerging", "citation": "doi:1"},
+        {"feature": "noise", "direction": -1, "construct": "c", "knownness": "established"},
+        {"feature": "leak", "direction": 1, "knownness": "unexplored"},          # excluded column
+        {"feature": "nothing_here", "direction": 1, "knownness": "unexplored"},  # not a column or proposal
+        {"feature": "a", "direction": "up", "knownness": "unexplored"},          # bad direction
+    ]), ctx)
+    assert [h["feature"] for h in out["registered"]] == ["a_per_b", "noise"]
+    assert len(out["rejected"]) == 3
+    stored = ctx.state["a_priori_hypotheses"]
+    assert [(h["feature"], h["direction"], h["knownness"]) for h in stored] == [("a_per_b", 1, "emerging"),
+                                                                               ("noise", -1, "established")]
+    assert "error" in tools.register_hypotheses("not json", ctx)
+    # Registration closes once a discovery round has run: the hypotheses must precede the statistics.
+    ctx.state["rounds"] = [{"round": 0}]
+    assert "error" in tools.register_hypotheses(json.dumps([{"feature": "a", "direction": 1,
+                                                             "knownness": "emerging"}]), ctx)

@@ -51,6 +51,17 @@ it encodes the outcome. That is target leakage, and every round that keeps it wi
 for leakage only: a confounded feature is adjusted for, not excluded, and a weak feature is not
 leakage.
 
+Then commit, before any statistic exists: call register_hypotheses with your sharpest falsifiable
+hypotheses (a feature, the direction you predict, the construct it measures, the mechanism and the
+citation), each labelled by how established it is in what you retrieved — established, emerging or
+unexplored. Look past the obvious summaries: when the task describes richer features (for example
+measures of rhythm, timing, regularity, variability or fragmentation), ask which of them the literature
+links to the outcome only weakly or not at all, because that is where a finding would be new; keep
+established associations too, as known reference points. If a hypothesis needs two columns combined,
+call propose_feature first and register it by that name. These hypotheses are tested once on the
+sealed holdout whatever the search finds, in their own family, so register only what you would stand
+behind; registration closes when the first discovery round runs.
+
 These are expectations for the critic to check, not findings, and carry no statistics of their own —
 every number comes from the deterministic engine.
 """
@@ -176,8 +187,9 @@ surviving association with no plausible mechanism is itself a flag. Invent no st
 """
 
 NOVELTY = """
-You are the CoDaS Novelty agent. For each surviving candidate operationalization, call search_literature
-to check how established it is, then classify it as established, supported, emerging, or unverified
+You are the CoDaS Novelty agent. The hypotheses registered before the data were seen, with the
+Researcher's knownness labels, are: {a_priori_hypotheses?}. For each surviving candidate
+operationalization, and each registered hypothesis, call search_literature to check how established it is, then classify it as established, supported, emerging, or unverified
 against what the retrieved literature reports, marking the uncertainty of each label and citing sources.
 If grounding is unavailable, say so and stay conservative — never assert novelty or precedence beyond
 the evidence, and never fabricate a citation.

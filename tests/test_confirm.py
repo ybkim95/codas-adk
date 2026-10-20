@@ -181,3 +181,32 @@ def test_missing_confounder_is_imputed_on_the_holdout(tmp_path):
     assert mi["imputations"] == 10 and mi["n"] > cc["n"]
     assert abs(np.log(mi["hr_per_sd"]) - target) < abs(np.log(cc["hr_per_sd"]) - target)
     assert mi["complete_case"]["n"] == cc["n"]
+
+
+def test_a_priori_hypotheses_form_their_own_family(tmp_path):
+    rng = np.random.default_rng(21)
+    n = 6000
+    h = pd.DataFrame({"f1": rng.normal(size=n), "f2": rng.normal(size=n), "p1": rng.normal(size=n),
+                      "p2": rng.normal(size=n), "age": rng.normal(size=n)})
+    h["y"] = 0.25 * h.f1 + 0.04 * h.p1 + rng.normal(size=n)  # p1: a small real effect (p around 0.002)
+    h.to_csv(tmp_path / "a.holdout.csv", index=False)
+    state = _state([_cand("f1", 0.2, ["f1"]), _cand("f2", 0.1, ["f2"])], ["age"])
+    state["a_priori_hypotheses"] = [
+        {"feature": "p1", "direction": 1, "knownness": "emerging", "construct": "c1", "citation": "ref"},
+        {"feature": "p2", "direction": -1, "knownness": "unexplored", "construct": "c2", "citation": ""},
+        {"feature": "f1", "direction": 1, "knownness": "established", "construct": "c3", "citation": "ref"},
+    ]
+    prereg = preregister(state, tmp_path, "a")
+    fam = {x["feature"]: x["family"] for x in prereg["hypotheses"]}
+    assert fam == {"p1": "a_priori", "p2": "a_priori", "f1": "a_priori", "f2": "exploratory"}
+    # Many earlier hypotheses on this holdout: the exploratory family pays for them, the a-priori one does not.
+    ledger = tmp_path / "holdout_ledger.jsonl"
+    ledger.write_text("".join(json.dumps({"key": "k", "prereg": f"old{i}", "stem": "old", "feature": f"x{i}",
+                                          "p": 0.5, "same_direction": False}) + "\n" for i in range(200)))
+    result = confirm(prereg, tmp_path / "a.holdout.csv", tmp_path, ledger_key="k")
+    rows = {r["feature"]: r for r in result["hypotheses"]}
+    assert rows["p1"]["family"] == "a_priori" and rows["p1"]["replicated"]       # BH over 3, not 205
+    assert rows["p1"]["q_family"] < 0.05 < rows["p1"]["q_ledger"]
+    assert not rows["p2"]["replicated"] and rows["f1"]["knownness"] == "established"
+    md = confirmation_markdown(result)
+    assert "A-priori hypotheses" in md and "Exploratory candidates" in md

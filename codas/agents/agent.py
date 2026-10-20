@@ -60,6 +60,7 @@ from codas.agents.tools import (
     preview_columns,
     profile_dataset,
     propose_feature,
+    register_hypotheses,
     run_discovery,
     run_discovery_round,
     run_dose_response,
@@ -246,7 +247,7 @@ hypotheses_agent = _agent(
     "Grounds prior expectations in the scientific literature to orient the search (biological anchoring).",
     prompts.HYPOTHESES,
     model=REASONING_MODEL,
-    tools=[search_literature, declare_confounders, exclude_features],
+    tools=[search_literature, declare_confounders, exclude_features, propose_feature, register_hypotheses],
     output_key="hypotheses",
 )
 data_understanding = SequentialAgent(

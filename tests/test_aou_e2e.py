@@ -49,7 +49,10 @@ def _call(name: str, **args: Any) -> types.Part:
 SCRIPTS: dict[str, list[types.Part]] = {
     "scout_agent": [_call("profile_dataset"), _call("preview_columns"),
                     _call("set_target", target_column="hba1c", confounder_columns_csv="age,female")],
-    "hypotheses_agent": [_call("search_literature", query="daily steps and HbA1c in n = 12 participants")],
+    "hypotheses_agent": [_call("search_literature", query="daily steps and HbA1c in n = 12 participants"),
+                         _call("register_hypotheses", hypotheses_json=json.dumps(
+                             [{"feature": "act_steps_mean", "direction": "negative", "construct": "activity volume",
+                               "mechanism": "insulin sensitivity", "citation": "", "knownness": "established"}]))],
     "search_agent": [_call("run_discovery_round")],
     "statistical_interpreter": [_call("propose_feature", operation="ratio", feature_a="act_steps_mean",
                                       feature_b="sleep_rare_mean"),
@@ -430,6 +433,9 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
                 assert statuses["regular_astigmatism"] == "too few events to test"  # no diagnoses planted
                 assert statuses["impacted_cerumen"] in {"no association", "associated"}
         assert [pc["control"] for pc in confirmation["positive_controls"]] == ["age", "bmi_cov"]
+        first = confirmation["hypotheses"][0]  # registered before any statistic: tested in its own family
+        assert first["feature"] == "act_steps_mean" and first["family"] == "a_priori"
+        assert first["knownness"] == "established" and "a_priori" in confirmation["families"]
         assert confirmation["ledger"]["registrations"] >= 1
         kinds[stem] = prereg["survival_time"]
     # One measurement (value outcome) and one condition (time to event, tested with Cox).
