@@ -114,3 +114,13 @@ def test_spline_dose_response_tests_nonlinearity():
     cox = analyses.spline_dose_response(f, "x", "event", confounders=["age"], time="time")
     assert cox["measure"].startswith("hazard ratio") and cox["nonlinearity_p"] > 0.01
     assert cox["curve"][-1]["effect"] > 1.5  # 90th vs 50th percentile
+
+
+def test_headlines_read_each_result():
+    f, rng = _frame(1500)
+    f["y"] = 0.5 * f.x + rng.normal(size=len(f))
+    sub = analyses.subgroup_analysis(f, "x", "y", "female")
+    assert "female=1" in analyses.headline("subgroup_analysis", sub) and "I²" in analyses.headline("subgroup_analysis", sub)
+    mv = analyses.multivariable_model(f, ["x"], "y", confounders=["age"])
+    assert "independent effects: x" in analyses.headline("multivariable_model", mv)
+    assert analyses.headline("dose_response", {"error": "nope"}) == "not run: nope"

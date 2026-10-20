@@ -89,3 +89,15 @@ def test_a_failing_section_keeps_the_rest_of_the_report(tmp_path, monkeypatch):
     assert path.read_bytes().startswith(b"%PDF")
     error = (tmp_path / "run_pdf_error.txt").read_text()
     assert "section appendix" in error and "drawing failed" in error and "Traceback" in error
+
+
+def test_registered_hypotheses_and_agent_analyses_are_rendered(tmp_path):
+    phases = {**PHASES,
+              "a_priori_hypotheses": [{"feature": "stepsday_rel_amplitude", "direction": -1, "knownness": "emerging",
+                                       "construct": "rhythm strength", "citation": "doi:x"}],
+              "analyses": [{"tool": "subgroup_analysis", "args": {"feature": "f", "by": "female"},
+                            "result": {"strata": [{"stratum": "female=0", "rho": 0.1, "ci95": [0.0, 0.2]}],
+                                       "heterogeneity_p": 0.3, "i2": 0.1}},
+                           {"tool": "dose_response", "args": {"feature": "f"}, "result": {"error": "no rows"}}]}
+    path = pdf_report.build_pdf(tmp_path, "run", phases, EVENTS, "", {"rows": 100})
+    assert path.read_bytes().startswith(b"%PDF") and not (tmp_path / "run_pdf_error.txt").exists()

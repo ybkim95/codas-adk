@@ -479,3 +479,48 @@ def spline_dose_response(frame: pd.DataFrame, feature: str, target: str,
                "ols": "mean difference vs the median"}[kind]
     return {"feature": feature, "model": kind, "measure": measure, "n": n, "knots": knots.tolist(),
             "nonlinearity_p": p_nl, "curve": curve}
+
+
+# --- one-line summaries (reports and notebooks) --------------------------------------------------
+
+def _g(value: Any) -> str:
+    return f"{value:.3g}" if isinstance(value, (int, float)) and math.isfinite(value) else "n/a"
+
+
+def _effect(res: dict[str, Any]) -> str:
+    ci = res.get("ci95") or [math.nan, math.nan]
+    if "hr_per_sd" in res:
+        return f"HR/SD {_g(res['hr_per_sd'])} ({_g(ci[0])} to {_g(ci[1])})"
+    return f"rho {_g(res.get('rho'))} ({_g(ci[0])} to {_g(ci[1])})"
+
+
+def headline(tool: str, result: dict[str, Any]) -> str:
+    """A one-line reading of an analysis result, for reports and notebook tables."""
+    if "error" in result:
+        return f"not run: {result['error']}"
+    if tool == "survival_screen":
+        top = result.get("results") or []
+        return "; ".join(f"{r['feature']}: {_effect(r)}, q {_g(r.get('q'))}" for r in top[:4])
+    if tool == "subgroup_analysis":
+        strata = "; ".join(f"{s['stratum']}: {_effect(s)}" for s in result.get("strata") or [])
+        return (f"{strata}. Heterogeneity p {_g(result.get('heterogeneity_p'))}, I² {_g(result.get('i2'))}")
+    if tool == "multivariable_model":
+        inc = result.get("incremental") or {}
+        ci = inc.get("delta_ci95") or [math.nan, math.nan]
+        independent = [c["term"] for c in result.get("coefficients") or []
+                       if c["term"] not in (inc.get("base_terms") or []) and isinstance(c.get("p"), float) and c["p"] < 0.05]
+        return (f"{result.get('metric')} {_g(inc.get('base'))} with covariates only, {_g(inc.get('full'))} with the "
+                f"features (delta {_g(inc.get('delta'))}, 95% CI {_g(ci[0])} to {_g(ci[1])}); independent effects: "
+                + (", ".join(independent) or "none"))
+    if tool == "nonlinear_model":
+        shapes = ", ".join(f"{s['feature']} {s['shape']}" for s in result.get("shapes") or [])
+        top = (result.get("importance") or [{}])[0].get("feature")
+        return (f"{result.get('metric')} linear {_g(result.get('linear'))} vs boosting {_g(result.get('nonlinear'))}; "
+                f"shapes: {shapes}; most important: {top}")
+    if tool == "dose_response":
+        curve = result.get("curve") or []
+        end = curve[-1] if curve else {}
+        ci = end.get("ci95") or [math.nan, math.nan]
+        return (f"non-linearity p {_g(result.get('nonlinearity_p'))}; 90th vs 50th percentile: "
+                f"{_g(end.get('effect'))} ({_g(ci[0])} to {_g(ci[1])}) {result.get('measure', '')}")
+    return ""

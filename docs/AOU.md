@@ -270,7 +270,7 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   that never enter the candidate screen but can be declared as confounders. The AoU runner fills it
   with the spec's covariates and lists them in the goal; the Researcher and Critic decide, with a
   recorded reason, whether to adjust for each (`declare_confounders`). Each round summary shows the
-  share of rows that have each covariate, since adjusting drops the rows that lack it. Declaring a
+  share of rows that have each covariate and how missing values are handled. Declaring a
   confounder after a round has run revises the design, so the loop runs at least once more with it.
 * **Blocked columns stay blocked.** The target, the participant/time columns and every excluded,
   confounder and context column are kept out of engineered products and out of agent-proposed
@@ -284,6 +284,46 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   outcome kind, so a condition's pre-diagnosis window is not read as post-diagnosis behaviour.
 * **Chance-claim audit.** If the report says the model beats chance while the engine's permutation
   test says it does not, a correction note is appended to the report.
+
+## Beyond the correlation screen (phenotypes, adherence, imputation, analyses, a-priori hypotheses)
+
+* **Intraday digital phenotypes** (`codas/aou/phenotypes.py`, spec key `phenotypes`). From a
+  minute-activity table (`steps_intraday`): relative amplitude (M10/L5), interdaily stability,
+  intradaily variability, cosinor amplitude and acrophase, L5 onset, peak-1 and peak-30 cadence, and
+  activity fragmentation. From a sleep-stage table (`sleep_level`): sleep midpoint mean and SD, onset
+  SD, social jetlag, wake bouts, stage transitions per hour and REM latency. Each is a published
+  definition, computed in BigQuery over the baseline window on the primary wearable's valid days, and
+  checked against an independent numpy implementation in the tests. Column names are given per role
+  as a list of acceptable names, resolved against the CDR's schema; an optional source (all phenotype
+  sources, and the heart-rate zone minutes in the example spec) that is not found is skipped with a
+  note. The checks cell prints every wearable table's columns so the roles can be confirmed.
+* **Wear adherence is adjustment-only.** Every `<prefix>_days` column (days with data per source) is a
+  context column: never screened, explained to the agents as adherence, and available as a
+  confounder. On the holdout each hypothesis is re-estimated with them added (a negative-control
+  exposure); `robust` also requires the effect to hold there, and adherence's own association with
+  the outcome is reported as the benchmark.
+* **Missing covariates are imputed.** `codas/core/imputation.py`: chained equations with posterior
+  draws, the exposure and outcome as auxiliaries (plus the Nelson-Aalen hazard for time to event),
+  Rubin's rules. In discovery `DiscoveryRequest.covariate_imputations` (default 0, complete-case) is
+  set to 5 by the AoU runner (`CODAS_COVARIATE_IMPUTATIONS`); the holdout uses 10
+  (`CODAS_CONFIRM_IMPUTATIONS`) and keeps the complete-case estimate alongside.
+* **Analyses the agents choose** (`codas/core/analyses.py`, tools in `codas/agents/tools.py`): a Cox
+  survival screen for incident outcomes; subgroup effects with Cochran's Q and I^2; a multivariable
+  model (OLS, logistic or Cox) with each feature's independent effect and the cross-validated
+  incremental value over the confounders (delta R^2, AUC or C-index, bootstrap CI); gradient boosting
+  against the linear model with permutation importance and partial-dependence shapes; restricted
+  cubic spline dose-response. The statistical and ML interpreters, the critic and the defender call
+  them; each call is recorded (`analyses` in the state file, a table in the notebook and the PDF).
+  Round summaries now give each candidate's q, confounder-adjusted rho, failed checks, and the
+  engine's warnings.
+* **Hypotheses registered before the data** (`register_hypotheses`). After searching the literature
+  and before the first round, the Researcher registers falsifiable hypotheses (feature, predicted
+  direction, construct, mechanism, citation, and whether the association is established, emerging or
+  unexplored). They are tested on the holdout whatever discovery finds, as an `a_priori` family judged
+  by BH within the family; discovery's candidates are the `exploratory` family, judged on the
+  cumulative ledger. Registration closes when the first round runs.
+* **Still not done:** mixed-effects models need repeated measures, and the extraction gives one row
+  per person; a person-by-month panel with within-person effects is the next step.
 
 ## Testing outside the Workbench
 

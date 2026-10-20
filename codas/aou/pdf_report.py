@@ -264,6 +264,12 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                           widths=[20, 55, 105])
         doc.heading("Hypotheses and literature anchoring", 2)
         doc.markdown(phases.get("hypotheses") or "")
+        registered = phases.get("a_priori_hypotheses") or []
+        if registered:
+            doc.heading("Hypotheses registered before any statistic (tested on the sealed holdout)", 3)
+            doc.table(["feature", "predicted", "knownness", "construct", "citation"],
+                      [[h.get("feature"), "positive" if h.get("direction", 0) > 0 else "negative", h.get("knownness"),
+                        h.get("construct"), h.get("citation")] for h in registered], widths=[50, 20, 22, 44, 44])
 
     def phases_bc() -> None:
         doc.heading("Phases B-C: discovery loop and adversarial validation")
@@ -282,6 +288,14 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
             for e in by_round[r]:
                 doc.heading(e["author"], 3)
                 doc.markdown(e["text"])
+        ran = phases.get("analyses") or []
+        if ran:
+            from codas.core.analyses import headline
+
+            doc.heading("Deeper analyses the agents ran", 2)
+            doc.table(["analysis", "arguments", "result"],
+                      [[a.get("tool"), ", ".join(f"{k}={v}" for k, v in (a.get("args") or {}).items() if v),
+                        headline(a.get("tool", ""), a.get("result") or {})] for a in ran], widths=[32, 38, 110])
 
     def phase_d() -> None:
         doc.heading("Phase D: mechanisms and novelty")

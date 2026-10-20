@@ -144,8 +144,15 @@ def schema_table(spec: Any, present: pd.DataFrame) -> pd.DataFrame:
     for s in spec.wearables:
         needed = [s.date_column, *s.columns] + ([s.filter_column] if s.filter_column else [])
         missing = [c for c in needed if (s.table, c) not in have]
-        rows.append({"table": s.table, "prefix": s.prefix, "columns needed": len(needed),
-                     "found": len(needed) - len(missing), "missing": ", ".join(missing) or "-"})
+        rows.append({"table": s.table, "prefix": s.prefix, "kind": "daily" + (" (optional)" if s.optional else ""),
+                     "columns needed": len(needed), "found": len(needed) - len(missing),
+                     "missing": ", ".join(missing) or "-"})
+    for p in getattr(spec, "phenotypes", []):
+        needed = [c for c in p.needed() if c != "person_id"]
+        missing = [c for c in needed if (p.table, c) not in have]
+        rows.append({"table": p.table, "prefix": p.prefix, "kind": p.kind.replace("_", " ") + " (optional)",
+                     "columns needed": len(needed), "found": len(needed) - len(missing),
+                     "missing": ", ".join(missing) or "-"})
     return pd.DataFrame(rows)
 
 
@@ -313,7 +320,8 @@ def cohort_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
 
 
 def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
-    """The sealed-holdout test of each pre-registered candidate and its falsification results."""
+    """The sealed-holdout test of each pre-registered hypothesis (a-priori family first, then the
+    exploratory candidates) and its falsification results, including the wear-adherence check."""
     conf = _read(_out_dir(result) / f"{stem}_confirmation.json")
     if not conf:
         return None
@@ -322,16 +330,43 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
         ci = h.get("ci95") or [None, None]
         effect = (f"HR/SD {h.get('hr_per_sd')}" if h.get("test") == "cox" else
                   f"rho {h.get('rho')}" if "rho" in h else "")
-        q = h.get("q_ledger", h.get("q"))
-        rows.append({"feature": h["feature"], "discovery rho": h.get("discovery_rho"), "holdout effect": effect,
+        q = h.get("q_used", h.get("q_ledger", h.get("q")))
+        family = h.get("family", "exploratory").replace("_", "-")
+        adherence = h.get("adherence_adjusted")
+        rows.append({"feature": h["feature"],
+                     "family": family + (f" ({h['knownness']})" if h.get("knownness") else ""),
+                     "discovery rho": h.get("discovery_rho"), "holdout effect": effect,
                      "95% CI": "" if ci[0] is None else f"{ci[0]} to {ci[1]}",
                      "q": None if not isinstance(q, float) or not np.isfinite(q) else round(q, 4),
                      "status": h.get("status"), "robust": h.get("robust"),
-                     "dose-response": (h.get("dose_response") or {}).get("monotone"),
+                     "holds after adherence": None if adherence is None else adherence.get("holds"),
                      "failed checks": ", ".join(h.get("falsification_failed") or []) or "-"})
-    columns = ["feature", "discovery rho", "holdout effect", "95% CI", "q", "status", "robust", "dose-response",
-               "failed checks"]
+    columns = ["feature", "family", "discovery rho", "holdout effect", "95% CI", "q", "status", "robust",
+               "holds after adherence", "failed checks"]
     return pd.DataFrame(rows, columns=columns)  # keeps its columns when nothing was pre-registered
+
+
+def hypotheses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The hypotheses the agents registered from the literature before any statistic existed."""
+    registered = _read(_out_dir(result) / f"{stem}_state.json").get("a_priori_hypotheses") or []
+    if not registered:
+        return None
+    return pd.DataFrame([{"feature": h.get("feature"), "predicted": "positive" if h.get("direction", 0) > 0 else "negative",
+                          "knownness": h.get("knownness"), "construct": h.get("construct"),
+                          "mechanism": h.get("mechanism"), "citation": h.get("citation")} for h in registered])
+
+
+def analyses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The deeper analyses the agents chose to run (survival screen, subgroups, multivariable, non-linear,
+    dose-response), one line each."""
+    from codas.core.analyses import headline
+
+    ran = _read(_out_dir(result) / f"{stem}_state.json").get("analyses") or []
+    if not ran:
+        return None
+    return pd.DataFrame([{"analysis": a.get("tool"),
+                          "arguments": ", ".join(f"{k}={v}" for k, v in (a.get("args") or {}).items() if v),
+                          "result": headline(a.get("tool", ""), a.get("result") or {})} for a in ran])
 
 
 _HR_TICKS = (0.25, 0.33, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0)
