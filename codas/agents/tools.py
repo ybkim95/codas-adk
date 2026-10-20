@@ -481,6 +481,7 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
         top_k=top_k,
         max_ratio_features=ratio_features,
         validation_resamples=_ROUND_RESAMPLES,
+        covariate_imputations=int(tool_context.state.get("covariate_imputations") or 0),
     )
     # A bad target/role choice makes the engine raise rather than crash the loop; return a recoverable
     # error so the agent can revise the design and retry.
@@ -503,6 +504,10 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
     context = list(tool_context.state.get("context_columns") or [])
     if context:
         summary["adjustment_covariates"] = _coverage(path, context)
+        imputations = int(tool_context.state.get("covariate_imputations") or 0)
+        summary["missing_covariate_handling"] = (
+            f"multiply imputed ({imputations} draws, pooled)" if imputations > 0
+            else "rows lacking a value are dropped from the adjusted tests")
     tool_context.state["rounds"] = rounds + [summary]
     tool_context.state["fact_sheet"] = report.get("fact_sheet", {})
     tool_context.state["latest_report"] = report
@@ -510,8 +515,8 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
 
 
 def _coverage(path: Path, columns: list[str]) -> dict[str, Any]:
-    """Share of rows with a value for each adjustment covariate. Adjusting for a covariate drops the
-    rows that lack it, so this is what an agent weighs before declaring one."""
+    """Share of rows with a value for each adjustment covariate: what an agent weighs before declaring
+    one (rows lacking it are dropped from adjusted tests unless missing values are imputed)."""
     try:
         frame = read_csv_dataset(path)
     except Exception:  # noqa: BLE001 - coverage is advisory; never fail the round over it

@@ -148,6 +148,9 @@ class ValidationConfig:
     # 2000 (which dominated runtime on large datasets). Override via CODAS_MAX_LOO_CHECKS.
     max_loo_checks: int = int(os.getenv("CODAS_MAX_LOO_CHECKS", "200"))
     fdr_alpha: float = 0.05  # Benjamini-Hochberg FDR control level (alpha = 0.05)
+    # Missing confounder values: 0 drops incomplete rows from the adjusted tests (complete-case); m > 0
+    # imputes them m times and pools (codas.core.imputation).
+    covariate_imputations: int = 0
 
 
 def _valid_arrays(frame: pd.DataFrame, feature: str, target: str) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
@@ -292,8 +295,15 @@ def _confounder_tests(frame, subset, x, y, candidate, confounder_columns, config
         ))
         return results
 
+    def adjusted(cov):
+        if config.covariate_imputations > 0:
+            from .imputation import pooled_partial_spearman
+
+            return pooled_partial_spearman(x, y, cov, m=config.covariate_imputations, seed=config.random_state)
+        return partial_spearman(x, y, cov)
+
     covariates = _confounder_covariate_matrix(frame, check_columns, subset.index)
-    partial_rho, partial_p, partial_n = partial_spearman(x, y, covariates)
+    partial_rho, partial_p, partial_n = adjusted(covariates)
     results.append(ValidationTestResult(
         name="confounder_adjusted_robustness",
         dimension="robustness",
@@ -314,8 +324,7 @@ def _confounder_tests(frame, subset, x, y, candidate, confounder_columns, config
     if check_columns == usable_confounders:
         hard_rho, hard_p, hard_n = partial_rho, partial_p, partial_n
     else:
-        hard_rho, hard_p, hard_n = partial_spearman(
-            x, y, _confounder_covariate_matrix(frame, usable_confounders, subset.index))
+        hard_rho, hard_p, hard_n = adjusted(_confounder_covariate_matrix(frame, usable_confounders, subset.index))
     severe_sign_flip = (
         np.isfinite(hard_rho) and np.isfinite(candidate.rho)
         and abs(candidate.rho) > 1e-9

@@ -56,6 +56,22 @@ COVARIATE_NOTE = (
 )
 
 
+ADHERENCE_NOTE = (
+    " These columns count the days each wearable recorded data in the window, i.e. how much a participant "
+    "wore and synced the device: {columns}. They measure wear adherence, not physiology, so they are not "
+    "candidate biomarkers; adherence tracks health engagement and access to care, which also drive "
+    "diagnosis and lab testing. Declare them as confounders when a candidate could reflect how much a "
+    "participant wears the device rather than what the device measures."
+)
+IMPUTATION_NOTE = (
+    " Missing values of a declared confounder are multiply imputed ({m} draws, pooled), so adjusting for a "
+    "covariate keeps every participant instead of dropping those without it."
+)
+# Missing confounder values: imputed this many times in the adjusted tests (0 = drop incomplete rows).
+COVARIATE_IMPUTATIONS = int(os.getenv("CODAS_COVARIATE_IMPUTATIONS", "5"))
+CONFIRM_IMPUTATIONS = int(os.getenv("CODAS_CONFIRM_IMPUTATIONS", "10"))  # the one-shot holdout test affords more
+
+
 def goal_for(spec: CohortSpec, label: str | None = None) -> str:
     kind = spec.outcome.kind
     note = "first qualifying lab value" if kind == "measurement" else "1 = diagnosed, 0 = not"
@@ -75,6 +91,10 @@ def goal_for(spec: CohortSpec, label: str | None = None) -> str:
     if spec.covariates:
         columns = ", ".join(f"{c.name} ({_describe(c)})" for c in spec.covariates)
         covariates = COVARIATE_NOTE.format(columns=columns)
+    if cohort.availability_columns(spec):
+        covariates += ADHERENCE_NOTE.format(columns=", ".join(cohort.availability_columns(spec)))
+    if COVARIATE_IMPUTATIONS > 0:
+        covariates += IMPUTATION_NOTE.format(m=COVARIATE_IMPUTATIONS)
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
                                 target_note=note, window=spec.window_days, index_note=index_note,
                                 covariates=covariates)
@@ -93,7 +113,8 @@ OUTCOME_TIMEOUT_MIN = float(os.getenv("CODAS_OUTCOME_TIMEOUT_MIN", "120"))
 
 async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
                             context_columns: list[str] | None = None,
-                            recorder: TraceRecorder | None = None, on_agent: Any = None) -> dict[str, Any]:
+                            recorder: TraceRecorder | None = None, on_agent: Any = None,
+                            state: dict[str, Any] | None = None) -> dict[str, Any]:
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
@@ -106,7 +127,8 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
     sessions = InMemorySessionService()
     sid = uuid.uuid4().hex[:12]
     await sessions.create_session(app_name="codas_aou", user_id="aou", session_id=sid,
-                                  state={"csv_path": str(csv), "context_columns": list(context_columns or [])})
+                                  state={**(state or {}), "csv_path": str(csv),
+                                         "context_columns": list(context_columns or [])})
     runner = Runner(app_name="codas_aou", agent=root_agent, session_service=sessions)
     message = types.Content(role="user", parts=[types.Part(text=goal)])
     speaking = None
@@ -126,18 +148,20 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
 
 def run_agents(csv: str | Path, goal: str, on_tool_call: Any = None,
                context_columns: list[str] | None = None, recorder: TraceRecorder | None = None,
-               on_agent: Any = None, timeout_min: float | None = None) -> dict[str, Any]:
+               on_agent: Any = None, timeout_min: float | None = None,
+               state: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run the CoDaS agent graph on ``csv`` with the AoU guard on, and return the final session state.
 
     ``context_columns`` are adjustment-only columns (the spec's covariates): never screened as
-    candidates, available to be declared as confounders. ``recorder`` collects the full agent trace;
+    candidates, available to be declared as confounders. ``state`` seeds further session settings (e.g.
+    ``covariate_imputations``). ``recorder`` collects the full agent trace;
     ``on_agent`` is called with each agent's name when it starts its turn. A run longer than
     ``timeout_min`` (default OUTCOME_TIMEOUT_MIN) raises TimeoutError."""
     os.environ["CODAS_AOU_MODE"] = "1"
     check_llm_backend()  # the graph may have been imported before AoU mode was switched on
     minutes = OUTCOME_TIMEOUT_MIN if timeout_min is None else timeout_min
     coro = _run_agents_async(Path(csv).expanduser().resolve(), goal, on_tool_call, context_columns, recorder,
-                             on_agent)
+                             on_agent, state)
     try:
         return _run_sync(asyncio.wait_for(coro, timeout=minutes * 60))
     except asyncio.TimeoutError as exc:
@@ -412,15 +436,19 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
     """Extract one cohort, run the agents on it, save the masked outputs and the agent trace."""
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
     recorder = TraceRecorder(stream_path=Path(out_dir).expanduser().resolve() / f"{spec.name}_trace.jsonl")
-    context = [c.name for c in spec.covariates] + ([FOLLOWUP_COLUMN] if is_survival(spec) else [])
-    state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder, on_agent=on_agent)
+    context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
+               + ([FOLLOWUP_COLUMN] if is_survival(spec) else []))
+    state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder, on_agent=on_agent,
+                       state={"covariate_imputations": COVARIATE_IMPUTATIONS})
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
     if spec.holdout_fraction > 0 and sealed.exists():
         out = Path(out_dir).expanduser().resolve()
         prereg = preregister(state, out, spec.name, survival_time=FOLLOWUP_COLUMN if is_survival(spec) else None,
                              negative_controls=[c.name for c in spec.negative_controls],
-                             positive_controls=list(spec.positive_controls))
+                             positive_controls=list(spec.positive_controls),
+                             availability=cohort.availability_columns(spec),
+                             covariate_imputations=CONFIRM_IMPUTATIONS)
         # The pre-registration is on disk before the holdout is read.
         result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr))
         state["confirmation"] = result

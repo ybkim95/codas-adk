@@ -292,6 +292,12 @@ def _base_columns(spec: CohortSpec) -> list[str]:
     return cols
 
 
+def availability_columns(spec: CohortSpec) -> list[str]:
+    """The per-source counts of days with data in the window (``<prefix>_days``): how much a participant
+    wore or synced the device, not a physiological measurement. Adjustment-only, never a candidate."""
+    return [f"{source.prefix}_days" for source in spec.wearables]
+
+
 def output_columns(spec: CohortSpec) -> list[str]:
     """The columns of the extracted table, in order."""
     return _base_columns(spec) + [c.name for c in spec.covariates]

@@ -111,8 +111,9 @@ for confounding, weakness or redundancy.
 
 When you conclude that a candidate merely tracks a common cause of itself and the outcome, and that
 common cause is available as a column (including any adjustment covariates the task lists), call
-declare_confounders with it and the reason; the next round re-runs adjusted for it. Weigh how many rows
-lack the covariate (shown in the round summary): adjusting drops them.
+declare_confounders with it and the reason; the next round re-runs adjusted for it. The round summary
+shows how many rows lack each covariate and how missing values are handled (dropped or imputed); weigh
+that before declaring one.
 """
 
 DEFENDER = """

@@ -253,3 +253,24 @@ def test_a_reused_run_without_its_pdf_gets_one_and_loses_the_stale_error(synthet
     assert Path(hdl["files"]["pdf"]).exists() and "pdf_error" not in hdl["files"]
     assert "pdf_error" not in json.loads(run_file.read_text(encoding="utf-8"))["summary"]["files"]
     assert "No page open" not in Path(result["summary_path"]).read_text(encoding="utf-8")
+
+
+def test_wear_adherence_is_adjustment_only_and_covariates_are_imputed(synthetic_explore, monkeypatch):
+    from codas.aou import cohort
+
+    seen = {}
+
+    def capture(csv, goal, on_tool_call=None, context_columns=None, recorder=None, state=None, **_):
+        seen.update(goal=goal, context=list(context_columns or []), state=dict(state or {}))
+        return _fake_state()
+
+    monkeypatch.setattr(runner, "run_agents", capture)
+    spec = _window_spec()
+    days = cohort.availability_columns(spec)
+    assert days == [f"{w.prefix}_days" for w in spec.wearables]
+    explore, _calls, _failing = synthetic_explore
+    explore()
+    assert set(days) <= set(seen["context"])                    # never screened as candidates
+    assert all(d in seen["goal"] for d in days) and "wear" in seen["goal"]
+    assert seen["state"]["covariate_imputations"] >= 5          # missing covariates are imputed, not dropped
+    assert "imputed" in seen["goal"]

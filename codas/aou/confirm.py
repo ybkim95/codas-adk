@@ -21,7 +21,16 @@ Falsification, for every candidate, on the same holdout and with the same confou
   pre-registered direction;
 * lag sensitivity (time to event): dropping the first ``sensitivity_lag_days`` of follow-up, where
   undiagnosed disease could have changed the baseline wearable data, should keep the direction.
+* wear adherence (negative-control exposure): the effect re-estimated with the days-with-data
+  columns added to the confounders should keep its direction with a CI that excludes the null. A
+  feature that only tracks how much a participant wears the device loses it; the days columns' own
+  associations with the outcome are reported as the benchmark.
 A candidate is ``robust`` when it replicates and passes every falsification test that could run.
+
+Missing confounder values are multiply imputed when the pre-registration asks for it (chained
+equations with the exposure and outcome as auxiliaries, pooled by Rubin's rules;
+``codas.core.imputation``); the complete-case estimate is kept alongside for comparison. Negative
+controls and dose-response stay complete-case.
 
 Positive controls (columns with a known association with the outcome) are tested the same way, to
 show that the confirmation can detect a real effect on this holdout.
@@ -44,7 +53,8 @@ import numpy as np
 import pandas as pd
 
 from codas.aou.privacy import mask_small_counts
-from codas.core.statistics import partial_spearman, safe_spearman
+from codas.core.imputation import pooled_cox, pooled_partial_spearman_ci
+from codas.core.statistics import safe_spearman
 from codas.core.survival import cox_ph, e_value
 
 _OPS = {"ratio": lambda a, b: a / b.replace(0.0, np.nan), "product": lambda a, b: a * b,
@@ -56,6 +66,7 @@ _MIN_ROWS = 30
 _MIN_CONTROL_EVENTS = 10  # a negative control with fewer events cannot show an association
 _QUANTILES = 5
 _MONOTONE_RHO = 0.8  # rank correlation between quantile and effect that counts as monotone
+_SEED = 17
 
 
 def _digest(record: dict[str, Any]) -> str:
@@ -66,11 +77,13 @@ def _digest(record: dict[str, Any]) -> str:
 def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_time: str | None = None,
                 max_hypotheses: int = 10, negative_controls: list[str] | tuple[str, ...] = (),
                 positive_controls: list[str] | tuple[str, ...] = (),
-                sensitivity_lag_days: int = DEFAULT_SENSITIVITY_LAG_DAYS) -> dict[str, Any]:
+                sensitivity_lag_days: int = DEFAULT_SENSITIVITY_LAG_DAYS,
+                availability: list[str] | tuple[str, ...] = (), covariate_imputations: int = 0) -> dict[str, Any]:
     """Freeze the final round's validated candidates as hypotheses and write ``<stem>_prereg.json``.
 
     ``negative_controls`` are control names (the holdout has ``nc_<name>`` and ``nc_<name>_days``),
-    ``positive_controls`` column names. The record also counts the tests the discovery ran, so the
+    ``positive_controls`` column names, ``availability`` the days-with-data columns used for the
+    adherence check, ``covariate_imputations`` how many times missing confounder values are imputed. The record also counts the tests the discovery ran, so the
     report can say how many looks preceded the registration."""
     report = state.get("latest_report") or {}
     candidates = [c for c in report.get("candidates") or [] if c.get("verdict") == "validated"]
@@ -91,6 +104,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         "hypotheses": hypotheses, "alpha": 0.05, "correction": "benjamini-hochberg",
         "negative_controls": list(negative_controls), "positive_controls": list(positive_controls),
         "sensitivity_lag_days": int(sensitivity_lag_days),
+        "availability": list(availability), "covariate_imputations": int(covariate_imputations),
         "discovery_rounds": len(rounds),
         "discovery_variants_evaluated": sum(int(r.get("evaluated_count") or 0) for r in rounds),
         "discovery_features_proposed": len(proposed),
@@ -140,32 +154,45 @@ def _num(frame: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="coerce")
 
 
-def _cox(time: pd.Series, event: pd.Series, x: pd.Series, cov: pd.DataFrame | None) -> dict[str, Any]:
-    """Cox HR per SD of ``x`` adjusted for ``cov``."""
+def _cox(time: pd.Series, event: pd.Series, x: pd.Series, cov: pd.DataFrame | None, m: int = 0) -> dict[str, Any]:
+    """Cox HR per SD of ``x`` adjusted for ``cov`` (missing ``cov`` values imputed ``m`` times)."""
     z = (x - x.mean()) / x.std(ddof=0)
-    design = np.column_stack([z.to_numpy(float)] + ([cov.to_numpy(float)] if cov is not None else []))
-    fit = cox_ph(time, event, design)
-    hr, lo, hi = fit.hazard_ratio(0)
-    return {"test": "cox", "hr_per_sd": round(hr, 4), "ci95": [round(lo, 4), round(hi, 4)], "p": float(fit.p[0]),
-            "n": fit.n, "events": fit.events, "e_value": round(e_value(hr), 3), "sign": float(np.sign(fit.coef[0]))}
+    fit = pooled_cox(time, event, z, None if cov is None else cov.to_numpy(float), m=m, seed=_SEED)
+    hr, (lo, hi) = fit["hr"], fit["ci95"]
+    out = {"test": "cox", "hr_per_sd": round(hr, 4), "ci95": [round(lo, 4), round(hi, 4)], "p": float(fit["p"]),
+           "n": fit["n"], "events": fit["events"], "e_value": round(e_value(hr), 3), "sign": float(np.sign(fit["coef"]))}
+    if fit["imputations"]:
+        out["imputations"] = fit["imputations"]
+    return out
 
 
-def _rank(x: pd.Series, y: pd.Series, cov: pd.DataFrame | None) -> dict[str, Any]:
+def _rank(x: pd.Series, y: pd.Series, cov: pd.DataFrame | None, m: int = 0) -> dict[str, Any]:
     if cov is not None:
-        rho, p, n = partial_spearman(x.to_numpy(float), y.to_numpy(float), cov.to_numpy(float))
+        fit = pooled_partial_spearman_ci(x.to_numpy(float), y.to_numpy(float), cov.to_numpy(float), m=m, seed=_SEED)
+        rho, p, n, (lo, hi) = fit["rho"], fit["p"], fit["n"], fit["ci95"]
     else:
         rho, p, n = safe_spearman(x.to_numpy(float), y.to_numpy(float))
-    half = 1.959964 / np.sqrt(max(n - 3, 1))  # Fisher-z interval
-    lo, hi = (float(np.tanh(np.arctanh(np.clip(rho, -0.999999, 0.999999)) + s * half)) for s in (-1, 1))
-    return {"test": "partial_spearman" if cov is not None else "spearman", "rho": round(float(rho), 4),
-            "ci95": [round(lo, 4), round(hi, 4)], "p": float(p), "n": int(n), "sign": float(np.sign(rho))}
+        half = 1.959964 / np.sqrt(max(n - 3, 1))  # Fisher-z interval
+        lo, hi = (float(np.tanh(np.arctanh(np.clip(rho, -0.999999, 0.999999)) + s * half)) for s in (-1, 1))
+        fit = {"imputations": 0}
+    out = {"test": "partial_spearman" if cov is not None else "spearman", "rho": round(float(rho), 4),
+           "ci95": [round(lo, 4), round(hi, 4)], "p": float(p), "n": int(n), "sign": float(np.sign(rho))}
+    if fit["imputations"]:
+        out["imputations"] = fit["imputations"]
+    return out
 
 
 def _effect(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str | None,
-            cov: pd.DataFrame | None) -> dict[str, Any]:
+            cov: pd.DataFrame | None, m: int = 0) -> dict[str, Any]:
     if time_col:
-        return _cox(_num(frame, time_col), _num(frame, target), x, cov)
-    return _rank(x, _num(frame, target), cov)
+        return _cox(_num(frame, time_col), _num(frame, target), x, cov, m)
+    return _rank(x, _num(frame, target), cov, m)
+
+
+def _excludes_null(res: dict[str, Any]) -> bool:
+    lo, hi = res.get("ci95") or [np.nan, np.nan]
+    null = 1.0 if res.get("test") == "cox" else 0.0
+    return bool(np.isfinite(lo) and np.isfinite(hi) and (lo > null or hi < null))
 
 
 def _dose_response(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str | None,
@@ -195,13 +222,13 @@ def _dose_response(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str
 
 
 def _lag_sensitivity(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str, cov: pd.DataFrame | None,
-                     lag: int, direction: int) -> dict[str, Any] | None:
+                     lag: int, direction: int, m: int = 0) -> dict[str, Any] | None:
     """The Cox effect among those still at risk ``lag`` days into follow-up, with time counted from then."""
     time = _num(frame, time_col)
     keep = time > lag
     if keep.sum() < _MIN_ROWS:
         return None
-    res = _cox(time[keep] - lag, _num(frame, target)[keep], x[keep], cov.loc[keep] if cov is not None else None)
+    res = _cox(time[keep] - lag, _num(frame, target)[keep], x[keep], cov.loc[keep] if cov is not None else None, m)
     return {"lag_days": lag, **res, "same_direction": bool(res["sign"] == direction)}
 
 
@@ -252,18 +279,28 @@ def ledger_summary(out_dir: Path, key: str, alpha: float = 0.05) -> dict[str, An
 
 
 def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, Any], target: str,
-                     time_col: str | None, cov: pd.DataFrame | None) -> dict[str, Any]:
+                     time_col: str | None, cov: pd.DataFrame | None,
+                     with_adherence: pd.DataFrame | None = None) -> dict[str, Any]:
     row: dict[str, Any] = {"feature": h["feature"], "direction": h["direction"], "discovery_rho": h["discovery_rho"]}
     x = _feature(frame, h)
     if x is None or x.notna().sum() < _MIN_ROWS:
         row.update(status="not testable on the holdout", p=float("nan"))
         return row
-    res = _effect(frame, x, target, time_col, cov)
+    m = int(prereg.get("covariate_imputations") or 0)
+    res = _effect(frame, x, target, time_col, cov, m)
     row.update({k: v for k, v in res.items() if k != "sign"}, same_direction=bool(res["sign"] == h["direction"]))
+    if res.get("imputations"):
+        cc = _effect(frame, x, target, time_col, cov, 0)
+        row["complete_case"] = {k: cc[k] for k in ("hr_per_sd", "rho", "ci95", "p", "n") if k in cc}
+    if with_adherence is not None:
+        adj = _effect(frame, x, target, time_col, with_adherence, m)
+        same = bool(adj["sign"] == h["direction"])
+        row["adherence_adjusted"] = {**{k: v for k, v in adj.items() if k not in ("sign", "e_value")},
+                                     "same_direction": same, "holds": same and _excludes_null(adj)}
     row["dose_response"] = _dose_response(frame, x, target, time_col, cov, h["direction"])
     if time_col:
         row["lag_sensitivity"] = _lag_sensitivity(frame, x, target, time_col, cov,
-                                                  int(prereg.get("sensitivity_lag_days") or 0), h["direction"])
+                                                  int(prereg.get("sensitivity_lag_days") or 0), h["direction"], m)
     row["negative_controls"] = _negative_controls(frame, x, cov, list(prereg.get("negative_controls") or []),
                                                   prereg["alpha"])
     return row
@@ -278,6 +315,9 @@ def _falsification(row: dict[str, Any]) -> tuple[list[str], list[str]]:
     lag = row.get("lag_sensitivity")
     if lag is not None:
         (passed if lag["same_direction"] else failed).append("lag")
+    adherence = row.get("adherence_adjusted")
+    if adherence is not None and np.isfinite(adherence.get("p", np.nan)):
+        (passed if adherence["holds"] else failed).append("adherence adjustment")
     for nc in row.get("negative_controls") or []:
         if nc.get("status") == "associated":
             failed.append(f"negative control {nc['control']}")
@@ -298,7 +338,13 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
     # The follow-up time is the Cox model's time axis, never a covariate of it.
     confounders = [c for c in prereg["confounders"] if c in frame.columns and c != time_col]
     cov = frame[confounders].apply(pd.to_numeric, errors="coerce") if confounders else None
-    rows = [_test_hypothesis(frame, h, prereg, target, time_col, cov) for h in prereg["hypotheses"]]
+    m = int(prereg.get("covariate_imputations") or 0)
+    # Wear adherence as a negative-control exposure: the days-with-data columns added to the confounders.
+    availability = [c for c in prereg.get("availability") or [] if c in frame.columns and c not in confounders
+                    and c != time_col]
+    with_adherence = (frame[confounders + availability].apply(pd.to_numeric, errors="coerce")
+                      if availability else None)
+    rows = [_test_hypothesis(frame, h, prereg, target, time_col, cov, with_adherence) for h in prereg["hypotheses"]]
     for row, q in zip(rows, _bh([r["p"] for r in rows])):
         row["q"] = q
 
@@ -335,13 +381,19 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
             continue
         others = [c for c in confounders if c != column]
         res = _effect(frame, _num(frame, column), target, time_col,
-                      frame[others].apply(pd.to_numeric, errors="coerce") if others else None)
+                      frame[others].apply(pd.to_numeric, errors="coerce") if others else None, m)
         res.pop("sign", None)
         positive.append({"control": column, **res, "detected": bool(res["p"] < prereg["alpha"])})
+    benchmark = []
+    for column in availability:  # how strongly wear adherence alone tracks the outcome
+        res = _effect(frame, _num(frame, column), target, time_col, cov, m)
+        res.pop("sign", None)
+        benchmark.append({"column": column, **res})
 
     result = mask_small_counts({
         "prereg_sha256": prereg["sha256"], "holdout_rows": int(len(frame)), "confounders": confounders,
         "hypotheses": rows, "positive_controls": positive, "ledger": ledger,
+        "availability": availability, "adherence_benchmark": benchmark, "covariate_imputations": m,
         "negative_controls": list(prereg.get("negative_controls") or []),
         "discovery_variants_evaluated": prereg.get("discovery_variants_evaluated"),
         "replicated": sum(1 for r in rows if r.get("replicated")),
@@ -375,7 +427,10 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
     lines = ["## Holdout replication (pre-registered, deterministic)", "",
              f"{result['replicated']} of {result['tested']} pre-registered candidates replicated on the sealed "
              f"holdout ({result['holdout_rows']} participants; {family}; adjusted for "
-             f"{', '.join(result['confounders']) or 'nothing'}), and {result.get('robust', 0)} also passed every "
+             f"{', '.join(result['confounders']) or 'nothing'}"
+             + (f", missing confounder values multiply imputed ({result['covariate_imputations']} draws, "
+                "complete-case estimates kept alongside)" if result.get("covariate_imputations") else "")
+             + f"), and {result.get('robust', 0)} also passed every "
              f"falsification test that could run. The agents never saw these data or results"
              + (f"; discovery evaluated {looks} candidate variants before registering" if looks else "")
              + f". Pre-registration hash: `{result['prereg_sha256'][:16]}`.", "",
@@ -389,6 +444,19 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
         status = r.get("status", "") + (" (robust)" if r.get("robust") else "")
         lines.append(f"| {r['feature']} | {r['discovery_rho']} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
                      f"{dose_text} | {', '.join(r.get('falsification_failed') or []) or '-'} |")
+    adjusted = [r for r in result["hypotheses"] if r.get("adherence_adjusted")]
+    if adjusted:
+        lines += ["", "Wear adherence as a negative-control exposure: each effect re-estimated with "
+                  + ", ".join(result.get("availability") or []) + " (days with wearable data) added to the "
+                  "confounders. A feature that only tracks how much a participant wears the device loses its "
+                  "effect here.", "", "| feature | adjusted for wear adherence | 95% CI | holds |", "|---|---|---|---|"]
+        for r in adjusted:
+            effect, ci, _ev = _effect_text(r["adherence_adjusted"])
+            lines.append(f"| {r['feature']} | {effect} | {ci} | {'yes' if r['adherence_adjusted']['holds'] else 'no'} |")
+        bench = "; ".join(f"{b['column']} {_effect_text(b)[0]} ({_effect_text(b)[1]})"
+                          for b in result.get("adherence_benchmark") or [])
+        if bench:
+            lines += ["", f"Wear adherence alone, for comparison: {bench}."]
     if result.get("negative_controls"):
         lines += ["", "Negative-control outcomes (conditions the exposures should not cause; an association "
                   "points to confounding or to differences in health-care contact): "

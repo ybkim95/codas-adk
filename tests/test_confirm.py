@@ -134,3 +134,50 @@ def test_ledger_pools_every_hypothesis_tested_on_the_same_holdout(tmp_path):
     assert other["ledger"]["hypotheses"] == 1
     from codas.aou.confirm import ledger_summary
     assert ledger_summary(tmp_path, "k")["hypotheses"] == 17  # the file keeps every look, repeats included
+
+
+def _adherence_holdout(rng, n=6000):
+    """``wear`` (days with data) drives both a wear-dependent feature and the outcome hazard, as health
+    engagement would; ``x`` has a real effect of its own; ``bmi`` confounds x and is often missing."""
+    wear = rng.normal(size=n)
+    bmi = rng.normal(size=n)
+    h = pd.DataFrame({"act_days": 150 + 20 * wear, "x": 0.6 * bmi + rng.normal(size=n),
+                      "proxy": wear + 0.5 * rng.normal(size=n), "age": rng.normal(size=n)})
+    t = rng.exponential(1 / np.exp(0.35 * h.x + 0.6 * wear + 0.5 * bmi + 0.2 * h.age))
+    censor = rng.exponential(1.5, n)
+    h["followup_days"] = np.ceil(np.minimum(t, censor) * 365)
+    h["y"] = (t <= censor).astype(int)
+    # BMI recorded far more often for those diagnosed: complete-case is biased.
+    h["bmi"] = np.where(rng.random(n) < np.where(h.y == 1, 0.9, 0.35), bmi, np.nan)
+    return h
+
+
+def test_adherence_adjustment_flags_a_wear_proxy_and_keeps_a_real_effect(tmp_path):
+    h = _adherence_holdout(np.random.default_rng(11))
+    h.to_csv(tmp_path / "w.holdout.csv", index=False)
+    state = _state([_cand("x", 0.1, ["x"]), _cand("proxy", 0.12, ["proxy"])], ["age", "bmi"])
+    prereg = preregister(state, tmp_path, "w", survival_time="followup_days", availability=["act_days"],
+                         covariate_imputations=10)
+    result = confirm(prereg, tmp_path / "w.holdout.csv", tmp_path)
+    rows = {r["feature"]: r for r in result["hypotheses"]}
+    assert rows["proxy"]["replicated"] and "adherence adjustment" in rows["proxy"]["falsification_failed"]
+    assert not rows["proxy"]["robust"]
+    assert rows["x"]["adherence_adjusted"]["holds"] and "adherence adjustment" in rows["x"]["falsification_passed"]
+    assert [b["column"] for b in result["adherence_benchmark"]] == ["act_days"]
+    md = confirmation_markdown(result)
+    assert "wear adherence" in md and "imputed" in md
+
+
+def test_missing_confounder_is_imputed_on_the_holdout(tmp_path):
+    rng = np.random.default_rng(12)
+    h = _adherence_holdout(rng)
+    h.to_csv(tmp_path / "m.holdout.csv", index=False)
+    state = _state([_cand("x", 0.1, ["x"])], ["age", "bmi", "act_days"])  # the correct outcome model
+    mi = confirm(preregister(state, tmp_path, "m", survival_time="followup_days", availability=["act_days"],
+                             covariate_imputations=10), tmp_path / "m.holdout.csv", tmp_path)["hypotheses"][0]
+    cc = confirm(preregister(state, tmp_path, "m", survival_time="followup_days", availability=["act_days"],
+                             covariate_imputations=0), tmp_path / "m.holdout.csv", tmp_path)["hypotheses"][0]
+    target = 0.35 * h["x"].std(ddof=0)  # true log hazard ratio per SD of x
+    assert mi["imputations"] == 10 and mi["n"] > cc["n"]
+    assert abs(np.log(mi["hr_per_sd"]) - target) < abs(np.log(cc["hr_per_sd"]) - target)
+    assert mi["complete_case"]["n"] == cc["n"]

@@ -77,6 +77,9 @@ class DiscoveryRequest:
     # composite (e.g. steps/resting-heart-rate) that the bounded default enumeration would miss, but it
     # can never bypass the statistical gates.
     proposed_features: list[dict] = field(default_factory=list)
+    # Missing confounder values in the adjusted validation tests: 0 = complete-case (the default), m > 0 =
+    # multiple imputation with m draws pooled by Rubin's rules (codas.core.imputation).
+    covariate_imputations: int = 0
 
 
 def _rank_candidates(
@@ -1225,6 +1228,7 @@ def run_discovery(df: pd.DataFrame, request: DiscoveryRequest) -> DiscoveryRepor
         n_resamples=eff_resamples,
         random_state=request.random_state,
         fdr_alpha=request.fdr_alpha,
+        covariate_imputations=request.covariate_imputations,
     )
     time_budget = float(os.getenv("CODAS_DISCOVERY_BUDGET_SECONDS", "300"))
     deadline = time.monotonic() + time_budget
