@@ -33,43 +33,39 @@ class CoxResult:
 
 
 def _efron(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np.ndarray):
-    """Log partial likelihood, gradient and Hessian (Efron ties). Rows are sorted by descending time."""
+    """Log partial likelihood, gradient and Hessian (Efron ties). Rows are sorted by descending time.
+
+    Risk-set sums are cumulative sums over the sorted rows, read at the end of each block of equal
+    times, so only the distinct event times are looped over."""
     k = x.shape[1]
     eta = x @ beta
     eta -= eta.max()  # the likelihood is invariant to a shift; this keeps exp() finite
     w = np.exp(eta)
+    wx = w[:, None] * x
+    risk0 = np.cumsum(w)
+    risk1 = np.cumsum(wx, axis=0)
+    risk2 = np.cumsum(wx[:, :, None] * x[:, None, :], axis=0)
+    ends = np.flatnonzero(np.r_[time[1:] != time[:-1], True])  # last row of each block of equal times
+    starts = np.r_[0, ends[:-1] + 1]
     loglik, grad, hess = 0.0, np.zeros(k), np.zeros((k, k))
-    risk0, risk1, risk2 = 0.0, np.zeros(k), np.zeros((k, k))
-    i, n = 0, len(time)
-    while i < n:
-        t = time[i]
-        j = i
-        tie0, tie1, tie2 = 0.0, np.zeros(k), np.zeros((k, k))
-        d, xsum = 0, np.zeros(k)
-        while j < n and time[j] == t:  # everyone with this time enters the risk set together
-            wx = w[j] * x[j]
-            risk0 += w[j]
-            risk1 += wx
-            risk2 += np.outer(wx, x[j])
-            if event[j]:
-                d += 1
-                xsum += x[j]
-                loglik += eta[j]
-                tie0 += w[j]
-                tie1 += wx
-                tie2 += np.outer(wx, x[j])
-            j += 1
+    for start, end in zip(starts, ends):
+        ev = np.flatnonzero(event[start:end + 1]) + start
+        d = len(ev)
+        if not d:
+            continue
+        tie0, tie1 = w[ev].sum(), wx[ev].sum(axis=0)
+        tie2 = (wx[ev][:, :, None] * x[ev][:, None, :]).sum(axis=0)
+        loglik += eta[ev].sum()
+        grad += x[ev].sum(axis=0)
         for m in range(d):
             frac = m / d
-            s0 = risk0 - frac * tie0
-            s1 = risk1 - frac * tie1
-            s2 = risk2 - frac * tie2
+            s0 = risk0[end] - frac * tie0
+            s1 = risk1[end] - frac * tie1
+            s2 = risk2[end] - frac * tie2
             loglik -= math.log(s0)
             mean = s1 / s0
             grad -= mean
             hess -= s2 / s0 - np.outer(mean, mean)
-        grad += xsum
-        i = j
     return loglik, grad, hess
 
 
