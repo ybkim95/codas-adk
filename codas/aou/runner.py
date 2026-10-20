@@ -23,6 +23,7 @@ from codas.aou import cohort
 from codas.aou import feasibility as feas
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
+from codas.aou.phenotypes import describe as describe_phenotypes
 from codas.aou.confirm import confirm, confirmation_markdown, ledger_summary, preregister
 from codas.aou.privacy import check_llm_backend, mask_identifiers, mask_small_counts, mask_small_counts_in_text
 from codas.aou.table1 import cohort_table
@@ -56,6 +57,10 @@ COVARIATE_NOTE = (
 )
 
 
+PHENOTYPE_NOTE = (
+    " Intraday phenotypes, computed from minute-level data over the same window (each a published "
+    "definition; see codas/aou/phenotypes.py): {columns}."
+)
 ADHERENCE_NOTE = (
     " These columns count the days each wearable recorded data in the window, i.e. how much a participant "
     "wore and synced the device: {columns}. They measure wear adherence, not physiology, so they are not "
@@ -91,6 +96,9 @@ def goal_for(spec: CohortSpec, label: str | None = None) -> str:
     if spec.covariates:
         columns = ", ".join(f"{c.name} ({_describe(c)})" for c in spec.covariates)
         covariates = COVARIATE_NOTE.format(columns=columns)
+    if spec.phenotypes:
+        covariates += PHENOTYPE_NOTE.format(columns="; ".join(
+            f"{column} ({text})" for source in spec.phenotypes for column, text in describe_phenotypes(source)))
     if cohort.availability_columns(spec):
         covariates += ADHERENCE_NOTE.format(columns=", ".join(cohort.availability_columns(spec)))
     if COVARIATE_IMPUTATIONS > 0:
@@ -341,8 +349,9 @@ def _code_version() -> str:
 
 # The code that decides what an outcome's results are. Changes elsewhere (the notebook, the background
 # job, report rendering, views) leave finished outcomes reusable; a change here reruns them.
-ANALYSIS_CODE = ("codas/core", "codas/agents", "codas/aou/cohort.py", "codas/aou/feasibility.py",
-                 "codas/aou/confirm.py", "codas/aou/privacy.py", "codas/aou/table1.py")
+ANALYSIS_CODE = ("codas/core", "codas/agents", "codas/aou/cohort.py", "codas/aou/phenotypes.py",
+                 "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/privacy.py",
+                 "codas/aou/table1.py")
 
 
 def _analysis_version(root: Path | None = None) -> str:
@@ -434,6 +443,13 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None,
              on_agent: Any = None) -> dict[str, Any]:
     """Extract one cohort, run the agents on it, save the masked outputs and the agent trace."""
+    if check_schema:  # fit optional sources to this CDR first, so the goal and context match the table
+        if client is None:
+            from google.cloud import bigquery
+
+            client = bigquery.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
+        present = cohort._query(client, *cohort.schema_check_sql(spec, resolve_cdr(cdr)))
+        spec, _skipped = cohort.resolve_sources(spec, list(zip(present["table_name"], present["column_name"])))
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
     recorder = TraceRecorder(stream_path=Path(out_dir).expanduser().resolve() / f"{spec.name}_trace.jsonl")
     context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
@@ -500,7 +516,13 @@ def explore(
     if base.covariates:
         log(f"covariates: {', '.join(c.name for c in base.covariates)} (adjustment only, not candidates)")
     present = cohort._query(client, *cohort.schema_check_sql(base, cdr))
-    missing = cohort.missing_columns(base, list(zip(present["table_name"], present["column_name"])))
+    pairs = list(zip(present["table_name"], present["column_name"]))
+    base, skipped = cohort.resolve_sources(base, pairs)
+    for note in skipped:
+        log(note)
+    if base.phenotypes:
+        log("intraday phenotypes: " + ", ".join(f"{p.prefix} from {p.table}" for p in base.phenotypes))
+    missing = cohort.missing_columns(base, pairs)
     if missing:
         raise ValueError("The CDR lacks columns the wearable spec needs: " + ", ".join(missing)
                          + ". Edit the spec's wearables to match the CDR schema.")

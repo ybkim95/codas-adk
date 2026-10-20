@@ -136,7 +136,9 @@ def test_backend_check_is_noop_outside_aou(monkeypatch):
 
 def test_example_spec_loads():
     spec = _window_spec()
-    assert spec.outcome.kind == "measurement" and len(spec.wearables) == 2
+    assert spec.outcome.kind == "measurement" and len(spec.wearables) == 4
+    assert [w.optional for w in spec.wearables] == [False, False, True, True]
+    assert [p.kind for p in spec.phenotypes] == ["minute_activity", "sleep_stages"]
 
 
 def test_measurement_sql_binds_values_and_omits_identifiers():
@@ -219,7 +221,9 @@ def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
     path = cohort.extract_cohort(spec, CDR, out_dir, client=object())
     try:
         written = pd.read_csv(path)
-        assert list(written.columns) == output_columns(spec) and len(calls) == 2
+        fitted, _notes = cohort.resolve_sources(spec, list(schema.itertuples(index=False, name=None)))
+        assert not fitted.phenotypes                       # intraday tables absent from this schema: skipped
+        assert list(written.columns) == output_columns(fitted) and len(calls) == 2
     finally:
         path.unlink()
         out_dir.rmdir()

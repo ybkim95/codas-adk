@@ -267,7 +267,7 @@ def test_wear_adherence_is_adjustment_only_and_covariates_are_imputed(synthetic_
     monkeypatch.setattr(runner, "run_agents", capture)
     spec = _window_spec()
     days = cohort.availability_columns(spec)
-    assert days == [f"{w.prefix}_days" for w in spec.wearables]
+    assert days == [f"{w.prefix}_days" for w in [*spec.wearables, *spec.phenotypes]]
     explore, _calls, _failing = synthetic_explore
     explore()
     assert set(days) <= set(seen["context"])                    # never screened as candidates

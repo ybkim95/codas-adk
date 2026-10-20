@@ -45,7 +45,8 @@ _ANCESTRY = [(201826, 201826), (201826, 4193704), (3004410, 3004410), (3007070, 
 
 def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: int = 0) -> None:
     """Create person, concept, concept_ancestor, measurement, condition_occurrence, drug_exposure,
-    visit_occurrence, activity_summary and sleep_daily_summary in the DuckDB connection ``con``."""
+    visit_occurrence, activity_summary, sleep_daily_summary, steps_intraday, sleep_level and
+    heart_rate_summary in the DuckDB connection ``con``."""
     rng = np.random.default_rng(seed)
     # Body size draws from its own stream, so adding it left every other synthetic value unchanged.
     body_rng = np.random.default_rng(seed + 1)
@@ -107,6 +108,8 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
         if control_rng.random() < 0.3:
             cond_rows.append((pid, 374375, start + timedelta(days=int(control_rng.integers(0, n_days + 400)))))
 
+    intraday, stages = _intraday(people.person_id.to_numpy(), act_rows, seed)
+
     frames = {
         "person": people,
         "concept": pd.DataFrame(CONCEPTS, columns=["concept_id", "concept_name", "standard_concept", "domain_id"]),
@@ -123,6 +126,9 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
         "sleep_daily_summary": pd.DataFrame(sleep_rows, columns=["person_id", "sleep_date", "is_main_sleep",
                                                                  "minute_asleep", "minute_in_bed", "minute_deep",
                                                                  "minute_light", "minute_rem", "minute_awake"]),
+        "steps_intraday": intraday,
+        "sleep_level": stages,
+        "heart_rate_summary": _zones(act_rows, seed),
     }
     for name, frame in frames.items():
         for column in frame.columns:
@@ -161,3 +167,77 @@ def duckdb_query(con: Any) -> Callable[[Any, str, list], pd.DataFrame]:
         return con.execute(duck.replace("__info_columns", "information_schema.columns")).df()
 
     return run
+
+
+def intraday_latents(n_people: int, seed: int = 0) -> dict[str, np.ndarray]:
+    """The per-person latents behind the synthetic intraday tables (for tests that check a phenotype
+    tracks what generated it): rhythm strength, activity peak hour, sleep-onset night-to-night SD."""
+    rng = np.random.default_rng(seed + 4)
+    return {"rhythm": rng.uniform(0.5, 3.0, n_people), "peak_hour": rng.uniform(12.0, 18.0, n_people),
+            "onset_sd": rng.gamma(2.0, 0.4, n_people)}
+
+
+def _intraday(person_ids: np.ndarray, act_rows: list[tuple], seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Minute steps and sleep-stage segments on the activity days, from their own random streams (so the
+    other synthetic tables are unchanged). Each person's hourly profile is a von Mises-shaped curve of
+    their daily steps with their own rhythm strength and peak hour; quiet hours carry no minutes."""
+    latents = intraday_latents(len(person_ids), seed)
+    index = {int(pid): i for i, pid in enumerate(person_ids)}
+    rows = pd.DataFrame([(r[0], r[1], r[2]) for r in act_rows], columns=["person_id", "day", "steps"])
+    who = rows.person_id.map(index).to_numpy()
+    hours = np.arange(24)
+    shape = np.exp(latents["rhythm"][who, None]
+                   * np.cos(2 * np.pi * (hours[None, :] - latents["peak_hour"][who, None]) / 24))
+    shape /= shape.sum(axis=1, keepdims=True)
+    hourly = rows.steps.to_numpy()[:, None] * shape
+    hourly[shape < 0.3 / 24] = 0.0  # night hours: no recorded minutes
+    rng = np.random.default_rng(seed + 5)
+    day_idx, hour = np.nonzero(hourly > 1.0)
+    minutes = rng.integers(0, 59, size=(len(day_idx), 2))
+    minutes[:, 1] = np.minimum(minutes[:, 0] + rng.integers(1, 30, len(day_idx)), 59)
+    split = rng.uniform(0.3, 0.7, len(day_idx))
+    base = pd.to_datetime(rows.day.to_numpy()[day_idx]) + pd.to_timedelta(hour, unit="h")
+    steps = hourly[day_idx, hour]
+    intraday = pd.DataFrame({
+        "person_id": np.repeat(rows.person_id.to_numpy()[day_idx], 2),
+        "datetime": np.column_stack([base + pd.to_timedelta(minutes[:, 0], unit="m"),
+                                     base + pd.to_timedelta(minutes[:, 1], unit="m")]).ravel(),
+        "steps": np.column_stack([steps * split, steps * (1 - split)]).ravel().round(),
+    })
+    intraday = intraday[intraday.steps > 0].reset_index(drop=True)
+
+    # Sleep: the night ending on each activity day, eight stage segments from a person-specific onset.
+    n = len(rows)
+    onset = (pd.to_datetime(rows.day.to_numpy()) - pd.Timedelta(hours=1)
+             + pd.to_timedelta(rng.normal(0, 1, n) * latents["onset_sd"][who], unit="h"))
+    levels = rng.choice(np.array(["light", "deep", "rem", "wake"]), size=(n, 8), p=[0.5, 0.2, 0.2, 0.1])
+    durations = np.round(rng.uniform(15, 75, size=(n, 8)))
+    starts = onset.to_numpy()[:, None] + (np.cumsum(durations, axis=1) - durations).astype("timedelta64[m]")
+    stages = pd.DataFrame({
+        "person_id": np.repeat(rows.person_id.to_numpy(), 8),
+        "sleep_date": np.repeat(rows.day.to_numpy(), 8),
+        "is_main_sleep": "true",
+        "level": levels.ravel(),
+        "start_datetime": starts.ravel(),
+        "duration_in_min": durations.ravel(),
+    })
+    nap = rng.random(n) < 0.05  # a daytime nap, is_main_sleep = false, must be filtered out
+    naps = pd.DataFrame({"person_id": rows.person_id.to_numpy()[nap], "sleep_date": rows.day.to_numpy()[nap],
+                         "is_main_sleep": "false", "level": "light",
+                         "start_datetime": pd.to_datetime(rows.day.to_numpy()[nap]) + pd.Timedelta(hours=14),
+                         "duration_in_min": 40.0})
+    return intraday, pd.concat([stages, naps], ignore_index=True)
+
+
+def _zones(act_rows: list[tuple], seed: int) -> pd.DataFrame:
+    """Daily minutes per heart-rate zone on the activity days (own random stream), growing with the
+    day's very active minutes."""
+    rng = np.random.default_rng(seed + 6)
+    rows = pd.DataFrame([(r[0], r[1], r[3]) for r in act_rows], columns=["person_id", "date", "very_active"])
+    zones = {"Out of Range": 1300.0, "Fat Burn": 90.0, "Cardio": 15.0, "Peak": 3.0}
+    frames = []
+    for zone, base in zones.items():
+        scale = 1.0 if zone == "Out of Range" else 1 + rows.very_active.to_numpy() / 30
+        frames.append(pd.DataFrame({"person_id": rows.person_id, "date": rows.date, "zone_name": zone,
+                                    "minute_in_zone": np.round(rng.gamma(4.0, base / 4.0, len(rows)) * scale)}))
+    return pd.concat(frames, ignore_index=True)

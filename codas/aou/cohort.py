@@ -54,6 +54,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from codas.aou.phenotypes import PhenotypeSource, minute_activity_ctes, resolve, sleep_stage_ctes
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = ROOT / ".codas_runs" / "aou"
 
@@ -89,6 +91,9 @@ class WearableSource:
     # Optional equality filter, e.g. is_main_sleep = true, or zone_name = 'Cardio'.
     filter_column: str | None = None
     filter_value: Any = None
+    # An optional source is dropped (columns it lacks are dropped) when the CDR does not have it,
+    # instead of stopping the run. The primary (first) source cannot be optional.
+    optional: bool = False
 
     def validate(self) -> None:
         _ident(self.table, "table")
@@ -182,14 +187,18 @@ class CohortSpec:
     # Columns of the table with a known association with the outcome, tested on the sealed table the
     # same way as the candidates to show the confirmation can detect a real effect.
     positive_controls: list[str] = field(default_factory=list)
+    # Intraday digital phenotypes from minute- or segment-level tables (codas/aou/phenotypes.py).
+    phenotypes: list[PhenotypeSource] = field(default_factory=list)
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
         self.outcome.validate()
         if not self.wearables:
             raise ValueError("A cohort needs at least one wearable source.")
+        if self.wearables[0].optional:
+            raise ValueError("The primary (first) wearable source cannot be optional.")
         prefixes = set()
-        for source in self.wearables:
+        for source in [*self.wearables, *self.phenotypes]:
             source.validate()
             if source.prefix in prefixes:
                 raise ValueError(f"Duplicate wearable prefix {source.prefix!r}.")
@@ -256,6 +265,7 @@ class CohortSpec:
             split_salt=int(data.get("split_salt", 0)),
             negative_controls=[OutcomeSpec(**{"kind": "condition", **c}) for c in data.get("negative_controls", [])],
             positive_controls=[str(c) for c in data.get("positive_controls", [])],
+            phenotypes=[PhenotypeSource(**p) for p in data.get("phenotypes", [])],
         )
         spec.validate()
         return spec
@@ -289,13 +299,15 @@ def _base_columns(spec: CohortSpec) -> list[str]:
         cols.append(f"{source.prefix}_days")
         for column in source.columns:
             cols += [f"{source.prefix}_{column}_mean", f"{source.prefix}_{column}_sd"]
+    for phenotype in spec.phenotypes:
+        cols += phenotype.output_columns()
     return cols
 
 
 def availability_columns(spec: CohortSpec) -> list[str]:
     """The per-source counts of days with data in the window (``<prefix>_days``): how much a participant
     wore or synced the device, not a physiological measurement. Adjustment-only, never a candidate."""
-    return [f"{source.prefix}_days" for source in spec.wearables]
+    return [f"{source.prefix}_days" for source in [*spec.wearables, *spec.phenotypes]]
 
 
 def output_columns(spec: CohortSpec) -> list[str]:
@@ -555,6 +567,30 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
                 ")"
             )
 
+    if any(ph.kind == "minute_activity" for ph in spec.phenotypes):
+        # The primary wearable's valid days in the window: the only days intraday phenotypes use.
+        ctes.append(
+            "valid_days AS (\n"
+            f"  SELECT DISTINCT ie.person_id, DATE(s.{primary.date_column}) AS d\n"
+            "  FROM index_events ie\n"
+            f"  JOIN {t(primary.table)} s ON s.person_id = ie.person_id\n"
+            f"    AND DATE(s.{primary.date_column}) >= DATE_SUB(ie.index_date, INTERVAL @window_days DAY)\n"
+            f"    AND DATE(s.{primary.date_column}) < ie.index_date{valid.format(a='s')}"
+            + (f"\n    AND LOWER(CAST(s.{primary.filter_column} AS STRING)) = LOWER(CAST(@w0_filter AS STRING))"
+               if primary.filter_column is not None else "") + "\n"
+            ")"
+        )
+    phenotype_ctes = []
+    for k, phenotype in enumerate(spec.phenotypes):
+        if phenotype.kind == "minute_activity":
+            phenotype_ctes.append((f"q{k}", phenotype))
+            ctes += minute_activity_ctes(k, phenotype, t(phenotype.table))
+        else:
+            phenotype_ctes.append((f"z{k}", phenotype))
+            sleep_sql, sleep_params = sleep_stage_ctes(k, phenotype, t(phenotype.table))
+            ctes += sleep_sql
+            params += sleep_params
+
     select = [f"ie.outcome_value AS {spec.outcome.name}"]
     if is_survival(spec):
         select.append(f"ie.{FOLLOWUP_COLUMN}")
@@ -573,6 +609,9 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         for column in source.columns:
             select += [f"w{i}.{source.prefix}_{column}_mean", f"w{i}.{source.prefix}_{column}_sd"]
         joins.append(f"LEFT JOIN w{i} ON w{i}.person_id = ie.person_id")
+    for alias, phenotype in phenotype_ctes:
+        select += [f"{alias}.{column}" for column in phenotype.output_columns()]
+        joins.append(f"LEFT JOIN {alias} ON {alias}.person_id = ie.person_id")
     for i, covariate in enumerate(spec.covariates):
         if covariate.kind == "measurement":
             select.append(f"c{i}.{covariate.name}")
@@ -628,7 +667,8 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
 def schema_check_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
     """SQL listing the (table, column) pairs the spec needs that exist in the CDR."""
     cdr = resolve_cdr(cdr)
-    tables = sorted({s.table for s in spec.wearables} | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates}
+    tables = sorted({s.table for s in [*spec.wearables, *spec.phenotypes]}
+                    | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates}
                     | ({"visit_occurrence"} if is_survival(spec) or spec.negative_controls else set())
                     | ({"condition_occurrence"} if spec.negative_controls else set()))
     sql = (f"SELECT table_name, column_name FROM `{cdr}.INFORMATION_SCHEMA.COLUMNS`\n"
@@ -643,6 +683,8 @@ def missing_columns(spec: CohortSpec, present: list[tuple[str, str]]) -> list[st
     for s in spec.wearables:
         cols = [s.date_column, "person_id", *s.columns] + ([s.filter_column] if s.filter_column else [])
         needed += [(s.table, c) for c in cols]
+    for ph in spec.phenotypes:
+        needed += [(ph.table, c) for c in ph.needed()]
     for c in spec.covariates:
         table, concept_col, date_col = _COVARIATE_TABLES[c.kind]
         needed += [(table, col) for col in ("person_id", concept_col, date_col)]
@@ -653,6 +695,47 @@ def missing_columns(spec: CohortSpec, present: list[tuple[str, str]]) -> list[st
     if spec.negative_controls:
         needed += [("condition_occurrence", c) for c in ("person_id", "condition_concept_id", "condition_start_date")]
     return [f"{tbl}.{col}" for tbl, col in dict.fromkeys(needed) if (tbl, col) not in have]
+
+
+def resolve_sources(spec: CohortSpec, present: list[tuple[str, str]]) -> tuple[CohortSpec, list[str]]:
+    """Fit the spec's optional parts to the columns this CDR has: an optional wearable source keeps the
+    value columns it finds (and is dropped without its date, person or filter column or any value
+    column); each phenotype role takes the first acceptable column the table has, and an optional
+    phenotype source that cannot be resolved is dropped. Returns the fitted spec and what was dropped.
+    Required parts are left as they are, for ``missing_columns`` to report."""
+    from dataclasses import replace
+
+    have = {(str(tbl), str(col)) for tbl, col in present}
+    notes: list[str] = []
+    wearables = []
+    for source in spec.wearables:
+        if not source.optional:
+            wearables.append(source)
+            continue
+        keys = [source.date_column, "person_id"] + ([source.filter_column] if source.filter_column else [])
+        found = [c for c in source.columns if (source.table, c) in have]
+        lacking = [c for c in keys if (source.table, c) not in have]
+        if lacking or not found:
+            notes.append(f"{source.table} ({source.prefix}) skipped: no "
+                         + ", ".join(lacking or source.columns) + " in this CDR")
+            continue
+        if len(found) < len(source.columns):
+            notes.append(f"{source.table} ({source.prefix}): columns not in this CDR skipped: "
+                         + ", ".join(c for c in source.columns if c not in found))
+        wearables.append(replace(source, columns=found))
+    phenotypes = []
+    for phenotype in spec.phenotypes:
+        fixed, reason = resolve(phenotype, have)
+        if fixed is not None:
+            phenotypes.append(fixed)
+        elif phenotype.optional:
+            notes.append(f"phenotypes from {reason}; skipped")
+        else:
+            phenotypes.append(phenotype)
+    fitted = replace(spec, wearables=wearables, phenotypes=phenotypes)
+    fitted.positive_controls = [c for c in spec.positive_controls if c in _base_columns(fitted)
+                                or c in {cv.name for cv in spec.covariates}]
+    return fitted, notes
 
 
 def _bq_params(params: list[QueryParam]) -> list[Any]:
@@ -708,6 +791,7 @@ def extract_cohort(
     if check_schema:
         sql, params = schema_check_sql(spec, cdr)
         present = [(r["table_name"], r["column_name"]) for _, r in _query(client, sql, params).iterrows()]
+        spec, _skipped = resolve_sources(spec, present)
         missing = missing_columns(spec, present)
         if missing:
             raise ValueError("The CDR lacks columns this spec needs: " + ", ".join(missing)

@@ -91,6 +91,80 @@
       ],
       "filter_column": "is_main_sleep",
       "filter_value": true
+    },
+    {
+      "table": "heart_rate_summary",
+      "date_column": "date",
+      "prefix": "hrfatburn",
+      "columns": [
+        "minute_in_zone"
+      ],
+      "filter_column": "zone_name",
+      "filter_value": "Fat Burn",
+      "optional": true
+    },
+    {
+      "table": "heart_rate_summary",
+      "date_column": "date",
+      "prefix": "hrcardio",
+      "columns": [
+        "minute_in_zone"
+      ],
+      "filter_column": "zone_name",
+      "filter_value": "Cardio",
+      "optional": true
+    }
+  ],
+  "phenotypes": [
+    {
+      "kind": "minute_activity",
+      "table": "steps_intraday",
+      "prefix": "stepsday",
+      "columns": {
+        "time": [
+          "datetime",
+          "date_time",
+          "timestamp"
+        ],
+        "value": [
+          "steps",
+          "step_count"
+        ]
+      }
+    },
+    {
+      "kind": "sleep_stages",
+      "table": "sleep_level",
+      "prefix": "sleepstage",
+      "columns": {
+        "date": [
+          "sleep_date"
+        ],
+        "start": [
+          "start_datetime",
+          "datetime",
+          "date"
+        ],
+        "level": [
+          "level",
+          "sleep_level"
+        ],
+        "duration": [
+          "duration_in_min",
+          "duration_minutes",
+          "duration"
+        ],
+        "main": [
+          "is_main_sleep"
+        ]
+      },
+      "wake_levels": [
+        "wake",
+        "awake"
+      ],
+      "rem_levels": [
+        "rem"
+      ]
     }
   ]
 }

@@ -143,6 +143,7 @@ def feasibility_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[cohort.QueryP
                                         columns=list(dict.fromkeys(keep)), prefix=primary.prefix,
                                         filter_column=primary.filter_column, filter_value=primary.filter_value)],
         include_demographics=False, covariates=[], holdout_fraction=0.0, negative_controls=[], positive_controls=[],
+        phenotypes=[],
     )
     inner, params = build_cohort_sql(slim, cdr)
     sql = (f"SELECT COUNT(*) AS n_participants, SUM({spec.outcome.name}) AS outcome_sum\n"
