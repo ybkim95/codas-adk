@@ -337,8 +337,26 @@ def _falsification(row: dict[str, Any]) -> tuple[list[str], list[str]]:
     return passed, failed
 
 
-def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_key: str | None = None) -> dict[str, Any]:
+def _within_person(panel: pd.DataFrame, h: dict[str, Any], target: str) -> dict[str, Any]:
+    """The pre-registered feature's within- and between-person effects on the sealed repeated measurements."""
+    from codas.core.mixed import mixed_model
+
+    x = _feature(panel, h)
+    if x is None:
+        return {"error": "the feature cannot be built from the panel's period summaries"}
+    data = panel.assign(**{h["feature"]: x})
+    fit = mixed_model(data, h["feature"], target, [c for c in ("age", "days_from_start") if c in data.columns])
+    if "error" not in fit:
+        fit["same_direction"] = bool(np.sign(fit["within"]["estimate"]) == h["direction"])
+    return fit
+
+
+def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_key: str | None = None,
+            panel_csv: Path | None = None) -> dict[str, Any]:
     """Test every pre-registered hypothesis once on the holdout; write ``<stem>_confirmation.json``.
+
+    With ``panel_csv`` (the sealed repeated-measures panel) each hypothesis also gets its within-person
+    effect from a mixed model; it is reported as evidence, not used to judge replication.
 
     With ``ledger_key`` (which participants the holdout holds) the hypotheses are appended to the
     holdout ledger and replication is judged on the BH q-value across the whole ledger."""
@@ -356,6 +374,10 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
     with_adherence = (frame[confounders + availability].apply(pd.to_numeric, errors="coerce")
                       if availability else None)
     rows = [_test_hypothesis(frame, h, prereg, target, time_col, cov, with_adherence) for h in prereg["hypotheses"]]
+    if panel_csv is not None and Path(panel_csv).exists():
+        panel = pd.read_csv(panel_csv)
+        for row, h in zip(rows, prereg["hypotheses"]):
+            row["within_person"] = _within_person(panel, h, target)
     for row, q in zip(rows, _bh([r["p"] for r in rows])):
         row["q"] = q
     for family in {r["family"] for r in rows}:  # BH within each family as well
@@ -494,6 +516,18 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
                           for b in result.get("adherence_benchmark") or [])
         if bench:
             lines += ["", f"Wear adherence alone, for comparison: {bench}."]
+    within = [r for r in result["hypotheses"] if r.get("within_person") and "error" not in r["within_person"]]
+    if within:
+        lines += ["", "Within-person effects on the sealed repeated measurements (mixed model, random intercept per "
+                  "person; each value paired with the wearable summary of the period before it). A feature that only "
+                  "marks a stable trait of the people who have it shows a between-person effect and a within-person "
+                  "effect near zero.", "",
+                  "| feature | within-person (per SD) | 95% CI | p | between-person | people with repeats |",
+                  "|---|---|---|---|---|---|"]
+        for r in within:
+            w, b = r["within_person"]["within"], r["within_person"]["between"]
+            lines.append(f"| {r['feature']} | {w['estimate']:.3g} | {w['ci95'][0]:.3g}-{w['ci95'][1]:.3g} | {w['p']:.3g} | "
+                         f"{b['estimate']:.3g} (p {b['p']:.3g}) | {r['within_person']['persons_with_repeats']} |")
     if result.get("negative_controls"):
         lines += ["", "Negative-control outcomes (conditions the exposures should not cause; an association "
                   "points to confounding or to differences in health-care contact): "

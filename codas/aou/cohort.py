@@ -189,6 +189,10 @@ class CohortSpec:
     positive_controls: list[str] = field(default_factory=list)
     # Intraday digital phenotypes from minute- or segment-level tables (codas/aou/phenotypes.py).
     phenotypes: list[PhenotypeSource] = field(default_factory=list)
+    # Repeated-measures panel for a within-person model (measurement outcomes): every qualifying value
+    # after the first period, paired with the wearable summary of the period before it, e.g.
+    # {"period_days": 90, "min_days": 30}.
+    panel: dict[str, Any] | None = None
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
@@ -245,6 +249,10 @@ class CohortSpec:
         for column in self.positive_controls:
             if column not in taken:
                 raise ValueError(f"positive control {column!r} is not a column of the table.")
+        if self.panel is not None:
+            period, least = int(self.panel.get("period_days", 0)), int(self.panel.get("min_days", 1))
+            if period < 7 or not 1 <= least <= period:
+                raise ValueError("panel needs period_days >= 7 and 1 <= min_days <= period_days.")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CohortSpec":
@@ -266,6 +274,7 @@ class CohortSpec:
             negative_controls=[OutcomeSpec(**{"kind": "condition", **c}) for c in data.get("negative_controls", [])],
             positive_controls=[str(c) for c in data.get("positive_controls", [])],
             phenotypes=[PhenotypeSource(**p) for p in data.get("phenotypes", [])],
+            panel=data.get("panel"),
         )
         spec.validate()
         return spec
@@ -664,6 +673,111 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
     return sql, params
 
 
+def has_panel(spec: CohortSpec) -> bool:
+    return spec.panel is not None and spec.outcome.kind == "measurement"
+
+
+def panel_columns(spec: CohortSpec) -> list[str]:
+    """Columns of the repeated-measures panel, in order: a pseudonymous person index (a rank, never the
+    CDR id), the outcome value, days since the first valid wear day, demographics, wearable summaries."""
+    cols = ["person_index", spec.outcome.name, "days_from_start"]
+    if spec.include_demographics:
+        cols += ["age", "female"]
+    for source in spec.wearables:
+        cols.append(f"{source.prefix}_days")
+        for column in source.columns:
+            cols += [f"{source.prefix}_{column}_mean", f"{source.prefix}_{column}_sd"]
+    return cols
+
+
+def build_panel_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
+    """SQL for the repeated-measures panel: every qualifying outcome value at least ``period_days``
+    after the first valid wear day (values on the same day averaged), with each wearable source's days,
+    means and SDs over the ``period_days`` before it; occasions with fewer than ``min_days`` primary
+    wear days in that period are dropped. Carries the same holdout flag as the cohort."""
+    spec.validate()
+    if not has_panel(spec):
+        raise ValueError("The spec has no panel or its outcome is not a measurement.")
+    cdr = resolve_cdr(cdr)
+    t = lambda name: f"`{cdr}.{name}`"  # noqa: E731
+    primary = spec.wearables[0]
+    params: list[QueryParam] = [("outcome_concept_ids", "ARRAY<INT64>", list(spec.outcome.concept_ids)),
+                                ("period_days", "INT64", int(spec.panel["period_days"])),
+                                ("panel_min_days", "INT64", int(spec.panel.get("min_days", 1)))]
+    concepts = "SELECT concept_id FROM UNNEST(@outcome_concept_ids) AS concept_id"
+    if spec.outcome.include_descendants:
+        concepts += (f"\n  UNION DISTINCT\n  SELECT descendant_concept_id FROM {t('concept_ancestor')}"
+                     "\n  WHERE ancestor_concept_id IN UNNEST(@outcome_concept_ids)")
+    valid = ""
+    if spec.valid_day is not None:
+        column = spec.valid_day["column"]
+        for bound, op in (("min", ">="), ("max", "<=")):
+            if spec.valid_day.get(bound) is not None:
+                valid += f"\n    AND {{a}}.{column} {op} @valid_{bound}"
+                params.append((f"valid_{bound}", "FLOAT64", float(spec.valid_day[bound])))
+    bounds = ""
+    for bound, op in (("value_min", ">="), ("value_max", "<=")):
+        if getattr(spec.outcome, bound) is not None:
+            bounds += f"\n    AND m.value_as_number {op} @{bound}"
+            params.append((bound, "FLOAT64", float(getattr(spec.outcome, bound))))
+    ctes = [f"outcome_concepts AS (\n  {concepts}\n)",
+            "first_wear AS (\n"
+            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear\n"
+            f"  FROM {t(primary.table)} w\n  WHERE TRUE{valid.format(a='w')}\n  GROUP BY w.person_id\n)",
+            "occasions AS (\n"
+            "  SELECT m.person_id, m.measurement_date AS occasion, AVG(m.value_as_number) AS outcome_value,\n"
+            "    MIN(f.first_wear) AS first_wear\n"
+            f"  FROM {t('measurement')} m\n"
+            "  JOIN outcome_concepts oc ON m.measurement_concept_id = oc.concept_id\n"
+            "  JOIN first_wear f ON f.person_id = m.person_id\n"
+            f"  WHERE m.value_as_number IS NOT NULL{bounds}\n"
+            "    AND m.measurement_date >= DATE_ADD(f.first_wear, INTERVAL @period_days DAY)\n"
+            "  GROUP BY m.person_id, m.measurement_date\n)"]
+    select = ["DENSE_RANK() OVER (ORDER BY o.person_id) AS person_index", f"o.outcome_value AS {spec.outcome.name}",
+              "DATE_DIFF(o.occasion, o.first_wear, DAY) AS days_from_start"]
+    joins = []
+    for i, source in enumerate(spec.wearables):
+        aggregates = [f"COUNT(DISTINCT DATE(s.{source.date_column})) AS {source.prefix}_days"]
+        for column in source.columns:
+            aggregates += [f"AVG(s.{column}) AS {source.prefix}_{column}_mean",
+                           f"STDDEV_SAMP(s.{column}) AS {source.prefix}_{column}_sd"]
+        filt = valid.format(a="s") if i == 0 else ""
+        if source.filter_column is not None:
+            filt += (f"\n    AND LOWER(CAST(s.{source.filter_column} AS STRING)) = LOWER(CAST(@pf{i} AS STRING))")
+            params.append((f"pf{i}", _scalar_type(source.filter_value), source.filter_value))
+        ctes.append(f"v{i} AS (\n  SELECT o.person_id, o.occasion,\n    " + ",\n    ".join(aggregates) + "\n"
+                    f"  FROM occasions o\n  JOIN {t(source.table)} s ON s.person_id = o.person_id\n"
+                    f"    AND DATE(s.{source.date_column}) >= DATE_SUB(o.occasion, INTERVAL @period_days DAY)\n"
+                    f"    AND DATE(s.{source.date_column}) < o.occasion{filt}\n"
+                    "  GROUP BY o.person_id, o.occasion\n)")
+        select.append(f"v{i}.{source.prefix}_days")
+        for column in source.columns:
+            select += [f"v{i}.{source.prefix}_{column}_mean", f"v{i}.{source.prefix}_{column}_sd"]
+        joins.append(f"{'JOIN' if i == 0 else 'LEFT JOIN'} v{i} ON v{i}.person_id = o.person_id "
+                     f"AND v{i}.occasion = o.occasion")
+    if spec.include_demographics:
+        select[3:3] = ["EXTRACT(YEAR FROM o.occasion) - p.year_of_birth AS age",
+                       "CASE LOWER(sc.concept_name) WHEN 'female' THEN 1 WHEN 'male' THEN 0 END AS female"]
+        joins += [f"JOIN {t('person')} p ON p.person_id = o.person_id",
+                  f"LEFT JOIN {t('concept')} sc ON sc.concept_id = p.sex_at_birth_concept_id"]
+    if spec.holdout_fraction > 0:
+        params += [("holdout_permille", "INT64", int(round(spec.holdout_fraction * 1000))),
+                   ("split_salt", "INT64", int(spec.split_salt))]
+        ctes.append(f"split AS (\n  SELECT person_id, {_SPLIT_SQL} < @holdout_permille AS {HOLDOUT_COLUMN}\n"
+                    "  FROM (SELECT DISTINCT person_id FROM occasions)\n)")
+        select.append(f"sp.{HOLDOUT_COLUMN}")
+        joins.append("JOIN split sp ON sp.person_id = o.person_id")
+    sql = ("WITH " + ",\n".join(ctes) + "\nSELECT\n  " + ",\n  ".join(select) + "\nFROM occasions o\n"
+           + "\n".join(joins) + f"\nWHERE v0.{primary.prefix}_days >= @panel_min_days")
+    return sql, params
+
+
+def panel_path(discovery_csv: str | Path) -> Path:
+    """The repeated-measures panel next to a discovery table (``<name>.panel.csv``)."""
+    p = Path(discovery_csv)
+    return p.with_name(p.stem + ".panel.csv")
+
+
 def schema_check_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
     """SQL listing the (table, column) pairs the spec needs that exist in the CDR."""
     cdr = resolve_cdr(cdr)
@@ -805,6 +919,13 @@ def extract_cohort(
         frame.loc[sealed, holdout_columns(spec)].to_csv(holdout_path(path), index=False)
         frame = frame.loc[~sealed]
     frame[output_columns(spec)].to_csv(path, index=False)
+    if has_panel(spec):
+        panel = _query(client, *build_panel_sql(spec, cdr))
+        if spec.holdout_fraction > 0:
+            sealed = panel[HOLDOUT_COLUMN].astype(bool)
+            panel.loc[sealed, panel_columns(spec)].to_csv(holdout_path(panel_path(path)), index=False)
+            panel = panel.loc[~sealed]
+        panel[panel_columns(spec)].to_csv(panel_path(path), index=False)
     return path
 
 

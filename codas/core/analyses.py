@@ -517,6 +517,12 @@ def headline(tool: str, result: dict[str, Any]) -> str:
         top = (result.get("importance") or [{}])[0].get("feature")
         return (f"{result.get('metric')} linear {_g(result.get('linear'))} vs boosting {_g(result.get('nonlinear'))}; "
                 f"shapes: {shapes}; most important: {top}")
+    if tool == "mixed_model":
+        w, b = result.get("within") or {}, result.get("between") or {}
+        wci = w.get("ci95") or [math.nan, math.nan]
+        return (f"within-person {_g(w.get('estimate'))} ({_g(wci[0])} to {_g(wci[1])}), p {_g(w.get('p'))}; "
+                f"between-person {_g(b.get('estimate'))}, p {_g(b.get('p'))}; {result.get('persons_with_repeats')} "
+                "people with repeats")
     if tool == "dose_response":
         curve = result.get("curve") or []
         end = curve[-1] if curve else {}

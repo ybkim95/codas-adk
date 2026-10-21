@@ -37,10 +37,15 @@ CONCEPTS = [
     (140641, "Verruca vulgaris", "S", "Condition"),
     (1585847, "Female", None, "Gender"),
     (1585846, "Male", None, "Gender"),
+    (990001, "Synthetic repeated laboratory value", "S", "Measurement"),
 ]
+# A synthetic lab measured several times per person, for the within-person (panel) tests: it rises with a
+# person's steps over the 90 days before each measurement relative to their own average (a planted
+# within-person effect) and with their average steps (a between-person effect).
+REPEATED_LAB = 990001
 _ANCESTRY = [(201826, 201826), (201826, 4193704), (3004410, 3004410), (3007070, 3007070),
              (440383, 440383), (3038553, 3038553), (1503297, 1503297), (374375, 374375), (380706, 380706),
-             (140641, 140641)]
+             (140641, 140641), (990001, 990001)]
 
 
 def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: int = 0) -> None:
@@ -109,6 +114,7 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
             cond_rows.append((pid, 374375, start + timedelta(days=int(control_rng.integers(0, n_days + 400)))))
 
     intraday, stages = _intraday(people.person_id.to_numpy(), act_rows, seed)
+    meas_rows += _repeated_lab(act_rows, start, n_days, mid, seed)
 
     frames = {
         "person": people,
@@ -241,3 +247,26 @@ def _zones(act_rows: list[tuple], seed: int) -> pd.DataFrame:
         frames.append(pd.DataFrame({"person_id": rows.person_id, "date": rows.date, "zone_name": zone,
                                     "minute_in_zone": np.round(rng.gamma(4.0, base / 4.0, len(rows)) * scale)}))
     return pd.concat(frames, ignore_index=True)
+
+
+def _repeated_lab(act_rows: list[tuple], start: date, n_days: int, first_id: int, seed: int) -> list[tuple]:
+    """Four values per person between day 100 and the end of wear (own random stream): 50 + 4 per 1,000
+    steps of the 90-day mean before the value above the person's own mean, + 2 per 1,000 steps of the
+    person's mean, + noise."""
+    rng = np.random.default_rng(seed + 7)
+    act = pd.DataFrame([(r[0], r[1], r[2]) for r in act_rows], columns=["person_id", "day", "steps"])
+    act["d"] = (pd.to_datetime(act.day) - pd.Timestamp(start)).dt.days
+    rows, mid = [], first_id
+    for pid, own in act.groupby("person_id"):
+        days, steps = own.d.to_numpy(), own.steps.to_numpy()
+        person_mean = steps.mean()
+        intercept = rng.normal(0, 2)
+        for d in np.sort(rng.integers(100, n_days, 4)):
+            window = (days >= d - 90) & (days < d)
+            if window.sum() < 10:
+                continue
+            value = (50 + intercept + 4 * (steps[window].mean() - person_mean) / 1000 + 2 * person_mean / 1000
+                     + rng.normal(0, 0.5))
+            rows.append((mid, int(pid), REPEATED_LAB, start + timedelta(days=int(d)), float(value)))
+            mid += 1
+    return rows

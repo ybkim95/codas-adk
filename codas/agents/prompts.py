@@ -100,8 +100,10 @@ Go beyond the screen as an expert analyst would, with the deterministic analysis
 has a follow-up time, run run_survival_screen so candidates are ranked by hazard ratio the way an
 incident outcome is finally tested. For the strongest candidates, run run_subgroup_analysis where a
 group difference is plausible (sex, age, a clinical covariate) and run_dose_response to see whether
-the relationship is graded, a threshold or a plateau. Report what each call returns; a pattern you
-did not test is a question, not a result.
+the relationship is graded, a threshold or a plateau. If the task provides a repeated-measures panel,
+run run_mixed_model on the strongest candidates: a within-person effect is the strongest evidence that a
+feature tracks the outcome rather than a stable trait of the people who have it. Report what each call
+returns; a pattern you did not test is a question, not a result.
 
 The deterministic method runner has applied further statistical and ML methods to this round's
 candidates; their results so far, one line each:
@@ -155,8 +157,9 @@ declare_confounders with it and the reason; the next round re-runs adjusted for 
 shows how many rows lack each covariate and how missing values are handled (dropped or imputed); weigh
 that before declaring one.
 
-When a suspicion can be checked, check it rather than assert it: run_subgroup_analysis for an effect
-confined to one group, run_multivariable_model for a candidate that loses its effect next to the others
+When a suspicion can be checked, check it rather than assert it: run_mixed_model (when a panel is
+available) for a candidate that may only mark a stable trait of the people who have it,
+run_subgroup_analysis for an effect confined to one group, run_multivariable_model for a candidate that loses its effect next to the others
 or adds nothing beyond the confounders, run_dose_response for a relationship that is not graded. The
 round summary also lists each candidate's q-value, confounder-adjusted rho, failed checks and the
 engine's warnings.

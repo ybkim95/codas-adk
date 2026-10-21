@@ -214,6 +214,8 @@ def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
 
     def fake_query(client, sql, params):
         calls.append(sql)
+        if "occasions AS" in sql:  # the repeated-measures panel
+            return pd.DataFrame({c: [1.0, 2.0] for c in cohort.panel_columns(spec)})
         return schema if "INFORMATION_SCHEMA" in sql else table
 
     monkeypatch.setattr(cohort, "_query", fake_query)
@@ -223,9 +225,11 @@ def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
         written = pd.read_csv(path)
         fitted, _notes = cohort.resolve_sources(spec, list(schema.itertuples(index=False, name=None)))
         assert not fitted.phenotypes                       # intraday tables absent from this schema: skipped
-        assert list(written.columns) == output_columns(fitted) and len(calls) == 2
+        assert list(written.columns) == output_columns(fitted) and len(calls) == 3  # schema, cohort, panel
+        assert list(pd.read_csv(cohort.panel_path(path)).columns) == cohort.panel_columns(spec)
     finally:
         path.unlink()
+        cohort.panel_path(path).unlink(missing_ok=True)
         out_dir.rmdir()
     with pytest.raises(ValueError):
         cohort.extract_cohort(spec, CDR, tmp_path, client=object())

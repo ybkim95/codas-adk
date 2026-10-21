@@ -81,6 +81,10 @@ COVARIATE_IMPUTATIONS = int(os.getenv("CODAS_COVARIATE_IMPUTATIONS", "5"))
 CONFIRM_IMPUTATIONS = int(os.getenv("CODAS_CONFIRM_IMPUTATIONS", "10"))  # the one-shot holdout test affords more
 
 
+PANEL_NOTE = (" A repeated-measures panel is also available for a within-person analysis: every later measurement "
+              "of the outcome paired with the wearable summary of the {period} days before it (run_mixed_model). A "
+              "within-person effect compares a person with themselves, so stable differences between people "
+              "(adherence, body size, socioeconomic position) cannot produce it.")
 LESSONS_NOTE = (" Lessons from earlier analyses of this cohort's discovery share (other outcomes), recorded by "
                 "the agents from their evidence: {lessons}.")
 MEMORY_NAME = "codas_memory.jsonl"
@@ -112,6 +116,8 @@ def goal_for(spec: CohortSpec, label: str | None = None, lessons: list[str] | No
         covariates += ADHERENCE_NOTE.format(columns=", ".join(cohort.availability_columns(spec)))
     if COVARIATE_IMPUTATIONS > 0:
         covariates += IMPUTATION_NOTE.format(m=COVARIATE_IMPUTATIONS)
+    if cohort.has_panel(spec):
+        covariates += PANEL_NOTE.format(period=spec.panel["period_days"])
     if lessons:
         covariates += LESSONS_NOTE.format(lessons="; ".join(lessons))
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
@@ -506,7 +512,8 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                        on_agent=on_agent,
                        state={"covariate_imputations": COVARIATE_IMPUTATIONS,
                               "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
-                              "prior_lessons": list(lessons or [])})
+                              "prior_lessons": list(lessons or []),
+                              "panel_csv_path": str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists() else ""})
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
     if spec.holdout_fraction > 0 and sealed.exists():
@@ -517,7 +524,9 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                              availability=cohort.availability_columns(spec),
                              covariate_imputations=CONFIRM_IMPUTATIONS)
         # The pre-registration is on disk before the holdout is read.
-        result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr))
+        sealed_panel = holdout_path(cohort.panel_path(csv))
+        result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr),
+                         panel_csv=sealed_panel if sealed_panel.exists() else None)
         state["confirmation"] = result
         state["report"] = f"{state.get('report') or ''}\n\n{confirmation_markdown(result)}"
     return save_outputs(state, spec.name, out_dir, recorder)

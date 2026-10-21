@@ -210,3 +210,28 @@ def test_a_priori_hypotheses_form_their_own_family(tmp_path):
     assert not rows["p2"]["replicated"] and rows["f1"]["knownness"] == "established"
     md = confirmation_markdown(result)
     assert "A-priori hypotheses" in md and "Exploratory candidates" in md
+
+
+def test_within_person_effect_is_reported_from_the_sealed_panel(tmp_path):
+    pytest.importorskip("statsmodels")
+    rng = np.random.default_rng(31)
+    n = 1500
+    h = pd.DataFrame({"x": rng.normal(size=n), "trait": rng.normal(size=n), "age": rng.normal(size=n)})
+    h["y"] = 0.3 * h.x + 0.3 * h.trait + rng.normal(size=n)
+    h.to_csv(tmp_path / "p.holdout.csv", index=False)
+    people, visits = 400, 4
+    pid = np.repeat(np.arange(people), visits)
+    level = np.repeat(rng.normal(size=people), visits)
+    panel = pd.DataFrame({"person_index": pid, "x": level + rng.normal(size=people * visits),
+                          "trait": np.repeat(rng.normal(size=people), visits), "age": 50.0,
+                          "days_from_start": np.tile([100, 200, 300, 400], people)})
+    panel["y"] = np.repeat(rng.normal(size=people), visits) + 0.5 * (panel.x - level) + 0.5 * panel.trait \
+        + rng.normal(size=len(panel))
+    panel.to_csv(tmp_path / "p.panel.holdout.csv", index=False)
+    prereg = preregister(_state([_cand("x", 0.2, ["x"]), _cand("trait", 0.2, ["trait"])], ["age"]), tmp_path, "p")
+    result = confirm(prereg, tmp_path / "p.holdout.csv", tmp_path, panel_csv=tmp_path / "p.panel.holdout.csv")
+    rows = {r["feature"]: r for r in result["hypotheses"]}
+    assert rows["x"]["within_person"]["within"]["p"] < 1e-6
+    trait = rows["trait"]["within_person"]
+    assert "error" in trait or trait["within"]["ci95"][0] < 0 < trait["within"]["ci95"][1]
+    assert "Within-person" in confirmation_markdown(result)

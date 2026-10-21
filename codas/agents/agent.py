@@ -65,6 +65,7 @@ from codas.agents.tools import (
     run_discovery,
     run_discovery_round,
     run_dose_response,
+    run_mixed_model,
     run_multivariable_model,
     run_nonlinear_model,
     run_subgroup_analysis,
@@ -286,7 +287,7 @@ statistical_interpreter = _agent(
     "statistical_interpreter",
     "Interprets association evidence and proposes physiological feature transformations to evaluate.",
     prompts.STATISTICAL_INTERPRETER,
-    tools=[propose_feature, run_survival_screen, run_subgroup_analysis, run_dose_response, run_method],
+    tools=[propose_feature, run_survival_screen, run_subgroup_analysis, run_dose_response, run_mixed_model, run_method],
     output_key="statistical_interpretation",
 )
 ml_interpreter = _agent(
@@ -307,7 +308,7 @@ critic_agent = _agent(
     prompts.CRITIC,
     model=REASONING_MODEL,
     tools=[declare_confounders, exclude_features, run_subgroup_analysis, run_multivariable_model, run_dose_response,
-           run_method],
+           run_mixed_model, run_method],
     output_key="critique",
 )
 defender_agent = _agent(

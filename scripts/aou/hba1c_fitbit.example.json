@@ -166,5 +166,9 @@
         "rem"
       ]
     }
-  ]
+  ],
+  "panel": {
+    "period_days": 90,
+    "min_days": 30
+  }
 }

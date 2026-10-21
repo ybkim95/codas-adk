@@ -779,8 +779,34 @@ def run_dose_response(feature: str, tool_context: ToolContext) -> dict[str, Any]
     return _run_analysis(tool_context, "dose_response", {"feature": feature}, body)
 
 
+def run_mixed_model(feature: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Within-person analysis on the repeated-measures panel (when the task provides one): every later
+    measurement of the outcome paired with the wearable summary of the period before it. A linear mixed
+    model with a random intercept per person splits the feature's effect into a within-person part (a
+    person compared with themselves: stable differences between people such as adherence, body size or
+    socioeconomic position cannot produce it) and a between-person part. A feature that only tracks a
+    stable trait shows a between-person effect and a within-person effect near zero."""
+    def body(frame, design):
+        path = str(tool_context.state.get("panel_csv_path") or "")
+        if not path or not Path(path).exists():
+            raise _Refused("No repeated-measures panel is available for this outcome.")
+        panel = read_csv_dataset(Path(path))
+        name = feature.strip()
+        if name in design["blocked_features"]:
+            raise _Refused(f"{name} is the target or an adjustment-only column, not a candidate feature.")
+        from codas.core.analyses import rebuild_feature
+        from codas.core.mixed import mixed_model
+
+        series = rebuild_feature(panel, name, design["definitions"].get(name))
+        if series is None:
+            raise _Refused(f"{name} cannot be built from the panel's columns (period means and SDs of the daily sources).")
+        panel = panel.assign(**{name: series})
+        return mixed_model(panel, name, design["target"], [c for c in ("age", "days_from_start") if c in panel.columns])
+    return _run_analysis(tool_context, "mixed_model", {"feature": feature}, body)
+
+
 ANALYSIS_TOOLS = [run_survival_screen, run_subgroup_analysis, run_multivariable_model, run_nonlinear_model,
-                  run_dose_response]
+                  run_dose_response, run_mixed_model]
 
 
 # --- method pools: the deterministic runner and the gap finder's requests ------------------------
