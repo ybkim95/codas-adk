@@ -68,9 +68,12 @@ from codas.agents.tools import (
     run_nonlinear_model,
     run_subgroup_analysis,
     run_survival_screen,
+    record_gap_analysis,
     search_literature,
     set_target,
 )
+from codas.agents.runners import MethodRunner
+from codas.core import methods
 from codas.core.settings import load_local_env
 
 load_local_env()
@@ -299,6 +302,19 @@ defender_agent = _agent(
     tools=list(ANALYSIS_TOOLS),
     output_key="defense",
 )
+method_runner = MethodRunner(
+    name="method_runner",
+    description="Deterministic runner: applies the next statistical and ML methods to the round's candidates.",
+)
+gap_finder = _agent(
+    "gap_finder",
+    "Identifies what the analysis leaves open and chooses the next methods from the statistical and ML pools.",
+    prompts.GAP_FINDER + "\n".join(f"- {m}: {methods.describe(m)}" for pool in methods.available(True).values()
+                                    for m in pool),
+    model=REASONING_MODEL,
+    tools=[record_gap_analysis],
+    output_key="gap_analysis_text",
+)
 gapcheck_agent = _agent(
     "gapcheck_agent",
     "GapChecker: compares rounds and escalates to end the loop once deeper search saturates.",
@@ -310,7 +326,7 @@ discovery_loop = LoopAgent(
     description="Phases B&C: iterate deepening parallel search and adversarial validation until the "
     "GapChecker signals convergence.",
     max_iterations=MAX_DISCOVERY_ROUNDS,
-    sub_agents=[search_agent, dual_track, critic_agent, defender_agent, gapcheck_agent],
+    sub_agents=[search_agent, method_runner, dual_track, critic_agent, defender_agent, gap_finder, gapcheck_agent],
 )
 
 # --- Phase D/E/F: Mechanism + Novelty + Strategy + Artifacts + Report ---------------------------

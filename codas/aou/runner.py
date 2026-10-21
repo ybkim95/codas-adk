@@ -19,7 +19,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from codas.aou import cohort
+# The paper's loop runs up to five rounds (its stop rules usually end it sooner); set before the agent
+# graph is imported, which reads it. Main keeps its own default.
+os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "5")
+
+from codas.aou import cohort  # noqa: E402
 from codas.aou import feasibility as feas
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)

@@ -224,6 +224,10 @@ def test_full_graph_sends_only_masked_aggregates(aou_env):
     done = {a["tool"] for a in state.get("analyses") or [] if "error" not in a["result"]}
     assert {"subgroup_analysis", "dose_response", "multivariable_model", "nonlinear_model"} <= done, done
     assert '"heterogeneity_p"' in everything and '"incremental"' in everything
+    # ...and the deterministic runner applied methods from both pools each round, chosen by the gap finder.
+    methods_run = [a["tool"] for a in state["analyses"] if a["tool"].startswith("method:")]
+    assert "method:partial_correlation" in methods_run and "method:gradient_boosting" in methods_run
+    assert "gap_finder" in agents_called and all(r.get("methods_run") for r in state["rounds"])
 
     # 6. The saved report is masked.
     report = Path(summary["report_path"]).read_text(encoding="utf-8")

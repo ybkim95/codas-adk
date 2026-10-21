@@ -1,4 +1,9 @@
+import os
+
 import pytest
+
+# The AoU runner raises the loop cap to the paper's five rounds; the scripted tests keep three.
+os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "3")
 
 
 @pytest.fixture(autouse=True)

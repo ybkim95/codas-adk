@@ -22,6 +22,7 @@ import json
 import math
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -779,6 +780,143 @@ ANALYSIS_TOOLS = [run_survival_screen, run_subgroup_analysis, run_multivariable_
                   run_dose_response]
 
 
+# --- method pools: the deterministic runner and the gap finder's requests ------------------------
+
+_METHOD_FEATURES = int(os.getenv("CODAS_METHOD_FEATURES", "8"))
+_DIGEST_ITEMS = int(os.getenv("CODAS_ANALYSES_DIGEST_ITEMS", "12"))
+
+
+def analyses_digest(records: list[dict[str, Any]], limit: int = _DIGEST_ITEMS) -> str:
+    """The latest analyses as one line each: what the agents read instead of the raw results."""
+    from codas.core.analyses import headline as analysis_headline
+    from codas.core.methods import headline as method_headline
+
+    lines = []
+    for rec in records[-limit:]:
+        tool, result = str(rec.get("tool", "")), rec.get("result") or {}
+        text = method_headline(result) if tool.startswith("method:") else analysis_headline(tool, result)
+        lines.append(f"- round {rec.get('round', '?')} {tool}: {text}")
+    return "\n".join(lines)
+
+
+def run_method_batch(state: dict[str, Any], per_pool: int = 1) -> dict[str, Any]:
+    """Run the requested methods (``state['next_methods']``), then the next unexplored method of each pool,
+    on the round's candidates. Returns the state changes: the analyses with the new records, the methods
+    explored, the latest round marked with what ran, and the digest the agents read."""
+    from codas.core import methods
+
+    context = SimpleNamespace(state=state)
+    frame, design = _analysis_setup(context)
+    report = state.get("latest_report") or {}
+    names = design["candidates"] or [c.get("feature") for c in sorted(
+        report.get("candidates") or [], key=lambda c: -abs(float(c.get("rho") or 0)))]
+    names = [n for n in names if n and n not in design["blocked_features"]][:_METHOD_FEATURES]
+    explored = list(state.get("methods_explored") or [])
+    target = pd.to_numeric(frame[design["target"]], errors="coerce").to_numpy(float)
+    from codas.core.analyses import _is_binary
+
+    requests = methods.next_methods(explored, list(state.get("next_methods") or []), bool(design["time"]),
+                                    _is_binary(target), per_pool)
+    round_index = max(len(state.get("rounds") or []) - 1, 0)
+    records, ran = [], []
+    for request in requests:
+        name = request["method"]
+        features = [f for f in request.get("features") or names if f not in design["blocked_features"]][:_METHOD_FEATURES]
+        try:
+            data = _with_features(frame, design, features)
+            options = {k: _covariate(frame, design, request[k]) for k in ("by", "mediator") if request.get(k)}
+            result = methods.run(name, data, features, design["target"], design["confounders"], design["time"],
+                                 design["imputations"], **options)
+        except _Refused as exc:
+            result = {"method": name, "error": str(exc)}
+        records.append({"tool": f"method:{name}", "round": round_index,
+                        "args": {k: v for k, v in request.items() if k != "method"}, "result": _json_safe(_sig(result))})
+        ran.append(name)
+    if aou_mode():
+        from codas.aou.privacy import mask_small_counts
+
+        records = mask_small_counts(records)
+    analyses = list(state.get("analyses") or []) + records
+    rounds = [dict(r) for r in state.get("rounds") or []]
+    if rounds:
+        rounds[-1]["methods_run"] = ran
+    digest = analyses_digest(analyses)
+    return {"analyses": analyses, "methods_explored": explored + [m for m in ran if m not in explored],
+            "next_methods": [], "rounds": rounds, "method_pool_active": True,
+            "analyses_digest": mask_small_counts_in_text(digest) if aou_mode() else digest}
+
+
+def record_gap_analysis(gaps_json: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Record what the analysis still leaves open and what to run next. ``gaps_json`` is a JSON object:
+    ``gaps`` (list of open questions), ``next_methods`` (list of ``{"method": ..., "by": covariate,
+    "mediator": column, "features": [...]}`` drawn from the statistical and ML pools), and ``constraints``
+    (list of rules for later rounds; they are added to the earlier ones, never replace them). The
+    deterministic runner executes the requested methods at the start of the next round."""
+    from codas.core import methods
+
+    try:
+        payload = json.loads(gaps_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": f"gaps_json is not valid JSON: {exc}"}
+    if not isinstance(payload, dict):
+        return {"error": "gaps_json must be a JSON object with gaps, next_methods and constraints."}
+    state = tool_context.state
+    try:
+        frame, design = _analysis_setup(tool_context)
+    except _Refused as exc:
+        return {"error": str(exc)}
+    accepted, rejected = [], []
+    for item in payload.get("next_methods") or []:
+        item = item if isinstance(item, dict) else {"method": str(item)}
+        name = str(item.get("method") or "")
+        try:
+            if methods.pool_of(name) is None:
+                raise _Refused(f"unknown method {name!r}")
+            entry = {"method": name}
+            for key in ("by", "mediator"):
+                if item.get(key):
+                    entry[key] = _covariate(frame, design, str(item[key]))
+            if item.get("features"):
+                entry["features"] = [str(f) for f in item["features"]][:_METHOD_FEATURES]
+            accepted.append(entry)
+        except _Refused as exc:
+            rejected.append({"request": item, "reason": str(exc)})
+    constraints = list(state.get("constraints") or [])
+    constraints += [str(c)[:300] for c in payload.get("constraints") or [] if str(c)[:300] not in constraints]
+    entry = {"round": max(len(state.get("rounds") or []) - 1, 0),
+             "gaps": [str(g)[:300] for g in payload.get("gaps") or []], "next_methods": accepted}
+    state["gap_analysis"] = list(state.get("gap_analysis") or []) + [entry]
+    state["next_methods"] = accepted
+    state["constraints"] = constraints
+    return _json_safe({"accepted": accepted, "rejected": rejected, "constraints": constraints,
+                       "available_methods": {pool: [f"{m}: {methods.describe(m)}" for m in names]
+                                             for pool, names in methods.available(bool(design["time"])).items()}})
+
+
+_JACCARD_STABLE = float(os.getenv("CODAS_CONVERGENCE_JACCARD", "0.9"))
+
+
+def _jaccard(a: dict[str, Any], b: dict[str, Any]) -> float:
+    x = {c.get("feature") for c in a.get("passing_candidates") or []}
+    y = {c.get("feature") for c in b.get("passing_candidates") or []}
+    return len(x & y) / len(x | y) if x | y else 1.0
+
+
+def _method_pool_stop(state: dict[str, Any], rounds: list[dict[str, Any]]) -> str | None:
+    """The paper's stop rules for a loop with method pools: both pools exhausted, or the candidate set
+    unchanged (Jaccard above the threshold) for two consecutive rounds."""
+    from codas.core import methods
+
+    explored = list(state.get("methods_explored") or [])
+    survival = bool(str(state.get("survival_time_column") or "").strip())
+    if methods.exhausted(explored, survival) or methods.exhausted(explored, survival, binary=True):
+        return "Both method pools are exhausted: every statistical and ML method has been run. Stopping."
+    if len(rounds) >= 3 and all(_jaccard(rounds[i - 1], rounds[i]) > _JACCARD_STABLE for i in (-1, -2)):
+        return (f"The candidate set has not changed for two rounds (Jaccard > {_JACCARD_STABLE}); further "
+                "rounds would re-test the same candidates. Stopping.")
+    return None
+
+
 def check_convergence(tool_context: ToolContext) -> dict[str, Any]:
     """GapChecker: decide whether the iterative search has saturated and the loop should stop.
 
@@ -821,6 +959,12 @@ def check_convergence(tool_context: ToolContext) -> dict[str, Any]:
             "rounds_completed": 1,
         }
 
+    if tool_context.state.get("method_pool_active"):
+        stop = _method_pool_stop(tool_context.state, rounds)
+        if stop:
+            tool_context.actions.escalate = True
+            return {"converged": True, "reason": stop, "rounds_completed": len(rounds)}
+
     previous = rounds[-2]
     gain_validated = current["validated_count"] - previous["validated_count"]
     prev_metric = previous.get("ml_metric_value")
@@ -832,6 +976,11 @@ def check_convergence(tool_context: ToolContext) -> dict[str, Any]:
         else 0.0
     )
     converged = gain_validated <= 0 and gain_metric < _MIN_METRIC_GAIN
+    if converged and tool_context.state.get("method_pool_active") and current.get("methods_run"):
+        return {"converged": False, "gain_validated": gain_validated, "gain_metric": round(gain_metric, 4),
+                "reason": f"No new validated candidate (Δ={gain_validated}), but this round ran new methods "
+                          f"({', '.join(current['methods_run'])}); continue until the pools are exhausted or the "
+                          "candidate set stops changing.", "rounds_completed": len(rounds)}
     if converged:
         tool_context.actions.escalate = True
         reason = (

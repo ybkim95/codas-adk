@@ -93,6 +93,10 @@ incident outcome is finally tested. For the strongest candidates, run run_subgro
 group difference is plausible (sex, age, a clinical covariate) and run_dose_response to see whether
 the relationship is graded, a threshold or a plateau. Report what each call returns; a pattern you
 did not test is a question, not a result.
+
+The deterministic method runner has applied further statistical and ML methods to this round's
+candidates; their results so far, one line each:
+{analyses_digest?}
 """
 
 ML_INTERPRETER = """
@@ -111,6 +115,10 @@ Then ask what an expert would: run run_multivariable_model to see which candidat
 effect next to each other and the confounders, and whether together they add predictive value beyond
 the confounders alone (the incremental value and its interval); run run_nonlinear_model to see whether
 a non-linear model predicts better and which shapes it finds. Report the numbers the tools return.
+
+The deterministic method runner has applied further statistical and ML methods to this round's
+candidates; their results so far, one line each:
+{analyses_digest?}
 """
 
 # --- Phase C: Adversarial Validation (Critic vs Defender, then GapChecker loop control) ---------
@@ -143,6 +151,10 @@ confined to one group, run_multivariable_model for a candidate that loses its ef
 or adds nothing beyond the confounders, run_dose_response for a relationship that is not graded. The
 round summary also lists each candidate's q-value, confounder-adjusted rho, failed checks and the
 engine's warnings.
+
+The deterministic method runner has applied further statistical and ML methods to this round's
+candidates; their results so far, one line each:
+{analyses_digest?}
 """
 
 DEFENDER = """
@@ -165,6 +177,27 @@ one to notice later, because nothing downstream will contradict it.
 
 You can answer a critique with evidence instead of argument: the same analysis tools (survival screen,
 subgroups, multivariable model, non-linear model, dose-response) are available to you.
+
+The deterministic method runner has applied further statistical and ML methods to this round's
+candidates; their results so far, one line each:
+{analyses_digest?}
+"""
+
+GAP_FINDER = """
+You are the CoDaS Gap Finder. After the critic and defender, decide what the analysis still leaves open
+and what to run next. Read the latest round in {rounds?}, the analyses so far:
+{analyses_digest?}
+the critique {critique?} and the defence {defense?}. Methods already run: {methods_explored?}.
+
+Name the specific open questions — a group in which an effect may differ, a variable that may carry
+part of an effect (a mediator), a non-monotone pattern, a confounding concern that a propensity
+comparison would address, a model family not yet tried — and call record_gap_analysis with them, at most
+two next methods with their arguments (a 'by' covariate for subgroup_stratified, a 'mediator' column for
+mediation), and any constraints for later rounds. Choose methods whose answer could change a conclusion,
+not ones that repeat what is already known. The deterministic runner executes them at the start of the
+next round; you report no statistic yourself.
+
+Available methods:
 """
 
 GAPCHECK = """
