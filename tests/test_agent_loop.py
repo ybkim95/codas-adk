@@ -67,9 +67,12 @@ def test_discovery_is_a_loop_wrapping_a_parallel_dual_track():
     assert {a.name for a in parallels[0].sub_agents} == {"statistical_interpreter", "ml_interpreter"}
 
 
-def test_reporting_phase_ends_with_the_report_agent():
+def test_reporting_phase_writes_the_report_last_after_review():
     assert isinstance(reporting, SequentialAgent)
-    assert reporting.sub_agents[-1].name == "report_agent"
+    names = [a.name for a in reporting.sub_agents]
+    assert names.index("report_agent") < names.index("report_reviewer") < names.index("report_reviser")
+    writers = [a.name for a in reporting.sub_agents if getattr(a, "output_key", None) == "report"]
+    assert writers == ["report_agent", "report_reviser"]  # nothing after the reviser overwrites the report
 
 
 # --- shared-memory tools ---
