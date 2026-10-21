@@ -220,7 +220,8 @@ def _publish(paths: dict[str, str], out: Path) -> dict[str, str]:
 STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "context_columns", "exclusion_log",
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
-              "confirmation", "cohort_table", "analyses", "a_priori_hypotheses")
+              "confirmation", "cohort_table", "analyses", "a_priori_hypotheses", "gap_analysis", "methods_explored",
+              "constraints", "candidate_debates")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,

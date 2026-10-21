@@ -50,6 +50,7 @@ from codas.agents.callbacks import (
     after_tool_logger,
     before_model_logger,
     before_tool_guardrail,
+    remember_goal,
     report_grounding_audit,
 )
 from codas.agents.tools import (
@@ -68,11 +69,13 @@ from codas.agents.tools import (
     run_nonlinear_model,
     run_subgroup_analysis,
     run_survival_screen,
+    record_debate,
     record_gap_analysis,
+    run_method,
     search_literature,
     set_target,
 )
-from codas.agents.runners import MethodRunner
+from codas.agents.runners import CandidateDebate, MethodRunner
 from codas.core import methods
 from codas.core.settings import load_local_env
 
@@ -207,6 +210,8 @@ def _agent(
     tools: list | None = None,
     output_key: str | None = None,
     after_agent: Any = None,
+    before_agent: Any = None,
+    include_contents: str = "none",
 ) -> LlmAgent:
     """Construct an LlmAgent with the shared logging/guardrail callbacks.
 
@@ -216,12 +221,17 @@ def _agent(
     ParallelAgent) can read it; ``tools`` wires the deterministic tool guardrail; ``after_agent`` runs a
     post-agent callback (used to grounding-audit the final report).
     """
+    # Context management (the paper's event pruning between phases): an agent sees its own turn plus the
+    # memory keys its instruction names, never the whole conversation, so prompts stay bounded.
+    if include_contents == "none":
+        instruction = prompts.TASK_CONTEXT + instruction
     kwargs: dict[str, Any] = dict(
         name=name,
         model=model,
         description=description,
         instruction=instruction,
         before_model_callback=before_model_logger,
+        include_contents=include_contents,
     )
     if tools:
         kwargs.update(
@@ -233,6 +243,8 @@ def _agent(
         kwargs["output_key"] = output_key
     if after_agent:
         kwargs["after_agent_callback"] = after_agent
+    if before_agent:
+        kwargs["before_agent_callback"] = before_agent
     return LlmAgent(**kwargs)
 
 
@@ -244,6 +256,8 @@ scout_agent = _agent(
     prompts.SCOUT,
     model=REASONING_MODEL,
     tools=[profile_dataset, preview_columns, set_target],
+    before_agent=remember_goal,
+    include_contents="default",  # the first agent reads the user's task directly
 )
 hypotheses_agent = _agent(
     "hypotheses_agent",
@@ -271,7 +285,7 @@ statistical_interpreter = _agent(
     "statistical_interpreter",
     "Interprets association evidence and proposes physiological feature transformations to evaluate.",
     prompts.STATISTICAL_INTERPRETER,
-    tools=[propose_feature, run_survival_screen, run_subgroup_analysis, run_dose_response],
+    tools=[propose_feature, run_survival_screen, run_subgroup_analysis, run_dose_response, run_method],
     output_key="statistical_interpretation",
 )
 ml_interpreter = _agent(
@@ -291,7 +305,8 @@ critic_agent = _agent(
     "Adversarially attacks candidates for leakage, confounding, construct overlap, and overclaiming.",
     prompts.CRITIC,
     model=REASONING_MODEL,
-    tools=[declare_confounders, exclude_features, run_subgroup_analysis, run_multivariable_model, run_dose_response],
+    tools=[declare_confounders, exclude_features, run_subgroup_analysis, run_multivariable_model, run_dose_response,
+           run_method],
     output_key="critique",
 )
 defender_agent = _agent(
@@ -299,7 +314,7 @@ defender_agent = _agent(
     "Defends candidates only when deterministic evidence supports retention; concedes otherwise.",
     prompts.DEFENDER,
     model=REASONING_MODEL,
-    tools=list(ANALYSIS_TOOLS),
+    tools=[*ANALYSIS_TOOLS, run_method],
     output_key="defense",
 )
 method_runner = MethodRunner(
@@ -331,6 +346,27 @@ discovery_loop = LoopAgent(
 
 # --- Phase D/E/F: Mechanism + Novelty + Strategy + Artifacts + Report ---------------------------
 
+candidate_critic = _agent(
+    "candidate_critic",
+    "Attacks one final candidate at a time, checking its suspicions with the analysis tools.",
+    prompts.CANDIDATE_CRITIC,
+    model=REASONING_MODEL,
+    tools=[*ANALYSIS_TOOLS, run_method],
+    output_key="candidate_critique",
+)
+candidate_defender = _agent(
+    "candidate_defender",
+    "Answers the critique of one candidate from evidence and records keep / caveat / concede.",
+    prompts.CANDIDATE_DEFENDER,
+    model=REASONING_MODEL,
+    tools=[*ANALYSIS_TOOLS, run_method, record_debate],
+    output_key="candidate_defense",
+)
+candidate_debate = CandidateDebate(
+    name="candidate_debate",
+    description="Phase D: per-candidate critic-defender debate over the final validated and conditional candidates.",
+    sub_agents=[candidate_critic, candidate_defender],
+)
 mechanism_agent = _agent(
     "mechanism_agent",
     "Links surviving candidates to literature-grounded mechanisms and interpretation boundaries.",
@@ -371,7 +407,7 @@ report_agent = _agent(
 reporting = SequentialAgent(
     name="reporting",
     description="Phases D-F: mechanism, novelty, strategy, artifacts, and the final report.",
-    sub_agents=[mechanism_agent, novelty_agent, strategy_agent, artifact_agent, report_agent],
+    sub_agents=[candidate_debate, mechanism_agent, novelty_agent, strategy_agent, artifact_agent, report_agent],
 )
 
 # --- The Orchestrator ---------------------------------------------------------------------------

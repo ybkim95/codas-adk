@@ -83,3 +83,27 @@ def test_loop_keeps_going_while_new_methods_run_and_stops_on_the_papers_rules(tm
     ctx.state["rounds"] = [_round(0, ["a"]), _round(1, ["b"], validated=5)]
     out = tools.check_convergence(ctx)
     assert out["converged"] and "exhausted" in out["reason"]
+
+
+def test_agents_can_run_a_single_method(tmp_path):
+    ctx = _ctx(tmp_path)
+    out = tools.run_method("propensity_stratification", ctx, features_csv="x")
+    assert out["results"][0]["feature"] == "x" and ctx.state["analyses"][-1]["tool"] == "method:propensity_stratification"
+    assert "propensity_stratification" in ctx.state["methods_explored"]
+    assert "error" in tools.run_method("mediation", ctx, features_csv="x", mediator="leak")
+    assert "error" in tools.run_method("astrology", ctx)
+
+
+def test_debate_candidates_carry_the_evidence_and_verdicts_are_validated(tmp_path):
+    ctx = _ctx(tmp_path)
+    ctx.state["rounds"] = [{"round": 0, "passing_candidates": [
+        {"feature": "x", "rho": 0.4, "verdict": "validated", "q": 0.001, "adjusted_rho": 0.38, "failed_checks": []}]}]
+    tools.run_method("robust_regression", ctx, features_csv="x,z")
+    cands = tools.debate_candidates(ctx.state, cap=5)
+    assert [c["feature"] for c in cands] == ["x", "z"] and cands[0]["adjusted_rho"] == 0.38
+    assert any("robust_regression" in line for line in cands[0]["evidence"])
+    ctx.state["debate_candidate"] = cands[0]
+    ok = tools.record_debate("x", "caveat", "holds, but smaller after adjustment", "robust_regression", ctx)
+    assert ok["recorded"]["verdict"] == "caveat" and ctx.state["debate_verdict"]["feature"] == "x"
+    assert "error" in tools.record_debate("x", "maybe", "", "", ctx)
+    assert "error" in tools.record_debate("z", "keep", "r", "e", ctx)  # not the candidate under debate

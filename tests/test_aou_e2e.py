@@ -61,6 +61,9 @@ SCRIPTS: dict[str, list[types.Part]] = {
     "ml_interpreter": [_call("run_multivariable_model", features_csv="act_steps_mean,act_steps_sd"),
                        _call("run_nonlinear_model", features_csv="act_steps_mean,act_steps_sd")],
     "gapcheck_agent": [_call("check_convergence")],
+    "candidate_critic": [_call("run_method", method="robust_regression")],
+    "candidate_defender": [_call("record_debate", feature="(the candidate)", verdict="caveat",
+                                 reason="holds with a smaller adjusted effect", evidence="robust_regression")],
     # The critic judges one input to be target leakage; the next round must run without it.
     "critic_agent": [_call("exclude_features", columns_csv="act_calories_out_mean,act_calories_out_sd",
                            reason="treated as derived from the outcome in this test")],
@@ -94,6 +97,11 @@ class ScriptedLlm(BaseLlm):
         script = SCRIPTS.get(self.agent_name, [])
         if step < len(script):
             part = script[step]
+            if part.function_call.name == "record_debate":  # the candidate named in the instruction
+                instruction = str(getattr(llm_request.config, "system_instruction", "") or "")
+                found = re.search(r"'feature': '([^']+)'", instruction)
+                part = _call("record_debate", **{**dict(part.function_call.args),
+                                                 "feature": found.group(1) if found else ""})
             if part.function_call.name == "set_target":  # target named in the goal ("The target column is x")
                 goal = " ".join(p.text or "" for c in llm_request.contents or [] for p in c.parts or [])
                 found = re.search(r"target column is (\w+)", goal)
@@ -228,6 +236,18 @@ def test_full_graph_sends_only_masked_aggregates(aou_env):
     methods_run = [a["tool"] for a in state["analyses"] if a["tool"].startswith("method:")]
     assert "method:partial_correlation" in methods_run and "method:gradient_boosting" in methods_run
     assert "gap_finder" in agents_called and all(r.get("methods_run") for r in state["rounds"])
+    # ...each final candidate was debated on its own and closed with a recorded verdict.
+    debates = state["candidate_debates"]
+    assert debates and all(d["verdict"] == "caveat" and d["evidence"] == "robust_regression" for d in debates)
+    # Context management: after the Scout, every agent reads the task from memory and receives only the
+    # message that started its turn plus its own tool exchanges, never the whole conversation.
+    for name, req in recorder:
+        if name == "scout_agent":
+            continue
+        assert "Discover and validate" in str(req.config.system_instruction), name
+        others = [p.text for c in req.contents or [] for p in c.parts or []
+                  if p.text and p.text.startswith("[") and "] said:" in p.text]
+        assert len(others) <= 1, (name, others)
 
     # 6. The saved report is masked.
     report = Path(summary["report_path"]).read_text(encoding="utf-8")

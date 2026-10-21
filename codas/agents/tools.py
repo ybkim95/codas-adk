@@ -215,6 +215,9 @@ def set_target(
     tool_context.state["time_column"] = time_column.strip()
     tool_context.state["excluded_columns"] = _split_csv(excluded_columns_csv)
     tool_context.state["confounder_columns"] = _split_csv(confounder_columns_csv)
+    path = _resolve_csv_path(tool_context.state.get("csv_path"), "")
+    if path is not None and path.exists():  # names only, for agents that no longer see the profile
+        tool_context.state["dataset_columns"] = list(pd.read_csv(path, nrows=0).columns)
     return {
         "target_column": target_column,
         "participant_id_column": participant_id_column.strip() or None,
@@ -799,6 +802,105 @@ def analyses_digest(records: list[dict[str, Any]], limit: int = _DIGEST_ITEMS) -
     return "\n".join(lines)
 
 
+def _execute_method(frame: pd.DataFrame, design: dict[str, Any], request: dict[str, Any], default_features: list[str],
+                    round_index: int) -> dict[str, Any]:
+    """Run one method request on its features (or the default ones) and return the analysis record."""
+    from codas.core import methods
+
+    name = request["method"]
+    features = [f for f in request.get("features") or default_features
+                if f not in design["blocked_features"]][:_METHOD_FEATURES]
+    try:
+        data = _with_features(frame, design, features)
+        options = {k: _covariate(frame, design, request[k]) for k in ("by", "mediator") if request.get(k)}
+        result = methods.run(name, data, features, design["target"], design["confounders"], design["time"],
+                             design["imputations"], **options)
+    except _Refused as exc:
+        result = {"method": name, "error": str(exc)}
+    return {"tool": f"method:{name}", "round": round_index,
+            "args": {k: v for k, v in request.items() if k != "method"}, "result": _json_safe(_sig(result))}
+
+
+def _candidate_names(state: dict[str, Any], design: dict[str, Any]) -> list[str]:
+    report = state.get("latest_report") or {}
+    names = design["candidates"] or [c.get("feature") for c in sorted(
+        report.get("candidates") or [], key=lambda c: -abs(float(c.get("rho") or 0)))]
+    return [n for n in names if n and n not in design["blocked_features"]][:_METHOD_FEATURES]
+
+
+def run_method(method: str, tool_context: ToolContext, features_csv: str = "", by: str = "",
+               mediator: str = "") -> dict[str, Any]:
+    """Run one method from the statistical or ML pool now (see the gap finder's list): e.g. mediation
+    through a named ``mediator``, subgroup_stratified ``by`` a covariate, propensity_stratification,
+    robust_regression, mutual_information, or an ML model with nested CV. Defaults to the latest round's
+    candidates. Use it to settle a specific question with evidence."""
+    from codas.core import methods
+
+    if methods.pool_of(method) is None:
+        return {"error": f"unknown method {method!r}; choose one of the statistical or ML pool methods."}
+    try:
+        frame, design = _analysis_setup(tool_context)
+        request = {"method": method, **({"features": _split_csv(features_csv)} if features_csv.strip() else {}),
+                   **({"by": by.strip()} if by.strip() else {}), **({"mediator": mediator.strip()} if mediator.strip() else {})}
+        for key in ("by", "mediator"):
+            if request.get(key):
+                _covariate(frame, design, request[key])
+        state = tool_context.state
+        record = _execute_method(frame, design, request, _candidate_names(state, design),
+                                 max(len(state.get("rounds") or []) - 1, 0))
+    except _Refused as exc:
+        return {"error": str(exc)}
+    if aou_mode():
+        from codas.aou.privacy import mask_small_counts
+
+        record = mask_small_counts(record)
+    state["analyses"] = list(state.get("analyses") or []) + [record]
+    explored = list(state.get("methods_explored") or [])
+    state["methods_explored"] = explored + ([method] if method not in explored else [])
+    digest = analyses_digest(state["analyses"])
+    state["analyses_digest"] = mask_small_counts_in_text(digest) if aou_mode() else digest
+    return record["result"]
+
+
+def debate_candidates(state: dict[str, Any], cap: int = 5) -> list[dict[str, Any]]:
+    """The final candidates to debate one by one, strongest first, each with its battery summary and the
+    one-line results of every analysis that included it."""
+    report = state.get("latest_report") or {}
+    summary = {c.get("feature"): c for c in ((state.get("rounds") or [{}])[-1].get("passing_candidates") or [])}
+    chosen = sorted((c for c in report.get("candidates") or [] if c.get("verdict") in {"validated", "conditional"}),
+                    key=lambda c: -abs(float(c.get("rho") or 0)))[:cap]
+    out = []
+    for c in chosen:
+        name = c.get("feature")
+        evidence = [line for line in analyses_digest(
+            [a for a in state.get("analyses") or [] if name in json.dumps(a.get("result") or {}, default=str)],
+            limit=8).splitlines()]
+        info = summary.get(name, {})
+        out.append({"feature": name, "rho": c.get("rho"), "verdict": c.get("verdict"), "q": info.get("q", c.get("q_value")),
+                    "adjusted_rho": info.get("adjusted_rho"), "failed_checks": info.get("failed_checks", []),
+                    "evidence": evidence})
+    return out
+
+
+_DEBATE_VERDICTS = ("keep", "caveat", "concede")
+
+
+def record_debate(feature: str, verdict: str, reason: str, evidence: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Close the debate on the candidate under discussion: ``verdict`` is keep (the evidence holds),
+    caveat (it holds with a stated limitation) or concede (it fails a named check); ``reason`` in one or
+    two sentences; ``evidence`` names the tool result relied on. This informs how the candidate is
+    interpreted and reported; it does not change the engine's validation or the pre-registration."""
+    current = (tool_context.state.get("debate_candidate") or {}).get("feature")
+    if feature.strip() != current:
+        return {"error": f"The candidate under debate is {current!r}; record the verdict for it."}
+    if verdict.strip().lower() not in _DEBATE_VERDICTS:
+        return {"error": f"verdict must be one of {', '.join(_DEBATE_VERDICTS)}."}
+    entry = {"feature": current, "verdict": verdict.strip().lower(), "reason": reason.strip()[:600],
+             "evidence": evidence.strip()[:300]}
+    tool_context.state["debate_verdict"] = entry
+    return {"recorded": entry}
+
+
 def run_method_batch(state: dict[str, Any], per_pool: int = 1) -> dict[str, Any]:
     """Run the requested methods (``state['next_methods']``), then the next unexplored method of each pool,
     on the round's candidates. Returns the state changes: the analyses with the new records, the methods
@@ -807,10 +909,7 @@ def run_method_batch(state: dict[str, Any], per_pool: int = 1) -> dict[str, Any]
 
     context = SimpleNamespace(state=state)
     frame, design = _analysis_setup(context)
-    report = state.get("latest_report") or {}
-    names = design["candidates"] or [c.get("feature") for c in sorted(
-        report.get("candidates") or [], key=lambda c: -abs(float(c.get("rho") or 0)))]
-    names = [n for n in names if n and n not in design["blocked_features"]][:_METHOD_FEATURES]
+    names = _candidate_names(state, design)
     explored = list(state.get("methods_explored") or [])
     target = pd.to_numeric(frame[design["target"]], errors="coerce").to_numpy(float)
     from codas.core.analyses import _is_binary
@@ -818,20 +917,8 @@ def run_method_batch(state: dict[str, Any], per_pool: int = 1) -> dict[str, Any]
     requests = methods.next_methods(explored, list(state.get("next_methods") or []), bool(design["time"]),
                                     _is_binary(target), per_pool)
     round_index = max(len(state.get("rounds") or []) - 1, 0)
-    records, ran = [], []
-    for request in requests:
-        name = request["method"]
-        features = [f for f in request.get("features") or names if f not in design["blocked_features"]][:_METHOD_FEATURES]
-        try:
-            data = _with_features(frame, design, features)
-            options = {k: _covariate(frame, design, request[k]) for k in ("by", "mediator") if request.get(k)}
-            result = methods.run(name, data, features, design["target"], design["confounders"], design["time"],
-                                 design["imputations"], **options)
-        except _Refused as exc:
-            result = {"method": name, "error": str(exc)}
-        records.append({"tool": f"method:{name}", "round": round_index,
-                        "args": {k: v for k, v in request.items() if k != "method"}, "result": _json_safe(_sig(result))})
-        ran.append(name)
+    records = [_execute_method(frame, design, request, names, round_index) for request in requests]
+    ran = [request["method"] for request in requests]
     if aou_mode():
         from codas.aou.privacy import mask_small_counts
 

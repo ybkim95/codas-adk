@@ -67,6 +67,19 @@ def after_tool_logger(
     return sanitize_tool_response(tool_response)
 
 
+def remember_goal(callback_context: Any) -> None:
+    """Keep the user's task in memory: later agents see only their own turn plus memory, not the
+    conversation, so the goal is read from there ({goal?})."""
+    state = getattr(callback_context, "state", None)
+    content = getattr(callback_context, "user_content", None)
+    if state is None or content is None or state.get("goal"):
+        return None
+    text = " ".join(p.text for p in (content.parts or []) if getattr(p, "text", None))
+    if text:
+        state["goal"] = text
+    return None
+
+
 def before_model_logger(callback_context: Any, llm_request: Any) -> None:
     """Log model calls and leave policy enforcement to deterministic tools."""
     LOGGER.info("Model call: agent=%s", getattr(callback_context, "agent_name", "unknown"))

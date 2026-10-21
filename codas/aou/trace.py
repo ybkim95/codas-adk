@@ -29,6 +29,11 @@ def _leaves(node: Any) -> list[Any]:
     return [leaf for child in children for leaf in _leaves(child)]
 
 
+def _nodes(node: Any) -> list[Any]:
+    """The node and every agent under it (a container agent can emit events of its own)."""
+    return [node] + [n for child in getattr(node, "sub_agents", None) or [] for n in _nodes(child)]
+
+
 def _is_loop(node: Any) -> bool:
     return hasattr(node, "max_iterations")
 
@@ -57,8 +62,8 @@ class TraceRecorder:
         for phase in getattr(root_agent, "sub_agents", None) or [root_agent]:
             leaves = [leaf.name for leaf in _leaves(phase)]
             self.phase_agents[phase.name] = leaves
-            for name in leaves:
-                self.phase_of[name] = phase.name
+            for node in _nodes(phase):
+                self.phase_of[node.name] = phase.name
             for loop in self._loops(phase):
                 names = [leaf.name for leaf in _leaves(loop)]
                 self.loop_first[loop.name] = names[0]
