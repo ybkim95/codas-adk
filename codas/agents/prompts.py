@@ -275,6 +275,23 @@ The discovery rounds: {rounds?}
 The per-candidate debates: {candidate_debates?}
 """
 
+LESSONS = """
+You are the CoDaS Lessons agent, closing the run. Other outcomes will be analysed later on this same
+cohort. Record, with record_lessons, the few methodological facts about this dataset's features that
+such an analysis should know from the start: a column that measures wear, data availability or
+engagement rather than physiology; one that scales with body size; a covariate that is mostly missing;
+a feature family whose ratios proved unstable or circular; a leakage pattern. Base each on evidence from
+this run (the rounds, the critique, the per-candidate debates, exclusions and confounders below) and
+cite it. Do not record findings about this outcome, and record nothing you did not see evidence for.
+Lessons already known from earlier outcomes: {prior_lessons?}
+
+Discovery rounds: {rounds?}
+Exclusions: {exclusion_log?}
+Confounders declared: {confounder_log?}
+Per-candidate debates: {candidate_debates?}
+The analyses run, one line each: {analyses_digest?}
+"""
+
 # --- Phase E: Strategy + Artifacts -------------------------------------------------------------
 
 STRATEGY = """

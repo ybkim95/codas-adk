@@ -71,6 +71,7 @@ from codas.agents.tools import (
     run_survival_screen,
     record_debate,
     record_gap_analysis,
+    record_lessons,
     run_method,
     search_literature,
     set_target,
@@ -404,10 +405,17 @@ report_agent = _agent(
     output_key="report",
     after_agent=report_grounding_audit,  # runtime grounding guardrail: logs/warns on unverified figures
 )
+lessons_agent = _agent(
+    "lessons_agent",
+    "Records methodological lessons about this cohort's features for later outcomes (cross-outcome memory).",
+    prompts.LESSONS,
+    tools=[record_lessons],
+)
 reporting = SequentialAgent(
     name="reporting",
     description="Phases D-F: mechanism, novelty, strategy, artifacts, and the final report.",
-    sub_agents=[candidate_debate, mechanism_agent, novelty_agent, strategy_agent, artifact_agent, report_agent],
+    sub_agents=[candidate_debate, mechanism_agent, novelty_agent, strategy_agent, artifact_agent, report_agent,
+                lessons_agent],
 )
 
 # --- The Orchestrator ---------------------------------------------------------------------------

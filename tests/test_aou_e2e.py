@@ -62,6 +62,9 @@ SCRIPTS: dict[str, list[types.Part]] = {
                        _call("run_nonlinear_model", features_csv="act_steps_mean,act_steps_sd")],
     "gapcheck_agent": [_call("check_convergence")],
     "candidate_critic": [_call("run_method", method="robust_regression")],
+    "lessons_agent": [_call("record_lessons", lessons_json=json.dumps(
+        [{"lesson": "act_days counts days with data: wear adherence, not physiology", "about": ["act_days"],
+          "evidence": "critique and debates"}]))],
     "candidate_defender": [_call("record_debate", feature="(the candidate)", verdict="caveat",
                                  reason="holds with a smaller adjusted effect", evidence="robust_regression")],
     # The critic judges one input to be target leakage; the next round must run without it.
@@ -237,6 +240,7 @@ def test_full_graph_sends_only_masked_aggregates(aou_env):
     assert "method:partial_correlation" in methods_run and "method:gradient_boosting" in methods_run
     assert "gap_finder" in agents_called and all(r.get("methods_run") for r in state["rounds"])
     # ...each final candidate was debated on its own and closed with a recorded verdict.
+    assert state["lessons"][0]["about"] == ["act_days"]  # cross-outcome memory recorded at the end
     debates = state["candidate_debates"]
     assert debates and all(d["verdict"] == "caveat" and d["evidence"] == "robust_regression" for d in debates)
     # Context management: after the Scout, every agent reads the task from memory and receives only the

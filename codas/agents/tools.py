@@ -901,6 +901,41 @@ def record_debate(feature: str, verdict: str, reason: str, evidence: str, tool_c
     return {"recorded": entry}
 
 
+_MAX_LESSONS = int(os.getenv("CODAS_MAX_LESSONS", "6"))
+
+
+def record_lessons(lessons_json: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Record what a later analysis of OTHER outcomes in this same cohort should know. ``lessons_json`` is
+    a JSON list of ``{"lesson": one sentence, "about": [column names], "evidence": what showed it}``:
+    methodological facts about the data (a column that measures wear or data availability rather than
+    physiology, one that scales with body size, a covariate mostly missing, an unstable feature family),
+    from discovery evidence only. No outcome-specific findings."""
+    try:
+        items = json.loads(lessons_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": f"lessons_json is not valid JSON: {exc}"}
+    if not isinstance(items, list):
+        return {"error": "lessons_json must be a JSON list of lessons."}
+    columns = set(tool_context.state.get("dataset_columns") or [])
+    lessons = list(tool_context.state.get("lessons") or [])
+    recorded, rejected = [], []
+    for item in items:
+        item = item if isinstance(item, dict) else {}
+        text = str(item.get("lesson") or "").strip()[:300]
+        about = [str(c) for c in item.get("about") or []]
+        unknown = [c for c in about if columns and c not in columns]
+        problem = ("empty lesson" if not text else f"unknown columns: {', '.join(unknown)}" if unknown
+                   else f"at most {_MAX_LESSONS} lessons" if len(lessons) >= _MAX_LESSONS else None)
+        if problem:
+            rejected.append({"lesson": text, "reason": problem})
+            continue
+        entry = {"lesson": text, "about": about, "evidence": str(item.get("evidence") or "")[:200]}
+        lessons.append(entry)
+        recorded.append(entry)
+    tool_context.state["lessons"] = lessons
+    return _json_safe({"recorded": recorded, "rejected": rejected})
+
+
 def run_method_batch(state: dict[str, Any], per_pool: int = 1) -> dict[str, Any]:
     """Run the requested methods (``state['next_methods']``), then the next unexplored method of each pool,
     on the round's candidates. Returns the state changes: the analyses with the new records, the methods

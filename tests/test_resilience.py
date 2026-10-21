@@ -274,3 +274,43 @@ def test_wear_adherence_is_adjustment_only_and_covariates_are_imputed(synthetic_
     assert all(d in seen["goal"] for d in days) and "wear" in seen["goal"]
     assert seen["state"]["covariate_imputations"] >= 5          # missing covariates are imputed, not dropped
     assert "imputed" in seen["goal"]
+
+
+def test_lessons_from_one_outcome_reach_the_next_without_changing_resume_keys(synthetic_explore, monkeypatch):
+    goals: list[str] = []
+
+    def capture(csv, goal, on_tool_call=None, context_columns=None, recorder=None, state=None, **_):
+        goals.append(goal)
+        out = _fake_state()
+        if len(goals) == 1:
+            out["lessons"] = [{"lesson": "act_days measures how much the device was worn, not physiology",
+                               "about": ["act_days"], "evidence": "critic"}]
+        return out
+
+    monkeypatch.setattr(runner, "run_agents", capture)
+    explore, _calls, _failing = synthetic_explore
+    explore()
+    assert len(goals) == 2
+    assert "Lessons from earlier analyses" not in goals[0]
+    assert "act_days measures how much the device was worn" in goals[1]
+    memory = (RUN_DIR / "codas_memory.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(memory) == 1 and "act_days" in memory[0]
+    goals.clear()
+    explore()                      # same code and specs: both reused although lessons now exist
+    assert goals == []
+
+
+def test_record_lessons_validates_entries(tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    from codas.agents import tools
+
+    ctx = SimpleNamespace(state={"dataset_columns": ["act_days", "y"]}, actions=SimpleNamespace(escalate=False))
+    out = tools.record_lessons(json.dumps([
+        {"lesson": "act_days measures wear", "about": ["act_days"], "evidence": "critic round 1"},
+        {"lesson": "", "about": []},
+        {"lesson": "about a column that does not exist", "about": ["nope"]}]), ctx)
+    assert [x["lesson"] for x in out["recorded"]] == ["act_days measures wear"] and len(out["rejected"]) == 2
+    assert ctx.state["lessons"][0]["about"] == ["act_days"]
+    assert "error" in tools.record_lessons("{}", ctx)

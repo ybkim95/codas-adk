@@ -81,7 +81,12 @@ COVARIATE_IMPUTATIONS = int(os.getenv("CODAS_COVARIATE_IMPUTATIONS", "5"))
 CONFIRM_IMPUTATIONS = int(os.getenv("CODAS_CONFIRM_IMPUTATIONS", "10"))  # the one-shot holdout test affords more
 
 
-def goal_for(spec: CohortSpec, label: str | None = None) -> str:
+LESSONS_NOTE = (" Lessons from earlier analyses of this cohort's discovery share (other outcomes), recorded by "
+                "the agents from their evidence: {lessons}.")
+MEMORY_NAME = "codas_memory.jsonl"
+
+
+def goal_for(spec: CohortSpec, label: str | None = None, lessons: list[str] | None = None) -> str:
     kind = spec.outcome.kind
     note = "first qualifying lab value" if kind == "measurement" else "1 = diagnosed, 0 = not"
     index_note = INDEX_NOTES[kind]
@@ -107,6 +112,8 @@ def goal_for(spec: CohortSpec, label: str | None = None) -> str:
         covariates += ADHERENCE_NOTE.format(columns=", ".join(cohort.availability_columns(spec)))
     if COVARIATE_IMPUTATIONS > 0:
         covariates += IMPUTATION_NOTE.format(m=COVARIATE_IMPUTATIONS)
+    if lessons:
+        covariates += LESSONS_NOTE.format(lessons="; ".join(lessons))
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
                                 target_note=note, window=spec.window_days, index_note=index_note,
                                 covariates=covariates)
@@ -221,7 +228,7 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
               "confirmation", "cohort_table", "analyses", "a_priori_hypotheses", "gap_analysis", "methods_explored",
-              "constraints", "candidate_debates")
+              "constraints", "candidate_debates", "lessons")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -389,6 +396,41 @@ def _finished_run(out: Path, name: str, key: str) -> dict[str, Any] | None:
     return summary
 
 
+_MAX_RECALLED = int(os.getenv("CODAS_MAX_RECALLED_LESSONS", "12"))
+
+
+def _remember(out: Path, key: str, stem: str) -> None:
+    """Append the lessons a finished run recorded (from its saved, masked state) to the cohort memory."""
+    try:
+        lessons = json.loads((out / f"{stem}_state.json").read_text(encoding="utf-8")).get("lessons") or []
+    except (OSError, ValueError):
+        return
+    if lessons:
+        with (out / MEMORY_NAME).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"key": key, "stem": stem, "lessons": lessons}) + "\n")
+
+
+def _recalled_lessons(out: Path, key: str, stem: str) -> list[str]:
+    """Lessons other outcomes recorded on the same participants, newest last, without repeats. The goal
+    carries them; the resume key does not, so remembering more never invalidates a finished outcome."""
+    path = out / MEMORY_NAME
+    if not path.exists():
+        return []
+    seen: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("key") != key or entry.get("stem") == stem:
+            continue
+        for lesson in entry.get("lessons") or []:
+            text = str(lesson.get("lesson") if isinstance(lesson, dict) else lesson).strip()
+            if text and text not in seen:
+                seen.append(text)
+    return [mask_small_counts_in_text(t) for t in seen[-_MAX_RECALLED:]]
+
+
 def holdout_key(spec: CohortSpec, cdr: str | None) -> str:
     """Which participants a spec's holdout holds: the split depends only on the person id, the salt and
     the share, so every spec with the same three seals the same people."""
@@ -446,8 +488,9 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_key
 
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None,
-             on_agent: Any = None) -> dict[str, Any]:
-    """Extract one cohort, run the agents on it, save the masked outputs and the agent trace."""
+             on_agent: Any = None, lessons: list[str] | None = None) -> dict[str, Any]:
+    """Extract one cohort, run the agents on it, save the masked outputs and the agent trace. ``lessons``
+    are earlier outcomes' lessons about this cohort, given to the agents in the goal."""
     if check_schema:  # fit optional sources to this CDR first, so the goal and context match the table
         if client is None:
             from google.cloud import bigquery
@@ -459,9 +502,11 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
     recorder = TraceRecorder(stream_path=Path(out_dir).expanduser().resolve() / f"{spec.name}_trace.jsonl")
     context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
                + ([FOLLOWUP_COLUMN] if is_survival(spec) else []))
-    state = run_agents(csv, goal_for(spec, label), on_tool_call, context, recorder=recorder, on_agent=on_agent,
+    state = run_agents(csv, goal_for(spec, label, lessons), on_tool_call, context, recorder=recorder,
+                       on_agent=on_agent,
                        state={"covariate_imputations": COVARIATE_IMPUTATIONS,
-                              "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else ""})
+                              "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
+                              "prior_lessons": list(lessons or [])})
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
     if spec.holdout_fraction > 0 and sealed.exists():
@@ -556,6 +601,7 @@ def explore(
     out.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, Any]] = []
     keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
+    memory_key = keys[0] if keys else cdr  # lessons are shared across outcomes on the same participants
     summary_path = _write_summary(out, table, runs, keys)
     if not screen_only:
         by_name = {o.name: o for o in verified}
@@ -571,7 +617,8 @@ def explore(
                 log(f"\n=== {o.label} ===")
                 try:
                     result = run_spec(spec, cdr, label=o.label, client=client, out_dir=out, check_schema=False,
-                                      on_tool_call=on_tool_call, on_agent=on_agent)
+                                      on_tool_call=on_tool_call, on_agent=on_agent,
+                                      lessons=_recalled_lessons(out, memory_key, spec.name))
                 except Exception as exc:  # noqa: BLE001 - one outcome's failure must not discard the others
                     reason = mask_identifiers(f"{type(exc).__name__}: {str(exc)[:300]}")
                     log(f"  failed: {reason}\n  Run again to retry; finished outcomes are reused.")
@@ -579,6 +626,7 @@ def explore(
                 else:
                     (out / f"{spec.name}_run.json").write_text(json.dumps({"key": key, "summary": result}),
                                                                encoding="utf-8")
+                    _remember(out, memory_key, spec.name)
                     runs.append(result)
             summary_path = _write_summary(out, table, runs, keys)
 
