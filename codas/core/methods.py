@@ -429,3 +429,9 @@ def headline(result: dict[str, Any]) -> str:
         return (f"{name}: held-out {result['metric']} {g(result['value'])} ({g(result['ci95'][0])} to "
                 f"{g(result['ci95'][1])}), permutation p {g(result['null_p'])}; top features {top}")
     return f"{name}: done"
+
+
+def record_headline(record: dict[str, Any]) -> str:
+    """One line for any recorded analysis: a pool method (``method:<name>``) or an agent analysis tool."""
+    tool, result = str(record.get("tool", "")), record.get("result") or {}
+    return headline(result) if tool.startswith("method:") else analyses.headline(tool, result)

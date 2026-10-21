@@ -340,10 +340,20 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
                      "q": None if not isinstance(q, float) or not np.isfinite(q) else round(q, 4),
                      "status": h.get("status"), "robust": h.get("robust"),
                      "holds after adherence": None if adherence is None else adherence.get("holds"),
+                     "within-person": _within_text(h.get("within_person")),
                      "failed checks": ", ".join(h.get("falsification_failed") or []) or "-"})
     columns = ["feature", "family", "discovery rho", "holdout effect", "95% CI", "q", "status", "robust",
-               "holds after adherence", "failed checks"]
+               "holds after adherence", "within-person", "failed checks"]
     return pd.DataFrame(rows, columns=columns)  # keeps its columns when nothing was pre-registered
+
+
+def _within_text(fit: dict[str, Any] | None) -> str:
+    if not fit:
+        return ""
+    if "error" in fit:
+        return "n/a"
+    w = fit["within"]
+    return f"{w['estimate']:.3g} ({w['ci95'][0]:.3g} to {w['ci95'][1]:.3g}), p {w['p']:.2g}"
 
 
 def hypotheses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
@@ -357,16 +367,33 @@ def hypotheses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
 
 
 def analyses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
-    """The deeper analyses the agents chose to run (survival screen, subgroups, multivariable, non-linear,
-    dose-response), one line each."""
-    from codas.core.analyses import headline
+    """Every method and analysis run, by round: the method pools' runs (``method:...``) and the analyses
+    the agents chose (survival screen, subgroups, multivariable, non-linear, dose-response, mixed model)."""
+    from codas.core.methods import record_headline
 
     ran = _read(_out_dir(result) / f"{stem}_state.json").get("analyses") or []
     if not ran:
         return None
-    return pd.DataFrame([{"analysis": a.get("tool"),
+    return pd.DataFrame([{"round": a.get("round"), "analysis": a.get("tool"),
                           "arguments": ", ".join(f"{k}={v}" for k, v in (a.get("args") or {}).items() if v),
-                          "result": headline(a.get("tool", ""), a.get("result") or {})} for a in ran])
+                          "result": record_headline(a)} for a in ran])
+
+
+def debates_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The per-candidate debate: each final candidate's verdict (keep, caveat, concede) and why."""
+    debates = _read(_out_dir(result) / f"{stem}_state.json").get("candidate_debates") or []
+    if not debates:
+        return None
+    return pd.DataFrame([{k: d.get(k) for k in ("feature", "verdict", "reason", "evidence")} for d in debates])
+
+
+def lessons_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Lessons this outcome's agents recorded for later outcomes on the same cohort."""
+    lessons = _read(_out_dir(result) / f"{stem}_state.json").get("lessons") or []
+    if not lessons:
+        return None
+    return pd.DataFrame([{"lesson": x.get("lesson"), "about": ", ".join(x.get("about") or []),
+                          "evidence": x.get("evidence")} for x in lessons])
 
 
 _HR_TICKS = (0.25, 0.33, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0)

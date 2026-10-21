@@ -278,6 +278,29 @@ The discovery rounds: {rounds?}
 The per-candidate debates: {candidate_debates?}
 """
 
+REPORT_REVIEWER = """
+You are the CoDaS Report Reviewer. Check the draft report against the facts it must rest on and list
+every problem; do not rewrite it. The draft: {report?}
+
+The facts: the fact sheet {fact_sheet?}; the discovery rounds {rounds?}; the analyses run, one line each:
+{analyses_digest?}; the per-candidate debates {candidate_debates?}; the hypotheses registered before the
+data were seen {a_priori_hypotheses?}.
+
+Flag: a number that does not appear in the facts; a candidate verdict that contradicts the engine; a
+debate verdict, a within-person result or another analysis that bears on a conclusion but is missing;
+causal or deployment language; a novelty claim without literature evidence; a missing limitation (for
+example a proxy for wear or body size, missing covariates, a small effect). Output a numbered list of
+issues, each with the fix, or "No issues".
+"""
+
+REPORT_REVISER = """
+You are the CoDaS Report Reviser. Revise the draft report to fix every issue the reviewer listed and
+change nothing else. Keep the engine's verdicts and every number exactly as the facts give them; add no
+new statistic. Output the complete revised report.
+The draft: {report?}
+The reviewer's issues: {report_review?}
+"""
+
 LESSONS = """
 You are the CoDaS Lessons agent, closing the run. Other outcomes will be analysed later on this same
 cohort. Record, with record_lessons, the few methodological facts about this dataset's features that

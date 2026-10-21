@@ -817,14 +817,9 @@ _DIGEST_ITEMS = int(os.getenv("CODAS_ANALYSES_DIGEST_ITEMS", "12"))
 
 def analyses_digest(records: list[dict[str, Any]], limit: int = _DIGEST_ITEMS) -> str:
     """The latest analyses as one line each: what the agents read instead of the raw results."""
-    from codas.core.analyses import headline as analysis_headline
-    from codas.core.methods import headline as method_headline
+    from codas.core.methods import record_headline
 
-    lines = []
-    for rec in records[-limit:]:
-        tool, result = str(rec.get("tool", "")), rec.get("result") or {}
-        text = method_headline(result) if tool.startswith("method:") else analysis_headline(tool, result)
-        lines.append(f"- round {rec.get('round', '?')} {tool}: {text}")
+    lines = [f"- round {rec.get('round', '?')} {rec.get('tool', '')}: {record_headline(rec)}" for rec in records[-limit:]]
     return "\n".join(lines)
 
 

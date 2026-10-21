@@ -322,8 +322,29 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   unexplored). They are tested on the holdout whatever discovery finds, as an `a_priori` family judged
   by BH within the family; discovery's candidates are the `exploratory` family, judged on the
   cumulative ledger. Registration closes when the first round runs.
-* **Still not done:** mixed-effects models need repeated measures, and the extraction gives one row
-  per person; a person-by-month panel with within-person effects is the next step.
+* **Within-person mixed models** (spec key `panel`, measurement outcomes): every later outcome value is
+  paired with the wearable summary of the `period_days` before it (`<name>.panel.csv`, same holdout
+  split, a pseudonymous person index). `run_mixed_model` fits a random-intercept model with the
+  exposure split into within-person and between-person parts (`codas/core/mixed.py`); a feature that
+  only marks a stable trait shows a within-person effect near zero. The holdout reports each
+  pre-registered feature's within-person effect. Intraday phenotypes are not in the panel.
+
+## Fidelity to the paper's CoDaS (v4) on this branch
+
+| paper component | here |
+|---|---|
+| deterministic runners + LLM interpreters | engine (`codas/core`), `MethodRunner`, analysis tools |
+| statistical method pool chosen per round | partial correlation, subgroup stratified, Huber robust regression, propensity stratification, mutual information, mediation, survival screen (`codas/core/methods.py`); the paper's "mixed-effects proxy" is replaced by a real within-person mixed model |
+| ML method pool, nested CV | gradient boosting (sklearn histogram GBM), elastic net, random forest, lasso, ridge, Huber, logistic, each with nested CV, a bootstrap CI and a permutation null; XGBoost / LightGBM are not dependencies |
+| gap finder, constraints unioned | `gap_finder` + `record_gap_analysis` |
+| stop rules (pools exhausted, Jaccard > 0.9 twice, no new method/candidate) | `check_convergence` when the pools are active; up to 5 rounds on AoU |
+| per-candidate critic -> defender debate | `candidate_debate` with recorded verdicts; the defender has analysis tools (the paper's had none) |
+| event pruning between phases | `include_contents="none"` + memory placeholders |
+| novelty / mechanism with search | as before, now also reading the registered hypotheses and debates |
+| report review and revision | `report_reviewer` -> `report_reviser`; one document, not per-section writers |
+| LaTeX report | fpdf2 PDF with phase outputs, method and gap tables, debates, lessons, forest / subgroup / dose-response / importance figures; no LaTeX in the Workbench |
+| 80/20 row split | sealed 50% participant split, pre-registration hash, cumulative ledger, falsification battery (stricter) |
+| not ported | causal-model (DAG) generator, reinvestigation planner as a separate agent (the gap finder covers re-running methods on candidates), literature updater inside the loop, section-wise parallel writers, cost table |
 
 ## Testing outside the Workbench
 

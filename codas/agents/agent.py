@@ -6,19 +6,26 @@ The Orchestrator coordinates state transitions across six phases, with all agent
     root_agent  (SequentialAgent, the Orchestrator)
     ├─ Phase A  data_understanding  (SequentialAgent)
     │    ├─ scout_agent ............ profiles, chooses target/roles, set_target -> memory
-    │    └─ hypotheses_agent ....... biological anchoring: grounds priors in the literature (search_literature)
-    ├─ Phase B&C  discovery_loop  (LoopAgent, iterates until the GapChecker escalates)
+    │    └─ hypotheses_agent ....... literature anchoring; registers a-priori hypotheses before any statistic
+    ├─ Phase B&C  discovery_loop  (LoopAgent, up to CODAS_MAX_DISCOVERY_ROUNDS)
     │    ├─ search_agent ........... run_discovery_round -> appends a round to memory
-    │    ├─ dual_track  (ParallelAgent)        # parallel statistical ∥ ML iterations
-    │    │    ├─ statistical_interpreter ...... reads the round, interprets association evidence
-    │    │    └─ ml_interpreter ............... reads the round, interprets predictive evidence
-    │    ├─ critic_agent ........... adversarial validation (attack)
-    │    ├─ defender_agent ......... adversarial validation (defend from evidence)
+    │    ├─ method_runner .......... deterministic: next statistical + ML pool methods on the candidates
+    │    ├─ dual_track  (ParallelAgent)        # statistical ∥ ML interpretation, with analysis tools
+    │    │    ├─ statistical_interpreter
+    │    │    └─ ml_interpreter
+    │    ├─ critic_agent ........... adversarial validation (attack, checks with tools)
+    │    ├─ defender_agent ......... adversarial validation (defend from evidence, with tools)
+    │    ├─ gap_finder ............. open questions -> next methods and constraints
     │    └─ gapcheck_agent ......... check_convergence -> escalate ends the loop
     └─ Phase D/E/F  reporting  (SequentialAgent)
+         ├─ candidate_debate ....... per-candidate critic -> defender, recorded keep / caveat / concede
          ├─ mechanism_agent / novelty_agent ... literature-grounded deep research (search_literature)
          ├─ strategy_agent / artifact_agent
-         └─ report_agent ........... publication-style summary, invites human feedback
+         ├─ report_agent -> report_reviewer -> report_reviser (numeric audit on the final text)
+         └─ lessons_agent .......... lessons about the cohort's features for later outcomes
+
+Every agent after the Scout sees only its own turn plus the memory keys its instruction names
+(``include_contents="none"``), so prompts stay bounded however long the run.
 
 Numbers come only from the deterministic tools in ``tools.py`` (engine = ``codas.core``). The LLMs
 plan, profile, interpret, debate, decide when to stop, and write — they never invent a statistic.
@@ -406,6 +413,21 @@ report_agent = _agent(
     output_key="report",
     after_agent=report_grounding_audit,  # runtime grounding guardrail: logs/warns on unverified figures
 )
+report_reviewer = _agent(
+    "report_reviewer",
+    "Checks the draft report against the fact sheet, rounds, analyses and debates; lists the issues.",
+    prompts.REPORT_REVIEWER,
+    model=REASONING_MODEL,
+    output_key="report_review",
+)
+report_reviser = _agent(
+    "report_reviser",
+    "Revises the report to fix the reviewer's issues, keeping every engine number and verdict.",
+    prompts.REPORT_REVISER,
+    model=REASONING_MODEL,
+    output_key="report",
+    after_agent=report_grounding_audit,  # the numeric audit runs again on the revised text
+)
 lessons_agent = _agent(
     "lessons_agent",
     "Records methodological lessons about this cohort's features for later outcomes (cross-outcome memory).",
@@ -416,7 +438,7 @@ reporting = SequentialAgent(
     name="reporting",
     description="Phases D-F: mechanism, novelty, strategy, artifacts, and the final report.",
     sub_agents=[candidate_debate, mechanism_agent, novelty_agent, strategy_agent, artifact_agent, report_agent,
-                lessons_agent],
+                report_reviewer, report_reviser, lessons_agent],
 )
 
 # --- The Orchestrator ---------------------------------------------------------------------------

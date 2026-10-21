@@ -194,6 +194,38 @@ class _Doc:
         pdf.ln(3)
 
 
+def _analysis_figures(analyses: list[dict[str, Any]]) -> list[tuple[str, list[tuple], bool]]:
+    """Figures from the recorded analyses: subgroup forests, the dose-response curve and the importance of
+    the first ML model (title, items, log scale)."""
+    figures: list[tuple[str, list[tuple], bool]] = []
+    for a in analyses:
+        result, tool = a.get("result") or {}, str(a.get("tool", ""))
+        if "error" in result:
+            continue
+        subgroup_sets = ([result] if tool == "subgroup_analysis" else
+                         result.get("results") or [] if tool == "method:subgroup_stratified" else [])
+        for sub in subgroup_sets[:2]:
+            strata = sub.get("strata") or []
+            cox = any("hr_per_sd" in st for st in strata)
+            items = [(st["stratum"], st.get("hr_per_sd") if cox else st.get("rho"), *(st.get("ci95") or [None, None]), False)
+                     for st in strata]
+            figures.append((f"Subgroups: {sub.get('feature')} by {sub.get('by')} (heterogeneity p "
+                            f"{_fmt(sub.get('heterogeneity_p'))})", items, cox))
+        if tool == "dose_response":
+            log = result.get("model") != "ols"
+            items = [(f"{c['percentile']}th percentile ({_fmt(c['value'])})", c["effect"], *c["ci95"], False)
+                     for c in result.get("curve") or [] if c["percentile"] != 50]
+            figures.append((f"Dose-response: {result.get('feature')} ({result.get('measure')}, non-linearity p "
+                            f"{_fmt(result.get('nonlinearity_p'))})", items, log))
+    ml = next((a for a in analyses if str(a.get("tool", "")).startswith("method:") and
+               (a.get("result") or {}).get("importance")), None)
+    if ml:
+        res = ml["result"]
+        figures.append((f"Feature importance: {res.get('method')} (held-out {res.get('metric')} {_fmt(res.get('value'))})",
+                        [(r["feature"], float(r["importance"])) for r in res["importance"][:12]], False))
+    return figures[:8]
+
+
 def _forest_items(confirmation: dict[str, Any]) -> tuple[list[tuple], list[tuple]]:
     """(hazard-ratio rows, correlation rows) from a confirmation result: candidates, then positive controls."""
     cox, rank = [], []
@@ -290,26 +322,49 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                 doc.markdown(e["text"])
         ran = phases.get("analyses") or []
         if ran:
-            from codas.core.analyses import headline
+            from codas.core.methods import record_headline
 
-            doc.heading("Deeper analyses the agents ran", 2)
-            doc.table(["analysis", "arguments", "result"],
-                      [[a.get("tool"), ", ".join(f"{k}={v}" for k, v in (a.get("args") or {}).items() if v),
-                        headline(a.get("tool", ""), a.get("result") or {})] for a in ran], widths=[32, 38, 110])
+            doc.heading("Methods and analyses run (method pools and agents' tools)", 2)
+            doc.table(["round", "analysis", "arguments", "result"],
+                      [[_fmt(a.get("round")), a.get("tool"),
+                        ", ".join(f"{k}={v}" for k, v in (a.get("args") or {}).items() if v),
+                        record_headline(a)] for a in ran], widths=[12, 32, 30, 106])
+        gaps = phases.get("gap_analysis") or []
+        if gaps:
+            doc.heading("Gap analyses (what each round left open, and what ran next)", 2)
+            doc.table(["after round", "open questions", "next methods"],
+                      [[_fmt(g.get("round")), "; ".join(g.get("gaps") or []),
+                        ", ".join(m.get("method", "") + "".join(f" {k}={v}" for k, v in m.items() if k != "method")
+                                  for m in g.get("next_methods") or [])] for g in gaps], widths=[18, 102, 60])
 
     def phase_d() -> None:
-        doc.heading("Phase D: mechanisms and novelty")
+        doc.heading("Phase D: per-candidate debate, mechanisms and novelty")
+        debates = phases.get("candidate_debates") or []
+        if debates:
+            doc.heading("Per-candidate debate (critic, then defender, for each final candidate)", 2)
+            doc.table(["candidate", "verdict", "reason", "evidence"],
+                      [[d.get("feature"), d.get("verdict"), d.get("reason"), d.get("evidence")] for d in debates],
+                      widths=[45, 18, 87, 30])
         doc.heading("Mechanisms", 2)
         doc.markdown(phases.get("mechanisms") or "")
         doc.heading("Novelty", 2)
         doc.markdown(phases.get("novelty") or "")
 
     def phases_ef() -> None:
-        doc.heading("Phases E-F: strategy and artifacts")
+        doc.heading("Phases E-F: strategy, artifacts, report review and lessons")
         doc.heading("Strategy", 2)
         doc.markdown(phases.get("strategy") or "")
         doc.heading("Artifacts", 2)
         doc.markdown(phases.get("artifacts") or "")
+        if phases.get("report_review"):
+            doc.heading("Report review (issues the reviewer raised; the final report is the revision)", 2)
+            doc.markdown(phases.get("report_review") or "")
+        lessons = phases.get("lessons") or []
+        if lessons:
+            doc.heading("Lessons recorded for later outcomes on this cohort", 2)
+            doc.table(["lesson", "about", "evidence"],
+                      [[x.get("lesson"), ", ".join(x.get("about") or []), x.get("evidence")] for x in lessons],
+                      widths=[100, 40, 40])
 
     def appendix() -> None:
         doc.heading("Appendix")
@@ -323,6 +378,12 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                 doc.forest(rank, log=False)
             doc.plain("Filled marks replicated (candidates) or were detected (positive controls); open marks did not.",
                       size=8, style="I")
+        for title, items, log in _analysis_figures(phases.get("analyses") or []):
+            doc.heading(title, 2)
+            if items and isinstance(items[0][1], (int, float)) and len(items[0]) == 2:
+                doc.bars(items)
+            else:
+                doc.forest(items, log=log)
         doc.heading("Candidates in the final round (Spearman rho)", 2)
         doc.bars([(c.get("feature") or "", float(c["rho"])) for c in (last.get("passing_candidates") or [])
                   if isinstance(c.get("rho"), (int, float))])

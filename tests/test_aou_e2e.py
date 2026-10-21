@@ -111,7 +111,8 @@ class ScriptedLlm(BaseLlm):
                 part = _call("set_target", target_column=found.group(1) if found else "hba1c",
                              confounder_columns_csv="age,female")
         else:
-            text = REPORT_TEXT if self.agent_name == "report_agent" else f"{self.agent_name}: done."
+            text = (REPORT_TEXT if self.agent_name in {"report_agent", "report_reviser"}
+                    else f"{self.agent_name}: done.")
             part = types.Part(text=text)
         yield LlmResponse(content=types.Content(role="model", parts=[part]))
 
