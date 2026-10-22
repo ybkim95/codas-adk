@@ -235,3 +235,33 @@ def test_within_person_effect_is_reported_from_the_sealed_panel(tmp_path):
     trait = rows["trait"]["within_person"]
     assert "error" in trait or trait["within"]["ci95"][0] < 0 < trait["within"]["ci95"][1]
     assert "Within-person" in confirmation_markdown(result)
+
+
+def test_one_failing_check_does_not_discard_the_confirmation(tmp_path, monkeypatch):
+    from codas.aou import confirm as confirm_module
+
+    h = _survival_holdout(np.random.default_rng(5))
+    h.to_csv(tmp_path / "e.holdout.csv", index=False)
+    state = _state([_cand("x", 0.2, ["x"]), _cand("w", 0.2, ["w"])], ["age"])
+    prereg = preregister(state, tmp_path, "e", survival_time="followup_days", negative_controls=["ctl"],
+                         positive_controls=["age"], sensitivity_lag_days=90)
+    real_dose, real_effect = confirm_module._dose_response, confirm_module._effect
+
+    def broken_dose(frame, x, *a, **k):
+        raise ValueError("math domain error")
+
+    def broken_effect(frame, x, *a, **k):
+        if x.name == "w":
+            raise ValueError("math domain error")
+        return real_effect(frame, x, *a, **k)
+
+    monkeypatch.setattr(confirm_module, "_dose_response", broken_dose)
+    monkeypatch.setattr(confirm_module, "_effect", broken_effect)
+    result = confirm(prereg, tmp_path / "e.holdout.csv", tmp_path)
+    x, w = result["hypotheses"]
+    assert x["replicated"] and "math domain error" in x["errors"]["dose_response"]
+    assert x["dose_response"] is None                       # reported as not computed, not as a failure
+    assert w["status"] == "test failed" and "math domain error" in w["errors"]["effect"] and not w["replicated"]
+    assert result["tested"] == 2 and (tmp_path / "e_confirmation.json").exists()
+    assert "test failed" in confirmation_markdown(result)
+    monkeypatch.setattr(confirm_module, "_dose_response", real_dose)

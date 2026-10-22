@@ -474,6 +474,8 @@ def _capture_output() -> None:
     sys.stdout, sys.stderr = out, _Masked(sys.stdout, floods=out.floods)  # one log, one record of repeats
     quiet_warnings()
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")
+    for handler in logging.getLogger().handlers:  # the same notices, when a library logs them instead
+        handler.addFilter(lambda record: not any(re.match(p, record.getMessage()) for p in QUIET_WARNINGS))
 
 
 def _close_output() -> None:

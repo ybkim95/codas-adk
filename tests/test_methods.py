@@ -101,3 +101,24 @@ def test_every_method_has_a_headline():
     f["y"] = 0.5 * f.x + rng.normal(size=len(f))
     for name in ("partial_correlation", "robust_regression", "ridge"):
         assert methods.headline(methods.run(name, f, ["x"], "y", confounders=["age"]))
+
+
+def test_penalised_logistic_models_need_no_deprecated_penalty_argument(monkeypatch):
+    import warnings
+
+    import numpy as np
+    import sklearn
+
+    from codas.core import methods
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(800, 10))
+    y = (x[:, 0] + 0.5 * rng.normal(size=800) > 0).astype(int)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        lasso = methods._logistic(1.0, solver="liblinear", C=0.05, max_iter=2000).fit(x, y)
+    assert (np.abs(lasso.coef_[0, 1:]) < 1e-8).sum() >= 7    # an L1 fit: most noise coefficients are exactly 0
+    assert methods._logistic().get_params()["l1_ratio"] in (None, 0.0)
+    monkeypatch.setattr(sklearn, "__version__", "1.9.1")   # newer releases: no penalty argument at all
+    newer = methods._logistic(1.0, solver="liblinear").get_params()
+    assert newer["l1_ratio"] == 1.0 and newer["penalty"] in ("deprecated", "l2")

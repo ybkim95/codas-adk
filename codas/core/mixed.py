@@ -27,8 +27,8 @@ _Z = 1.959964
 
 
 def _term(fit: Any, k: int) -> dict[str, Any]:
-    est, se = float(fit.params[k]), float(fit.bse[k])
-    p = float(fit.pvalues[k]) if np.isfinite(fit.pvalues[k]) else math.nan
+    est, se = float(fit.params.iloc[k]), float(fit.bse.iloc[k])
+    p = float(fit.pvalues.iloc[k]) if np.isfinite(fit.pvalues.iloc[k]) else math.nan
     return {"estimate": est, "se": se, "p": p, "ci95": [est - _Z * se, est + _Z * se]}
 
 

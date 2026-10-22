@@ -36,7 +36,8 @@ def _efron(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np.ndarray)
     """Log partial likelihood, gradient and Hessian (Efron ties). Rows are sorted by descending time.
 
     Risk-set sums are cumulative sums over the sorted rows, read at the end of each block of equal
-    times, so only the distinct event times are looped over."""
+    times, so only the distinct event times are looped over. A coefficient so large that a risk set's
+    weights all underflow gives a log-likelihood of -inf, so the caller's step-halving rejects it."""
     k = x.shape[1]
     eta = x @ beta
     eta -= eta.max()  # the likelihood is invariant to a shift; this keeps exp() finite
@@ -62,6 +63,8 @@ def _efron(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np.ndarray)
             s0 = risk0[end] - frac * tie0
             s1 = risk1[end] - frac * tie1
             s2 = risk2[end] - frac * tie2
+            if not s0 > 0:  # exp() underflowed over this risk set: a step far past the optimum
+                return -math.inf, grad, hess
             loglik -= math.log(s0)
             mean = s1 / s0
             grad -= mean
@@ -100,6 +103,8 @@ def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
             new = beta + step
             new_loglik, new_grad, new_hess = _efron(new, time, event, x)
             halvings += 1
+        if not np.isfinite(new_loglik):  # no finite step left: keep the last estimate, not converged
+            break
         beta, grad, hess = new, new_grad, new_hess
         if abs(new_loglik - loglik) < tol * (abs(loglik) + tol):
             loglik = new_loglik

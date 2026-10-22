@@ -22,6 +22,8 @@ from typing import Any
 # The paper's loop runs up to five rounds (its stop rules usually end it sooner); set before the agent
 # graph is imported, which reads it. Main keeps its own default.
 os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "5")
+# Five rounds, the per-candidate debate and the report review take 1-2 h per outcome on a cohort of this size.
+os.environ.setdefault("CODAS_OUTCOME_TIMEOUT_MIN", "180")
 
 from codas.aou import cohort  # noqa: E402
 from codas.aou import feasibility as feas
@@ -390,6 +392,36 @@ def _run_key(spec: CohortSpec, goal: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _plain(value: Any) -> Any:
+    """JSON fallback for numpy scalars and arrays in the agents' state."""
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if hasattr(value, "item"):
+        return value.item()
+    return str(value)
+
+
+def _agents_checkpoint(out: Path, name: str) -> Path:
+    return out / f"{name}_agents.json"
+
+
+def _save_agents(out: Path, name: str, key: str, state: dict[str, Any], recorder: TraceRecorder) -> None:
+    """Keep the agents' finished work (aggregate state and trace) until the run is saved, so a failure in a
+    later step (pre-registration, the holdout test, writing the outputs) does not cost the agent run."""
+    _agents_checkpoint(out, name).write_text(json.dumps({"key": key, "state": state, "trace": recorder.snapshot()},
+                                                        default=_plain), encoding="utf-8")
+
+
+def _saved_agents(out: Path, name: str, key: str) -> tuple[dict[str, Any], TraceRecorder] | None:
+    try:
+        saved = json.loads(_agents_checkpoint(out, name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if saved.get("key") != key:
+        return None
+    return saved["state"], TraceRecorder.restore(saved.get("trace") or {})
+
+
 def _finished_run(out: Path, name: str, key: str) -> dict[str, Any] | None:
     """The saved summary of a run of ``name`` with this exact ``key`` whose report is still on disk."""
     try:
@@ -505,19 +537,26 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         present = cohort._query(client, *cohort.schema_check_sql(spec, resolve_cdr(cdr)))
         spec, _skipped = cohort.resolve_sources(spec, list(zip(present["table_name"], present["column_name"])))
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
-    recorder = TraceRecorder(stream_path=Path(out_dir).expanduser().resolve() / f"{spec.name}_trace.jsonl")
-    context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
-               + ([FOLLOWUP_COLUMN] if is_survival(spec) else []))
-    state = run_agents(csv, goal_for(spec, label, lessons), on_tool_call, context, recorder=recorder,
-                       on_agent=on_agent,
-                       state={"covariate_imputations": COVARIATE_IMPUTATIONS,
-                              "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
-                              "prior_lessons": list(lessons or []),
-                              "panel_csv_path": str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists() else ""})
+    out = Path(out_dir).expanduser().resolve()
+    key = _run_key(spec, goal_for(spec, label))  # as explore keys finished runs (lessons excluded)
+    saved = _saved_agents(out, spec.name, key)
+    if saved is not None:  # the agents finished earlier and a later step failed: redo only the later steps
+        state, recorder = saved
+    else:
+        recorder = TraceRecorder(stream_path=out / f"{spec.name}_trace.jsonl")
+        context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
+                   + ([FOLLOWUP_COLUMN] if is_survival(spec) else []))
+        state = run_agents(csv, goal_for(spec, label, lessons), on_tool_call, context, recorder=recorder,
+                           on_agent=on_agent,
+                           state={"covariate_imputations": COVARIATE_IMPUTATIONS,
+                                  "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
+                                  "prior_lessons": list(lessons or []),
+                                  "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()
+                                                     else "")})
+        _save_agents(out, spec.name, key, state, recorder)
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
     if spec.holdout_fraction > 0 and sealed.exists():
-        out = Path(out_dir).expanduser().resolve()
         prereg = preregister(state, out, spec.name, survival_time=FOLLOWUP_COLUMN if is_survival(spec) else None,
                              negative_controls=[c.name for c in spec.negative_controls],
                              positive_controls=list(spec.positive_controls),
@@ -529,7 +568,9 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                          panel_csv=sealed_panel if sealed_panel.exists() else None)
         state["confirmation"] = result
         state["report"] = f"{state.get('report') or ''}\n\n{confirmation_markdown(result)}"
-    return save_outputs(state, spec.name, out_dir, recorder)
+    summary = save_outputs(state, spec.name, out_dir, recorder)
+    _agents_checkpoint(out, spec.name).unlink(missing_ok=True)
+    return summary
 
 
 def explore(

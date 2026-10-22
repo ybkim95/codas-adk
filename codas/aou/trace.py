@@ -147,6 +147,19 @@ class TraceRecorder:
                        else "Steps without output: " + "; ".join(cov["missing"]))]
         return "\n".join(lines)
 
+    _STATE = ("events", "phase_of", "loop_of", "loop_first", "phase_agents")
+
+    def snapshot(self) -> dict[str, Any]:
+        """The recorded events and graph mapping, to restore the recorder after a later step failed."""
+        return {k: getattr(self, k) for k in self._STATE}
+
+    @classmethod
+    def restore(cls, data: dict[str, Any]) -> "TraceRecorder":
+        recorder = cls()
+        for k in cls._STATE:
+            setattr(recorder, k, data.get(k) or type(getattr(recorder, k))())
+        return recorder
+
     def write(self, out_dir: Path, stem: str) -> dict[str, str]:
         out_dir.mkdir(parents=True, exist_ok=True)
         jsonl = out_dir / f"{stem}_trace.jsonl"

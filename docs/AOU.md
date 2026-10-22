@@ -215,7 +215,8 @@ Vertex AI answers `429 RESOURCE_EXHAUSTED` when shared capacity is short (previe
 Two time limits stop a run from hanging: a model request that sends nothing for
 `CODAS_MODEL_TIMEOUT_S` (default 600) is abandoned, retried `CODAS_MODEL_TIMEOUT_RETRIES` times
 (default 1) and then sent to the next model; an outcome whose agents run longer than
-`CODAS_OUTCOME_TIMEOUT_MIN` (default 120) is stopped and recorded as failed.
+`CODAS_OUTCOME_TIMEOUT_MIN` (default 180 in the AoU runner: five rounds, the per-candidate debate and the
+report review take 1-2 hours on a cohort of about 11,000) is stopped and recorded as failed.
 
 ### Background job and progress log
 
@@ -252,6 +253,14 @@ out of memory. The Status cell charts it.
 Finished outcomes are reused when the exploration runs again with the same spec, goal and analysis
 code (a hash of `codas/core`, `codas/agents` and the AoU cohort, feasibility, confirmation, privacy
 and Table 1 modules); changes to the notebook, the job, the views or the PDF do not force reruns.
+
+The agents' finished work is kept (`<cohort>_agents.json`: aggregate state and trace, keyed like the run)
+until the outputs are saved. If a later step fails (pre-registration, the holdout test, writing the
+outputs), the next run redoes only those steps. On the holdout, every check of every hypothesis
+(complete case, adherence adjustment, dose-response, lag, each negative control, within-person) runs on
+its own: a numerical failure is recorded on that hypothesis and listed under the replication table
+("could not be computed"), never counted as passed, and never discards the other checks. A hypothesis
+whose main estimate fails counts as tested and not replicated ("test failed").
 
 The notebook stamps its own version into the first cell and stops when the page shows an older copy
 than the checkout holds (the browser does not refresh a notebook that changed on disk). Each step

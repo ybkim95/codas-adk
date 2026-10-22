@@ -297,16 +297,33 @@ def _survival_screen(frame, features, target, confounders, time, imputations, se
 
 # --- machine learning ----------------------------------------------------------------------------
 
+def _logistic(l1_ratio: float | None = None, **kwargs: Any):
+    """``LogisticRegression`` with an L1 (``l1_ratio=1``) or elastic-net (0 < ``l1_ratio`` < 1) penalty.
+    scikit-learn 1.8 deprecated ``penalty`` in favour of ``l1_ratio`` (removal in 1.10) and warns on every
+    fit that passes it; earlier versions need ``penalty``. The same model is built on either."""
+    import sklearn
+    from sklearn.linear_model import LogisticRegression
+
+    if l1_ratio is None:
+        return LogisticRegression(**kwargs)
+    version = tuple(int("".join(c for c in part if c.isdigit()) or 0) for part in sklearn.__version__.split(".")[:2])
+    if version >= (1, 8):
+        return LogisticRegression(l1_ratio=l1_ratio, **kwargs)
+    if l1_ratio == 1:
+        return LogisticRegression(penalty="l1", **kwargs)
+    return LogisticRegression(penalty="elasticnet", l1_ratio=l1_ratio, **kwargs)
+
+
 def _model(name: str, binary: bool, seed: int):
     from sklearn import ensemble, linear_model
 
     grids: dict[str, tuple[Any, dict[str, list[Any]]]] = {
         "ridge": ((linear_model.LogisticRegression(max_iter=2000), {"C": [0.01, 0.1, 1, 10]}) if binary else
                   (linear_model.Ridge(), {"alpha": [0.1, 1, 10, 100]})),
-        "lasso": ((linear_model.LogisticRegression(penalty="l1", solver="liblinear", max_iter=2000),
+        "lasso": ((_logistic(1.0, solver="liblinear", max_iter=2000),
                    {"C": [0.01, 0.1, 1, 10]}) if binary else
                   (linear_model.Lasso(max_iter=5000), {"alpha": [0.001, 0.01, 0.1]})),
-        "elastic_net": ((linear_model.LogisticRegression(penalty="elasticnet", solver="saga", max_iter=3000),
+        "elastic_net": ((_logistic(0.5, solver="saga", max_iter=3000),
                          {"C": [0.1, 1], "l1_ratio": [0.2, 0.5, 0.8]}) if binary else
                         (linear_model.ElasticNet(max_iter=5000), {"alpha": [0.001, 0.01, 0.1], "l1_ratio": [0.2, 0.5, 0.8]})),
         # Each tree sees a quarter of the rows: at cohort scale a full forest per inner fold costs minutes.

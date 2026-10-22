@@ -89,3 +89,21 @@ def test_forest_hazard_axis_is_labelled_across_the_data(tmp_path):
     values = [float(t) for t in labels]
     assert min(values) < 1 < max(values) and len(values) >= 3, labels
     assert [t.get_text() for t in ax.get_yticklabels()] == ["x: f0", "x: f1", "x: f2"]
+
+
+def test_literature_table_shows_whether_search_returned_sources(tmp_path):
+    import json
+
+    events = [{"kind": "tool_call", "name": "search_literature", "args": {"query": "q"}},
+              {"kind": "tool_response", "name": "search_literature", "response": {"grounded": True, "sources": ["s"]}},
+              {"kind": "tool_response", "name": "search_literature",
+               "response": {"grounded": False, "note": "Literature grounding failed: 403 PERMISSION_DENIED"}},
+              {"kind": "tool_response", "name": "search_literature",
+               "response": {"result": {"grounded": False, "note": "Literature grounding failed: 403 PERMISSION_DENIED"}}},
+              {"kind": "tool_response", "name": "run_discovery_round", "response": {"ok": True}}]
+    (tmp_path / "explore_x_trace.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    result = {"summary_path": str(tmp_path / "explore_summary.md"), "runs": [{"cohort": "explore_x", "failed": "boom"}]}
+    table = views.literature_table(result)
+    row = table.iloc[0]
+    assert row["searches"] == 3 and row["with sources"] == 1
+    assert row["what came back"].startswith("Literature grounding failed: 403 PERMISSION_DENIED (x2)")

@@ -314,3 +314,31 @@ def test_record_lessons_validates_entries(tmp_path):
     assert [x["lesson"] for x in out["recorded"]] == ["act_days measures wear"] and len(out["rejected"]) == 2
     assert ctx.state["lessons"][0]["about"] == ["act_days"]
     assert "error" in tools.record_lessons("{}", ctx)
+
+
+def test_agent_work_survives_a_failure_after_the_agents(synthetic_explore, monkeypatch):
+    """A crash after the agents (pre-registration, holdout test, saving) reruns only those steps."""
+    explore, calls, failing = synthetic_explore
+    real_save = runner.save_outputs
+    crashes = {"explore_hdl": 1}
+
+    def flaky_save(state, stem, *a, **k):
+        if crashes.get(stem):
+            crashes[stem] -= 1
+            raise ValueError("math domain error")
+        return real_save(state, stem, *a, **k)
+
+    monkeypatch.setattr(runner, "save_outputs", flaky_save)
+    first = explore()
+    assert calls == ["explore_hdl", "explore_depression"] and "math domain error" in first["runs"][0]["failed"]
+    assert (RUN_DIR / "explore_hdl_agents.json").exists()
+    calls.clear()
+    second = explore()
+    assert calls == []                                     # the agents' saved work was reused
+    assert not second["runs"][0].get("failed") and not (RUN_DIR / "explore_hdl_agents.json").exists()
+    crashes["explore_hdl"] = 1
+    explore(rerun=True)                                    # crash again, then change the analysis code
+    calls.clear()
+    monkeypatch.setattr(runner, "_analysis_version", lambda root=None: "changed-analysis")
+    explore()
+    assert "explore_hdl" in calls                          # a checkpoint from other analysis code is not reused

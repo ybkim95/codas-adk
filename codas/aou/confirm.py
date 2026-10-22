@@ -58,7 +58,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from codas.aou.privacy import mask_small_counts
+from codas.aou.privacy import mask_identifiers, mask_small_counts
 from codas.core.analyses import rebuild_feature
 from codas.core.imputation import pooled_cox, pooled_partial_spearman_ci
 from codas.core.statistics import safe_spearman
@@ -157,6 +157,20 @@ def _bh(p: list[float]) -> list[float]:
     return q.tolist()
 
 
+def _error(exc: Exception) -> str:
+    return mask_identifiers(f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def _guarded(errors: dict[str, str], name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """``fn(*args)``, or None with the error recorded under ``name``: one numerical failure (a model that
+    cannot be fitted on some subset) costs that check, never the other checks or the outcome."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - recorded on the hypothesis and reported
+        errors[name] = _error(exc)
+        return None
+
+
 def _num(frame: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="coerce")
 
@@ -251,7 +265,11 @@ def _negative_controls(frame: pd.DataFrame, x: pd.Series, cov: pd.DataFrame | No
         if events.sum() < _MIN_CONTROL_EVENTS:
             out.append({"control": name, "status": "too few events to test"})
             continue
-        res = _cox(_num(frame, time_col), events, x, cov)
+        try:
+            res = _cox(_num(frame, time_col), events, x, cov)
+        except Exception as exc:  # noqa: BLE001 - this control is reported as not computed
+            out.append({"control": name, "status": "could not be computed", "error": _error(exc)})
+            continue
         res.pop("e_value", None)
         out.append({"control": name, **res})
     tested = [nc for nc in out if "p" in nc]
@@ -298,22 +316,31 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
         row.update(status="not testable on the holdout", p=float("nan"))
         return row
     m = int(prereg.get("covariate_imputations") or 0)
-    res = _effect(frame, x, target, time_col, cov, m)
+    errors: dict[str, str] = {}
+    res = _guarded(errors, "effect", _effect, frame, x, target, time_col, cov, m)
+    if res is None:  # the main estimate itself could not be computed: tested, not replicated
+        row.update(p=float("nan"), same_direction=False, errors=errors)
+        return row
     row.update({k: v for k, v in res.items() if k != "sign"}, same_direction=bool(res["sign"] == h["direction"]))
     if res.get("imputations"):
-        cc = _effect(frame, x, target, time_col, cov, 0)
-        row["complete_case"] = {k: cc[k] for k in ("hr_per_sd", "rho", "ci95", "p", "n") if k in cc}
+        cc = _guarded(errors, "complete_case", _effect, frame, x, target, time_col, cov, 0)
+        if cc is not None:
+            row["complete_case"] = {k: cc[k] for k in ("hr_per_sd", "rho", "ci95", "p", "n") if k in cc}
     if with_adherence is not None:
-        adj = _effect(frame, x, target, time_col, with_adherence, m)
-        same = bool(adj["sign"] == h["direction"])
-        row["adherence_adjusted"] = {**{k: v for k, v in adj.items() if k not in ("sign", "e_value")},
-                                     "same_direction": same, "holds": same and _excludes_null(adj)}
-    row["dose_response"] = _dose_response(frame, x, target, time_col, cov, h["direction"])
+        adj = _guarded(errors, "adherence_adjusted", _effect, frame, x, target, time_col, with_adherence, m)
+        if adj is not None:
+            same = bool(adj["sign"] == h["direction"])
+            row["adherence_adjusted"] = {**{k: v for k, v in adj.items() if k not in ("sign", "e_value")},
+                                         "same_direction": same, "holds": same and _excludes_null(adj)}
+    row["dose_response"] = _guarded(errors, "dose_response", _dose_response, frame, x, target, time_col, cov,
+                                    h["direction"])
     if time_col:
-        row["lag_sensitivity"] = _lag_sensitivity(frame, x, target, time_col, cov,
-                                                  int(prereg.get("sensitivity_lag_days") or 0), h["direction"], m)
-    row["negative_controls"] = _negative_controls(frame, x, cov, list(prereg.get("negative_controls") or []),
-                                                  prereg["alpha"])
+        row["lag_sensitivity"] = _guarded(errors, "lag_sensitivity", _lag_sensitivity, frame, x, target, time_col,
+                                          cov, int(prereg.get("sensitivity_lag_days") or 0), h["direction"], m)
+    row["negative_controls"] = _guarded(errors, "negative_controls", _negative_controls, frame, x, cov,
+                                        list(prereg.get("negative_controls") or []), prereg["alpha"]) or []
+    if errors:
+        row["errors"] = errors
     return row
 
 
@@ -377,7 +404,10 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
     if panel_csv is not None and Path(panel_csv).exists():
         panel = pd.read_csv(panel_csv)
         for row, h in zip(rows, prereg["hypotheses"]):
-            row["within_person"] = _within_person(panel, h, target)
+            try:
+                row["within_person"] = _within_person(panel, h, target)
+            except Exception as exc:  # noqa: BLE001 - evidence only; reported as not computed
+                row["within_person"] = {"error": _error(exc)}
     for row, q in zip(rows, _bh([r["p"] for r in rows])):
         row["q"] = q
     for family in {r["family"] for r in rows}:  # BH within each family as well
@@ -410,7 +440,8 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
              else row["q_ledger"] if ledger is not None else row["q"])
         row["q_used"] = q
         row["replicated"] = bool(row["same_direction"] and np.isfinite(q) and q <= prereg["alpha"])
-        row["status"] = "replicated" if row["replicated"] else "not replicated"
+        row["status"] = ("test failed" if "effect" in (row.get("errors") or {})
+                         else "replicated" if row["replicated"] else "not replicated")
         passed, failed = _falsification(row)
         row["falsification_passed"], row["falsification_failed"] = passed, failed
         row["robust"] = bool(row["replicated"] and not failed)
@@ -420,13 +451,21 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
         if column not in frame.columns:
             continue
         others = [c for c in confounders if c != column]
-        res = _effect(frame, _num(frame, column), target, time_col,
-                      frame[others].apply(pd.to_numeric, errors="coerce") if others else None, m)
+        try:
+            res = _effect(frame, _num(frame, column), target, time_col,
+                          frame[others].apply(pd.to_numeric, errors="coerce") if others else None, m)
+        except Exception as exc:  # noqa: BLE001
+            positive.append({"control": column, "error": _error(exc), "detected": False})
+            continue
         res.pop("sign", None)
         positive.append({"control": column, **res, "detected": bool(res["p"] < prereg["alpha"])})
     benchmark = []
     for column in availability:  # how strongly wear adherence alone tracks the outcome
-        res = _effect(frame, _num(frame, column), target, time_col, cov, m)
+        try:
+            res = _effect(frame, _num(frame, column), target, time_col, cov, m)
+        except Exception as exc:  # noqa: BLE001
+            benchmark.append({"column": column, "error": _error(exc)})
+            continue
         res.pop("sign", None)
         benchmark.append({"column": column, **res})
 
@@ -503,6 +542,11 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
             lines.append(f"| {r['feature']} | {r['discovery_rho']} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
                          f"{dose_text} | {', '.join(r.get('falsification_failed') or []) or '-'} |")
         lines.append("")
+    failed_checks = [f"{r['feature']}: {', '.join(f'{k} ({v})' for k, v in r['errors'].items())}"
+                     for r in result["hypotheses"] if r.get("errors")]
+    if failed_checks:
+        lines += ["Checks that could not be computed (numerical failure; reported, not counted as passed): "
+                  + "; ".join(failed_checks) + ".", ""]
     adjusted = [r for r in result["hypotheses"] if r.get("adherence_adjusted")]
     if adjusted:
         lines += ["", "Wear adherence as a negative-control exposure: each effect re-estimated with "

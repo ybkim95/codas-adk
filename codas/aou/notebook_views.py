@@ -215,6 +215,32 @@ def _trace(out: Path, stem: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def literature_table(result: dict[str, Any]) -> pd.DataFrame | None:
+    """Per outcome (failed ones too, from their trace): how many literature searches the agents ran, how
+    many came back with sources, and what the others returned. Shows whether search works here."""
+    out = _out_dir(result)
+    rows = []
+    for r in result.get("runs") or []:
+        trace = _trace(out, r["cohort"])
+        if trace.empty or not {"kind", "name"} <= set(trace.columns):
+            continue
+        replies = [x.get("result", x) if isinstance(x, dict) and "grounded" not in x else x
+                   for x in trace.loc[(trace["kind"] == "tool_response") & (trace["name"] == "search_literature"),
+                                      "response"]]
+        replies = [x for x in replies if isinstance(x, dict)]
+        if not replies:
+            continue
+        outcomes: dict[str, int] = {}
+        for x in replies:
+            what = ("sources returned" if x.get("grounded") else
+                    str(x.get("note") or x.get("error") or "no sources returned"))[:160]
+            outcomes[what] = outcomes.get(what, 0) + 1
+        rows.append({"outcome": r["cohort"], "searches": len(replies),
+                     "with sources": sum(bool(x.get("grounded")) for x in replies),
+                     "what came back": "; ".join(f"{k} (x{v})" for k, v in sorted(outcomes.items(), key=lambda kv: -kv[1]))})
+    return pd.DataFrame(rows) if rows else None
+
+
 def run_minutes(out: Path, stem: str) -> float | None:
     trace = _trace(out, stem)
     if trace.empty or "time" not in trace:
