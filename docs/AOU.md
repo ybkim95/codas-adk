@@ -227,6 +227,21 @@ calls to `codas_reports/aou/explore.log`, masked for counts of 1-20 and for long
 database error can quote an identifier). Each outcome's trace (`<cohort>_trace.jsonl`) is appended as
 events happen, so a run that dies midway still shows where it stopped.
 
+The notebook cell prints only the milestones (environment, feasibility, each outcome's start and end,
+failures, from `explore_milestones.log`) and one status block updated in place (elapsed time, current
+outcome and agent, the latest log lines), so the printed notebook stays a few dozen pages however long
+the run. The log itself is kept short too:
+- Each distinct Python warning is shown once per job. Numerical code silences expected notices with
+  `warnings.catch_warnings()`, and every such block clears Python's per-location record (and the
+  "once" filter's), so without this a warning raised in a loop prints on every pass.
+- A line that comes back three times within 20 lines (a library warning or retry message in a loop)
+  is counted rather than written, and the count appears as `[repeated N more times, first-last] <line>`.
+  Lines repeated further apart, such as an agent's turn each round, are always written.
+
+A new run keeps the previous log as `explore.<date-time>.log`. The Status cell lists the most repeated
+lines of the current and the three most recent earlier logs (`job.log_digest`), which shows what
+flooded a run.
+
 For debugging, the job also writes `codas_reports/aou/explore_env.json` (commit, analysis-code
 version, package versions, CPUs, memory, free disk, the run's settings) and a heartbeat every minute
 to `explore_heartbeat.jsonl` (elapsed time, current outcome and agent, process and machine memory,

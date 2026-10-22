@@ -455,6 +455,19 @@ def heartbeat_table(log_path: str | Path) -> pd.DataFrame:
     return pd.DataFrame([json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()])
 
 
+def log_digest_table(log_path: str | Path, top: int = 10, min_count: int = 3) -> pd.DataFrame | None:
+    """The lines a job log repeated most (at least ``min_count`` times), with counts and first/last time:
+    what flooded a run's output."""
+    from codas.aou.job import log_digest
+
+    rows = [r for r in log_digest(log_path, top=top) if r["count"] >= min_count]
+    if not rows:
+        return None
+    table = pd.DataFrame(rows)[["count", "first", "last", "line"]]
+    table["line"] = table["line"].str.slice(0, 300)
+    return table.rename(columns={"count": "times", "line": "log line (time stamp removed)"})
+
+
 def heartbeat_figure(log_path: str | Path):
     """The job's memory over time (process and machine) and which outcome it was on."""
     beats = heartbeat_table(log_path)

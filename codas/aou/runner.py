@@ -637,6 +637,9 @@ def explore(
                                                                encoding="utf-8")
                     _remember(out, memory_key, spec.name)
                     runs.append(result)
+                    log(f"  finished: {result.get('rounds')} rounds, {result.get('validated_count')} validated in "
+                        f"the last round" + (f", replicated on the sealed holdout: {result['replication']}"
+                                             if result.get("replication") else ""))
             summary_path = _write_summary(out, table, runs, keys)
 
     return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path),
