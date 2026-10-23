@@ -54,7 +54,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from codas.aou.phenotypes import PhenotypeSource, minute_activity_ctes, resolve, sleep_stage_ctes
+from codas.aou.phenotypes import (PhenotypeSource, minute_activity_ctes, minute_heart_rate_ctes, resolve,
+                                  sleep_stage_ctes)
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = ROOT / ".codas_runs" / "aou"
@@ -120,12 +121,13 @@ class OutcomeSpec:
     value_max: float | None = None
     # Text the concept name must contain, checked against the CDR concept table before a run.
     expect_name: str = ""
+    # Public codes ("SNOMED:44054006", "LOINC:4548-4") resolved to this CDR's concept ids before a run.
+    codes: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         if self.kind not in {"measurement", "condition"}:
             raise ValueError(f"outcome.kind must be 'measurement' or 'condition', not {self.kind!r}.")
-        if not self.concept_ids or not all(isinstance(c, int) and not isinstance(c, bool) for c in self.concept_ids):
-            raise ValueError("outcome.concept_ids must be a non-empty list of integer OMOP concept ids.")
+        _check_concepts(self.concept_ids, self.codes, f"outcome {self.name!r}")
         _ident(self.name, "outcome name")
 
 
@@ -134,7 +136,19 @@ _COVARIATE_TABLES = {
     "measurement": ("measurement", "measurement_concept_id", "measurement_date"),
     "condition": ("condition_occurrence", "condition_concept_id", "condition_start_date"),
     "drug": ("drug_exposure", "drug_concept_id", "drug_exposure_start_date"),
+    # A survey answer: the question is the source concept, the answer the value's source concept.
+    "survey": ("observation", "observation_source_concept_id", "observation_date"),
 }
+SURVEY_MISSING_ANSWERS = "skip|prefer not|don.?t know|not sure"
+
+
+def _check_concepts(ids: list[int], codes: list[str], what: str, question: str = "") -> None:
+    if not all(isinstance(c, int) and not isinstance(c, bool) for c in ids):
+        raise ValueError(f"{what}: concept_ids must be integer OMOP concept ids.")
+    if any(not isinstance(c, str) or c.count(":") != 1 or not all(c.split(":")) for c in codes):
+        raise ValueError(f"{what}: codes must look like 'VOCABULARY:CODE' (e.g. 'SNOMED:44054006').")
+    if not ids and not codes and not question:
+        raise ValueError(f"{what}: give concept_ids, codes or (for a survey) question_name.")
 
 
 @dataclass
@@ -151,14 +165,25 @@ class CovariateSpec:
     value_max: float | None = None
     # Text the concept name must contain, checked against the CDR concept table before a run.
     expect_name: str = ""
+    codes: list[str] = field(default_factory=list)
+    # Survey covariates: text of the question (resolved to one question concept in this CDR), and
+    # regular expressions over the answer's name: a match of ``positive_answers`` is 1, of
+    # ``missing_answers`` (skips, refusals) missing, anything else 0. ``any_time`` takes the answer nearest
+    # the index date even if given after it (for lifetime traits); otherwise the latest one before it.
+    question_name: str = ""
+    positive_answers: str = ""
+    missing_answers: str = SURVEY_MISSING_ANSWERS
+    any_time: bool = False
 
     def validate(self) -> None:
         _ident(self.name, "covariate name")
         if self.kind not in _COVARIATE_TABLES:
             raise ValueError(f"covariate {self.name!r}: kind must be one of {sorted(_COVARIATE_TABLES)}, "
                              f"not {self.kind!r}.")
-        if not self.concept_ids or not all(isinstance(c, int) and not isinstance(c, bool) for c in self.concept_ids):
-            raise ValueError(f"covariate {self.name!r}: concept_ids must be a non-empty list of integer OMOP concept ids.")
+        _check_concepts(self.concept_ids, self.codes, f"covariate {self.name!r}",
+                        self.question_name if self.kind == "survey" else "")
+        if self.kind == "survey" and not self.positive_answers:
+            raise ValueError(f"covariate {self.name!r}: a survey covariate needs positive_answers.")
         if self.lookback_days is not None and self.lookback_days < 0:
             raise ValueError(f"covariate {self.name!r}: lookback_days must be non-negative or null.")
         if self.kind != "measurement" and (self.value_min is not None or self.value_max is not None):
@@ -567,6 +592,30 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
                 "  ) AS ranked WHERE rn = 1\n"
                 ")"
             )
+        elif covariate.kind == "survey":
+            params += [(f"c{i}_positive", "STRING", covariate.positive_answers.lower()),
+                       (f"c{i}_missing", "STRING", covariate.missing_answers.lower())]
+            if covariate.any_time:  # the answer nearest the index date, before or after it
+                where = "TRUE"
+                order = f"ABS(DATE_DIFF(r.{date_col}, ie.index_date, DAY)), r.observation_id DESC"
+            else:  # the latest answer on or before the index date (within the lookback, if any)
+                where = f"r.{date_col} <= ie.index_date" + (
+                    f"\n      AND r.{date_col} >= DATE_SUB(ie.index_date, INTERVAL @c{i}_lookback DAY)"
+                    if covariate.lookback_days is not None else "")
+                order = f"r.{date_col} DESC, r.observation_id DESC"
+            ctes.append(
+                f"c{i} AS (\n"
+                f"  SELECT person_id, {covariate.name} FROM (\n"
+                "  SELECT ie.person_id,\n"
+                f"    CASE WHEN a.concept_name IS NULL OR REGEXP_CONTAINS(LOWER(a.concept_name), @c{i}_missing) THEN NULL\n"
+                f"      WHEN REGEXP_CONTAINS(LOWER(a.concept_name), @c{i}_positive) THEN 1 ELSE 0 END AS {covariate.name},\n"
+                f"    ROW_NUMBER() OVER (PARTITION BY ie.person_id ORDER BY {order}) AS rn\n"
+                + join +
+                f"  LEFT JOIN {t('concept')} a ON a.concept_id = r.value_source_concept_id\n"
+                f"  WHERE {where}\n"
+                "  ) AS ranked WHERE rn = 1\n"
+                ")"
+            )
         else:
             ctes.append(
                 f"c{i} AS (\n"
@@ -576,7 +625,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
                 ")"
             )
 
-    if any(ph.kind == "minute_activity" for ph in spec.phenotypes):
+    if any(ph.kind in ("minute_activity", "minute_heart_rate") for ph in spec.phenotypes):
         # The primary wearable's valid days in the window: the only days intraday phenotypes use.
         ctes.append(
             "valid_days AS (\n"
@@ -590,10 +639,16 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
             ")"
         )
     phenotype_ctes = []
-    for k, phenotype in enumerate(spec.phenotypes):
+    steps_min = {ph.prefix: f"q{k}_min" for k, ph in enumerate(spec.phenotypes) if ph.kind == "minute_activity"}
+    # Heart-rate sources come last: they read a minute-activity source's minutes for per_step.
+    order = sorted(enumerate(spec.phenotypes), key=lambda kp: kp[1].kind == "minute_heart_rate")
+    for k, phenotype in order:
         if phenotype.kind == "minute_activity":
             phenotype_ctes.append((f"q{k}", phenotype))
             ctes += minute_activity_ctes(k, phenotype, t(phenotype.table))
+        elif phenotype.kind == "minute_heart_rate":
+            phenotype_ctes.append((f"h{k}", phenotype))
+            ctes += minute_heart_rate_ctes(k, phenotype, t(phenotype.table), steps_min.get(phenotype.steps_from))
         else:
             phenotype_ctes.append((f"z{k}", phenotype))
             sleep_sql, sleep_params = sleep_stage_ctes(k, phenotype, t(phenotype.table))
@@ -622,7 +677,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         select += [f"{alias}.{column}" for column in phenotype.output_columns()]
         joins.append(f"LEFT JOIN {alias} ON {alias}.person_id = ie.person_id")
     for i, covariate in enumerate(spec.covariates):
-        if covariate.kind == "measurement":
+        if covariate.kind in ("measurement", "survey"):
             select.append(f"c{i}.{covariate.name}")
         else:
             select.append(f"IF(c{i}.person_id IS NULL, 0, 1) AS {covariate.name}")
@@ -781,7 +836,7 @@ def panel_path(discovery_csv: str | Path) -> Path:
 def schema_check_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
     """SQL listing the (table, column) pairs the spec needs that exist in the CDR."""
     cdr = resolve_cdr(cdr)
-    tables = sorted({s.table for s in [*spec.wearables, *spec.phenotypes]}
+    tables = sorted({s.table for s in spec.wearables} | {t for ph in spec.phenotypes for t in ph.tables()}
                     | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates}
                     | ({"visit_occurrence"} if is_survival(spec) or spec.negative_controls else set())
                     | ({"condition_occurrence"} if spec.negative_controls else set()))
@@ -798,12 +853,14 @@ def missing_columns(spec: CohortSpec, present: list[tuple[str, str]]) -> list[st
         cols = [s.date_column, "person_id", *s.columns] + ([s.filter_column] if s.filter_column else [])
         needed += [(s.table, c) for c in cols]
     for ph in spec.phenotypes:
-        needed += [(ph.table, c) for c in ph.needed()]
+        needed += [(ph.tables()[0], c) for c in ph.needed()]
     for c in spec.covariates:
         table, concept_col, date_col = _COVARIATE_TABLES[c.kind]
         needed += [(table, col) for col in ("person_id", concept_col, date_col)]
         if c.kind == "measurement":
             needed += [(table, "value_as_number"), (table, "measurement_id")]
+        if c.kind == "survey":
+            needed += [(table, "value_source_concept_id"), (table, "observation_id")]
     if is_survival(spec) or spec.negative_controls:
         needed += [("visit_occurrence", "person_id"), ("visit_occurrence", "visit_start_date")]
     if spec.negative_controls:
@@ -846,6 +903,11 @@ def resolve_sources(spec: CohortSpec, present: list[tuple[str, str]]) -> tuple[C
             notes.append(f"phenotypes from {reason}; skipped")
         else:
             phenotypes.append(phenotype)
+    minute_activity = {ph.prefix for ph in phenotypes if ph.kind == "minute_activity"}
+    for k, ph in enumerate(phenotypes):
+        if ph.steps_from and ph.steps_from not in minute_activity:
+            notes.append(f"{ph.prefix}_per_step skipped: its minute-activity source {ph.steps_from} is not available")
+            phenotypes[k] = replace(ph, steps_from="")
     fitted = replace(spec, wearables=wearables, phenotypes=phenotypes)
     fitted.positive_controls = [c for c in spec.positive_controls if c in _base_columns(fitted)
                                 or c in {cv.name for cv in spec.covariates}]

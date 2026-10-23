@@ -148,9 +148,11 @@ def schema_table(spec: Any, present: pd.DataFrame) -> pd.DataFrame:
                      "columns needed": len(needed), "found": len(needed) - len(missing),
                      "missing": ", ".join(missing) or "-"})
     for p in getattr(spec, "phenotypes", []):
+        tables = p.tables() if hasattr(p, "tables") else [p.table]
+        table = next((t for t in tables if (t, "person_id") in have), " / ".join(tables))
         needed = [c for c in p.needed() if c != "person_id"]
-        missing = [c for c in needed if (p.table, c) not in have]
-        rows.append({"table": p.table, "prefix": p.prefix, "kind": p.kind.replace("_", " ") + " (optional)",
+        missing = [c for c in needed if (table, c) not in have]
+        rows.append({"table": table, "prefix": p.prefix, "kind": p.kind.replace("_", " ") + " (optional)",
                      "columns needed": len(needed), "found": len(needed) - len(missing),
                      "missing": ", ".join(missing) or "-"})
     return pd.DataFrame(rows)
@@ -163,9 +165,11 @@ def concept_table(items: list[tuple[str, Any]], concept_rows: list[dict[str, Any
     by_id = {int(r["concept_id"]): r for r in concept_rows}
     rows = []
     for role, item in items:
-        for cid in item.concept_ids:
-            found = by_id.get(int(cid), {})
-            rows.append({"role": role, "name": item.name, "concept id": cid,
+        named = ", ".join(getattr(item, "codes", None) or []) or (
+            f"question: {item.question_name}" if getattr(item, "question_name", "") else "concept id")
+        for cid in item.concept_ids or [None]:
+            found = by_id.get(int(cid), {}) if cid is not None else {}
+            rows.append({"role": role, "name": item.name, "named by": named, "concept id": cid if cid is not None else "-",
                          "name in this CDR": found.get("concept_name", "(not found)"),
                          "domain": found.get("domain_id", "-"), "check": problems.get(item.name) or "ok"})
     return pd.DataFrame(rows)
@@ -364,12 +368,13 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
                      "discovery rho": h.get("discovery_rho"), "holdout effect": effect,
                      "95% CI": "" if ci[0] is None else f"{ci[0]} to {ci[1]}",
                      "q": None if not isinstance(q, float) or not np.isfinite(q) else round(q, 4),
-                     "status": h.get("status"), "robust": h.get("robust"),
+                     "status": h.get("status"), "robust": h.get("robust"), "debate": h.get("debate") or "",
+                     "checks that ran": len(h.get("falsification_passed") or []) + len(h.get("falsification_failed") or []),
                      "holds after adherence": None if adherence is None else adherence.get("holds"),
                      "within-person": _within_text(h.get("within_person")),
                      "failed checks": ", ".join(h.get("falsification_failed") or []) or "-"})
-    columns = ["feature", "family", "discovery rho", "holdout effect", "95% CI", "q", "status", "robust",
-               "holds after adherence", "within-person", "failed checks"]
+    columns = ["feature", "family", "discovery rho", "holdout effect", "95% CI", "q", "status", "robust", "debate",
+               "checks that ran", "holds after adherence", "within-person", "failed checks"]
     return pd.DataFrame(rows, columns=columns)  # keeps its columns when nothing was pre-registered
 
 

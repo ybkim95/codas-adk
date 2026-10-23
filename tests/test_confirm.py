@@ -265,3 +265,37 @@ def test_one_failing_check_does_not_discard_the_confirmation(tmp_path, monkeypat
     assert result["tested"] == 2 and (tmp_path / "e_confirmation.json").exists()
     assert "test failed" in confirmation_markdown(result)
     monkeypatch.setattr(confirm_module, "_dose_response", real_dose)
+
+
+def test_negative_controls_that_could_not_be_computed_never_pass(tmp_path):
+    from codas.aou.confirm import audit
+
+    h = _survival_holdout(np.random.default_rng(5))
+    h["days_a"] = np.random.default_rng(6).normal(150, 40, len(h))
+    h["days_b"] = h["days_a"]                                 # two identical wear-day columns
+    h["nc_ctl_days"] = -1.0                                   # a control whose follow-up never starts
+    h.to_csv(tmp_path / "n.holdout.csv", index=False)
+    state = _state([_cand("x", 0.2, ["x"])], ["age", "days_a", "days_b"])
+    prereg = preregister(state, tmp_path, "n", survival_time="followup_days", negative_controls=["ctl"],
+                         positive_controls=["age"], sensitivity_lag_days=90)
+    result = confirm(prereg, tmp_path / "n.holdout.csv", tmp_path)
+    x = result["hypotheses"][0]
+    assert np.isfinite(x["hr_per_sd"]) and x["replicated"]    # the duplicate is dropped, not fatal
+    assert "days_b" in x["dropped_covariates"]
+    nc = x["negative_controls"][0]
+    assert nc["status"] == "could not be computed"
+    assert not any("negative control" in t for t in x["falsification_passed"])
+    flags = audit(result)
+    assert any("days_b" in f for f in flags) and any("negative control" in f for f in flags)
+    assert "could not be computed" in confirmation_markdown(result)
+
+
+def test_robust_needs_at_least_one_check_that_ran(tmp_path):
+    rng = np.random.default_rng(0)
+    n = 120
+    h = pd.DataFrame({"f1": rng.normal(size=n), "age": rng.normal(size=n)})
+    h["y"] = 0.6 * h.f1 + rng.normal(size=n)
+    h.to_csv(tmp_path / "r.holdout.csv", index=False)  # too few rows for quintiles: no check can run
+    prereg = preregister(_state([_cand("f1", 0.4, ["f1"])], ["age"]), tmp_path, "r")
+    row = confirm(prereg, tmp_path / "r.holdout.csv", tmp_path)["hypotheses"][0]
+    assert row["replicated"] and not row["robust"] and row["falsification_passed"] == []

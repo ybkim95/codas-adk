@@ -30,3 +30,16 @@ def test_ordinary_fits_are_unchanged():
     c = rng.exponential(1.0, n)
     fit = cox_ph(np.minimum(t, c), (t <= c).astype(float), x)
     assert fit.converged and abs(fit.coef[0] - 0.5) < 0.06
+
+
+def test_a_duplicated_or_constant_covariate_is_dropped_not_fatal():
+    rng = np.random.default_rng(1)
+    n = 4000
+    x, days, age = rng.normal(size=n), rng.normal(150, 40, n), rng.normal(50, 15, n)
+    t, c = rng.exponential(1 / np.exp(0.4 * x)), rng.exponential(1.0, n)
+    time, event = np.ceil(np.minimum(t, c) * 365), (t <= c).astype(float)
+    clean = cox_ph(time, event, np.column_stack([x, age, days]))
+    dup = cox_ph(time, event, np.column_stack([x, age, days, days, np.ones(n), 2 * age + days]))
+    assert dup.dropped == [3, 4, 5] and clean.dropped == []
+    assert abs(dup.coef[0] - clean.coef[0]) < 1e-6 and np.isfinite(dup.se[0])
+    assert np.isnan(dup.coef[3]) and np.isnan(dup.se[4])

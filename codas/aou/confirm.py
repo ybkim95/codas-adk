@@ -184,7 +184,13 @@ def _cox(time: pd.Series, event: pd.Series, x: pd.Series, cov: pd.DataFrame | No
            "n": fit["n"], "events": fit["events"], "e_value": round(e_value(hr), 3), "sign": float(np.sign(fit["coef"]))}
     if fit["imputations"]:
         out["imputations"] = fit["imputations"]
+    if cov is not None and fit.get("dropped"):  # column 0 is the exposure; the rest are cov's columns
+        out["dropped_covariates"] = [str(cov.columns[j - 1]) for j in fit["dropped"] if j >= 1]
     return out
+
+
+def _finite(res: dict[str, Any] | None) -> bool:
+    return res is not None and bool(np.isfinite(res.get("p", np.nan)))
 
 
 def _rank(x: pd.Series, y: pd.Series, cov: pd.DataFrame | None, m: int = 0) -> dict[str, Any]:
@@ -271,8 +277,12 @@ def _negative_controls(frame: pd.DataFrame, x: pd.Series, cov: pd.DataFrame | No
             out.append({"control": name, "status": "could not be computed", "error": _error(exc)})
             continue
         res.pop("e_value", None)
+        if not _finite(res):
+            out.append({"control": name, **res, "status": "could not be computed",
+                        "error": "the hazard ratio is not finite (no usable rows or events after adjustment)"})
+            continue
         out.append({"control": name, **res})
-    tested = [nc for nc in out if "p" in nc]
+    tested = [nc for nc in out if "status" not in nc]
     for nc in tested:  # Bonferroni across the controls that could be tested
         nc["status"] = "associated" if nc["p"] < alpha / len(tested) else "no association"
     return out
@@ -351,7 +361,7 @@ def _falsification(row: dict[str, Any]) -> tuple[list[str], list[str]]:
     if dose is not None:
         (passed if dose["monotone"] else failed).append("dose-response")
     lag = row.get("lag_sensitivity")
-    if lag is not None:
+    if lag is not None and _finite(lag):
         (passed if lag["same_direction"] else failed).append("lag")
     adherence = row.get("adherence_adjusted")
     if adherence is not None and np.isfinite(adherence.get("p", np.nan)):
@@ -376,6 +386,36 @@ def _within_person(panel: pd.DataFrame, h: dict[str, Any], target: str) -> dict[
     if "error" not in fit:
         fit["same_direction"] = bool(np.sign(fit["within"]["estimate"]) == h["direction"])
     return fit
+
+
+def audit(result: dict[str, Any]) -> list[str]:
+    """What in this confirmation could not be computed or should not be trusted as is: estimates that are
+    not finite, checks that ran for no hypothesis, covariates left out as collinear, positive controls
+    the holdout did not detect. Shown above the replication table; the preflight stops on them."""
+    flags: list[str] = []
+    rows = result.get("hypotheses") or []
+    missing = [r["feature"] for r in rows if "same_direction" in r and not np.isfinite(r.get("p", np.nan))]
+    if missing:
+        flags.append(f"holdout estimate could not be computed for {len(missing)} of {len(rows)} hypotheses: "
+                     + ", ".join(missing))
+    dropped = sorted({c for r in rows for c in r.get("dropped_covariates") or []})
+    if dropped:
+        flags.append("covariates left out of the Cox models as constant or collinear with other covariates: "
+                     + ", ".join(dropped))
+    controls = sorted({nc["control"] for r in rows for nc in r.get("negative_controls") or []})
+    for control in controls:
+        entries = [nc for r in rows for nc in r.get("negative_controls") or [] if nc["control"] == control]
+        if entries and all(nc.get("status") == "could not be computed" for nc in entries):
+            flags.append(f"negative control {control} could not be computed for any hypothesis")
+    for pc in result.get("positive_controls") or []:
+        if not np.isfinite(pc.get("p", np.nan)):
+            flags.append(f"positive control {pc['control']} could not be computed")
+        elif not pc.get("detected"):
+            flags.append(f"positive control {pc['control']} was not detected: the holdout may lack power")
+    failed = sorted({k for r in rows for k in (r.get("errors") or {})})
+    if failed:
+        flags.append("checks that raised an error for some hypotheses: " + ", ".join(failed))
+    return flags
 
 
 def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_key: str | None = None,
@@ -444,7 +484,8 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
                          else "replicated" if row["replicated"] else "not replicated")
         passed, failed = _falsification(row)
         row["falsification_passed"], row["falsification_failed"] = passed, failed
-        row["robust"] = bool(row["replicated"] and not failed)
+        # Robust needs at least one falsification test that actually ran, and none that failed.
+        row["robust"] = bool(row["replicated"] and passed and not failed)
 
     positive = []
     for column in prereg.get("positive_controls") or []:
@@ -470,6 +511,7 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
         benchmark.append({"column": column, **res})
 
     result = mask_small_counts({
+        "audit": [],
         "prereg_sha256": prereg["sha256"], "holdout_rows": int(len(frame)), "confounders": confounders,
         "hypotheses": rows, "positive_controls": positive, "ledger": ledger,
         "availability": availability, "adherence_benchmark": benchmark, "covariate_imputations": m,
@@ -482,6 +524,7 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
                          "replicated": sum(1 for r in rows if r["family"] == f and r.get("replicated")),
                          "robust": sum(1 for r in rows if r["family"] == f and r.get("robust"))}
                      for f in ("a_priori", "exploratory") if any(r["family"] == f for r in rows)}})
+    result["audit"] = audit(result)
     (out_dir / f"{prereg['stem']}_confirmation.json").write_text(json.dumps(result, indent=2, default=str),
                                                                  encoding="utf-8")
     return result
@@ -517,6 +560,9 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
              f"falsification test that could run. The agents never saw these data or results"
              + (f"; discovery evaluated {looks} candidate variants before registering" if looks else "")
              + f". Pre-registration hash: `{result['prereg_sha256'][:16]}`.", ""]
+    if result.get("audit"):
+        lines += ["**Checks of this analysis** (read before the table):", "",
+                  *[f"- {flag}" for flag in result["audit"]], ""]
     families = result.get("families") or {}
     groups = [("a_priori", "A-priori hypotheses (registered from the literature before any statistic existed; "
                            "direction as predicted; BH within this family of {n})"),
@@ -539,6 +585,8 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
             status = r.get("status", "") + (" (robust)" if r.get("robust") else "")
             if r.get("knownness"):
                 status += f"; {r['knownness']}"
+            if r.get("debate"):
+                status += f"; debate: {r['debate']}"
             lines.append(f"| {r['feature']} | {r['discovery_rho']} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
                          f"{dose_text} | {', '.join(r.get('falsification_failed') or []) or '-'} |")
         lines.append("")
@@ -579,13 +627,14 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
         shown = [(r["feature"], nc) for r in result["hypotheses"] for nc in r.get("negative_controls") or []
                  if nc.get("test") == "cox"]
         if shown:
-            lines += ["", "| feature | negative control | HR/SD | 95% CI | p |", "|---|---|---|---|---|"]
+            lines += ["", "| feature | negative control | HR/SD | 95% CI | p | status |", "|---|---|---|---|---|---|"]
             lines += [f"| {f} | {nc['control']} | {nc['hr_per_sd']} | {nc['ci95'][0]}-{nc['ci95'][1]} | "
-                      f"{nc['p']:.3g} |" for f, nc in shown]
+                      f"{nc['p']:.3g} | {nc.get('status', '')} |" for f, nc in shown]
     if result.get("positive_controls"):
         lines += ["", "Positive controls (known associations, tested the same way to show the holdout can detect "
                   "a real effect):", "", "| control | holdout effect | 95% CI | p | detected |", "|---|---|---|---|---|"]
         for pc in result["positive_controls"]:
             effect, ci, _ev = _effect_text(pc)
-            lines.append(f"| {pc['control']} | {effect} | {ci} | {pc['p']:.3g} | {'yes' if pc['detected'] else 'no'} |")
+            lines.append(f"| {pc['control']} | {effect} | {ci} | {pc.get('p', float('nan')):.3g} | "
+                         f"{'yes' if pc['detected'] else 'no'} |")
     return "\n".join(lines) + "\n"

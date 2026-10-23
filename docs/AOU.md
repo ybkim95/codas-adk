@@ -353,6 +353,68 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   only marks a stable trait shows a within-person effect near zero. The holdout reports each
   pre-registered feature's within-person effect. Intraday phenotypes are not in the panel.
 
+## Checks that keep a result honest, and the wider data
+
+**Collinear covariates.**
+- `cox_ph` leaves out covariate columns that are constant or a linear combination of earlier ones
+  (pivot by rank; the exposure column is never displaced) and reports them (`dropped_covariates`).
+- Example: two wearable sources that count the same days give identical columns. v8 adjusted for both,
+  which made every negative-control Cox model singular and `nan`.
+
+**`nan` never passes.**
+- A negative control or lag check whose estimate is not finite is "could not be computed" and is not
+  counted as passed.
+- `robust` needs at least one falsification test that actually ran.
+- `confirm.audit` lists what could not be computed or should not be trusted as is: estimates, checks
+  that ran for no hypothesis, covariates dropped as collinear, positive controls not computed or not
+  detected. It prints above the replication table.
+
+**Preflight.**
+- Before any agent runs, `runner.preflight` runs the whole holdout pipeline on the discovery share (never
+  the sealed one, no ledger entry), with one stand-in hypothesis per wearable and phenotype source and
+  every covariate the agents could adjust for.
+- Anything it cannot compute stops that outcome in minutes with the reason.
+- Columns with identical values are named in the agents' goal.
+- `CODAS_PREFLIGHT=0` turns it off.
+
+**Repeated analyses.** An analysis tool called again with the same arguments and confounders returns
+the recorded result instead of recomputing it.
+
+**Permutation nulls.** The ML method pool uses 19 draws for every model, so the smallest p is 0.05.
+
+**Concepts by public code.**
+- Outcomes, covariates and negative controls can name concepts by code instead of id, e.g.
+  `"codes": ["SNOMED:84114007"]`, `["LOINC:8480-6"]` or `["ATC:C10AA"]`.
+- `feasibility.resolve_codes` looks the codes up in the CDR's own vocabulary. The existing check then
+  confirms domain and name, and a code that is not found is skipped with the reason.
+- A drug class (ATC) covers its ingredients through `concept_ancestor`.
+
+**Survey covariates** (`"kind": "survey"`):
+- `question_name` is text that must match exactly one question used in `observation` (otherwise the
+  covariate is skipped, listing what matched).
+- `positive_answers` is a regular expression over the answer's name, coded 1. Skips and refusals are
+  missing; any other answer is 0.
+- `any_time` takes the answer nearest the index date, for lifetime traits.
+- The checks cell shows each question's answers, how each is coded, and how many people gave it
+  (1–20 masked).
+
+**Minute heart rate** (`"kind": "minute_heart_rate"`, an optional phenotype source):
+- `table` may list several acceptable names; the first one the CDR has is used.
+- Phenotypes:
+  - resting heart-rate proxy: mean of the day's 30 lowest minutes
+  - night and day heart rate, and the nocturnal dip
+  - night minute-to-minute variability: a proxy, not HRV
+  - 24-h relative amplitude
+  - with `steps_from`, heart-rate rise per step/min
+- These queries read the minute table, which is large. The inventory cell shows its size; BigQuery bills
+  by bytes read.
+
+**Data inventory** (checks cell):
+- Every table with its columns, the participants each person-level table covers, and how many of them
+  have Fitbit data (masked).
+- Tables shaped like minute heart rate, found by their columns.
+- Table sizes.
+
 ## Fidelity to the paper's CoDaS (v4) on this branch
 
 | paper component | here |

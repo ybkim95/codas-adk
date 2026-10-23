@@ -265,3 +265,12 @@ def test_the_status_cell_shows_what_flooded_a_log(tmp_path):
     table = views.log_digest_table(log)
     assert list(table["times"]) == [50] and table.iloc[0]["log line (time stamp removed)"] == "WARNING  flood"
     assert views.log_digest_table(tmp_path / "none.log") is None
+
+
+def test_stop_ends_a_running_job_and_records_it(tmp_path):
+    out = tmp_path / "aou"
+    job.start({"top_k": 1}, out, command=[sys.executable, "-c", "import time; time.sleep(60)"])
+    assert job.status(out)["state"] == "running"
+    st = job.stop(out)
+    assert st["state"] == "stopped" and "stopped by user" in st.get("error", "")
+    assert job.stop(out)["state"] == "stopped"  # stopping again is harmless

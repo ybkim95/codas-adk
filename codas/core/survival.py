@@ -9,7 +9,7 @@ analysis tools (``codas.core.analyses``); the discovery screen does not depend o
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import stats
@@ -24,6 +24,7 @@ class CoxResult:
     events: int
     converged: bool
     cov: np.ndarray | None = None  # inverse observed information (covariance of coef)
+    dropped: list[int] = field(default_factory=list)  # columns left out: constant or collinear with earlier ones
 
     def hazard_ratio(self, j: int = 0, alpha: float = 0.05) -> tuple[float, float, float]:
         """HR and its (1 - alpha) Wald confidence interval for column ``j``."""
@@ -72,21 +73,21 @@ def _efron(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np.ndarray)
     return loglik, grad, hess
 
 
-def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
-    """Fit a Cox model. ``x`` is an (n, k) array of covariates; rows with any missing value are dropped."""
-    time = np.asarray(time, dtype=float)
-    event = np.asarray(event, dtype=float)
-    x = np.asarray(x, dtype=float)
-    if x.ndim == 1:
-        x = x.reshape(-1, 1)
-    keep = np.isfinite(time) & np.isfinite(event) & np.all(np.isfinite(x), axis=1) & (time > 0)
-    time, event, x = time[keep], event[keep].astype(bool), x[keep]
+def _independent_columns(x: np.ndarray) -> list[int]:
+    """Columns that are neither constant nor a linear combination of earlier columns, in order: a
+    covariate repeated under two names (two sources counting the same days) makes the information
+    matrix singular, and the model is identified only without it."""
+    sd = x.std(axis=0)
+    z = np.where(sd > 0, (x - x.mean(axis=0)) / np.where(sd > 0, sd, 1.0), 0.0)
+    kept: list[int] = []
+    for j in range(x.shape[1]):
+        if sd[j] > 0 and np.linalg.matrix_rank(z[:, kept + [j]]) == len(kept) + 1:
+            kept.append(j)
+    return kept
+
+
+def _newton(time: np.ndarray, event: np.ndarray, x: np.ndarray, max_iter: int, tol: float):
     k = x.shape[1]
-    if len(time) < k + 2 or event.sum() < 1:
-        nan = np.full(k, np.nan)
-        return CoxResult(nan, nan, nan, int(len(time)), int(event.sum()), False, np.full((k, k), np.nan))
-    order = np.argsort(-time, kind="mergesort")
-    time, event, x = time[order], event[order], x[order]
     beta = np.zeros(k)
     loglik, grad, hess = _efron(beta, time, event, x)
     converged = False
@@ -107,7 +108,6 @@ def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
             break
         beta, grad, hess = new, new_grad, new_hess
         if abs(new_loglik - loglik) < tol * (abs(loglik) + tol):
-            loglik = new_loglik
             converged = True
             break
         loglik = new_loglik
@@ -117,9 +117,36 @@ def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
     except np.linalg.LinAlgError:
         cov = np.full((k, k), np.nan)
         se = np.full(k, np.nan)
+    return beta, se, cov, converged
+
+
+def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
+    """Fit a Cox model. ``x`` is an (n, k) array of covariates; rows with any missing value are dropped.
+    Columns that are constant or collinear with earlier ones are left out (``dropped``, estimates NaN);
+    column 0, the exposure of interest, is never displaced by a later column."""
+    time = np.asarray(time, dtype=float)
+    event = np.asarray(event, dtype=float)
+    x = np.asarray(x, dtype=float)
+    if x.ndim == 1:
+        x = x.reshape(-1, 1)
+    keep = np.isfinite(time) & np.isfinite(event) & np.all(np.isfinite(x), axis=1) & (time > 0)
+    time, event, x = time[keep], event[keep].astype(bool), x[keep]
+    k = x.shape[1]
+    nan = np.full(k, np.nan)
+    cols = _independent_columns(x) if len(time) else []
+    if len(time) < len(cols) + 2 or event.sum() < 1 or 0 not in cols:
+        return CoxResult(nan, nan, nan, int(len(time)), int(event.sum()), False, np.full((k, k), np.nan),
+                         [j for j in range(k) if j not in cols])
+    order = np.argsort(-time, kind="mergesort")
+    time, event, x = time[order], event[order], x[order]
+    b, s, c, converged = _newton(time, event, x[:, cols], max_iter, tol)
+    beta, se, cov = nan.copy(), nan.copy(), np.full((k, k), np.nan)
+    beta[cols], se[cols] = b, s
+    cov[np.ix_(cols, cols)] = c
     with np.errstate(divide="ignore", invalid="ignore"):
         p = 2 * stats.norm.sf(np.abs(beta / se))
-    return CoxResult(beta, se, p, int(len(time)), int(event.sum()), converged, cov)
+    return CoxResult(beta, se, p, int(len(time)), int(event.sum()), converged, cov,
+                     [j for j in range(k) if j not in cols])
 
 
 def e_value(rr: float) -> float:

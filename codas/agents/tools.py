@@ -686,11 +686,26 @@ def _covariate(frame: pd.DataFrame, design: dict[str, Any], name: str) -> str:
 def _record(tool_context: ToolContext, tool: str, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     result = _json_safe(_sig(result))
     tool_context.state["analyses"] = list(tool_context.state.get("analyses") or []) + [
-        {"tool": tool, "args": args, "result": result}]
+        {"tool": tool, "args": args, "result": result,
+         "confounders": list(tool_context.state.get("confounder_columns") or [])}]
     return result
 
 
+def _earlier(state: Any, tool: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    """The recorded result of the same analysis (tool, arguments and confounders) in this outcome, if any."""
+    key = {"tool": tool, "args": args, "confounders": sorted(state.get("confounder_columns") or [])}
+    for record in reversed(list(state.get("analyses") or [])):
+        if {"tool": record.get("tool"), "args": record.get("args"),
+                "confounders": sorted(record.get("confounders") or [])} == key:
+            return record.get("result")
+    return None
+
+
 def _run_analysis(tool_context: ToolContext, tool: str, args: dict[str, Any], body: Any) -> dict[str, Any]:
+    earlier = _earlier(tool_context.state, tool, args)
+    if earlier is not None:  # identical analysis: return it rather than spend minutes recomputing it
+        return {**earlier, "note": "Already run in this analysis with the same arguments and confounders; this is "
+                                   "that result. Run something new instead of repeating it."}
     try:
         frame, design = _analysis_setup(tool_context)
         return _record(tool_context, tool, args, body(frame, design))

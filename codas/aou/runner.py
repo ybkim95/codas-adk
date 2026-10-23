@@ -236,7 +236,7 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
               "confirmation", "cohort_table", "analyses", "a_priori_hypotheses", "gap_analysis", "methods_explored",
-              "constraints", "candidate_debates", "lessons", "report_review")
+              "constraints", "candidate_debates", "lessons", "report_review", "preflight")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -524,6 +524,78 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_key
     return path
 
 
+PREFLIGHT = os.getenv("CODAS_PREFLIGHT", "1").strip().lower() not in ("0", "false", "no", "off")
+PREFLIGHT_IMPUTATIONS = 2  # enough to exercise the imputation path in minutes
+
+
+class PreflightError(RuntimeError):
+    """The deterministic pipeline could not compute something on this cohort's discovery share."""
+
+
+def _duplicate_columns(frame: Any) -> list[list[str]]:
+    """Groups of columns with identical values (missing values included), in column order."""
+    import pandas as pd
+
+    groups: dict[int, list[str]] = {}
+    for column in frame.columns:
+        groups.setdefault(int(pd.util.hash_pandas_object(frame[column], index=False).sum()), []).append(column)
+    out = []
+    for names in groups.values():
+        while len(names) > 1:
+            same = [n for n in names[1:] if frame[n].equals(frame[names[0]])]
+            if same:
+                out.append([names[0], *same])
+            names = [n for n in names[1:] if n not in same]
+    return out
+
+
+def preflight(csv: str | Path, out_dir: str | Path, *, stem: str, target: str, survival_time: str | None,
+              confounders: list[str], stand_ins: list[str], negative_controls: list[str] | tuple[str, ...] = (),
+              positive_controls: list[str] | tuple[str, ...] = (), availability: list[str] | tuple[str, ...] = (),
+              panel_csv: str | Path | None = None) -> dict[str, Any]:
+    """Run the holdout pipeline end to end on the DISCOVERY share with stand-in hypotheses (one wearable
+    column per source), adjusting for every covariate the agents could choose, before any agent runs. It
+    never touches the sealed share and writes no ledger entry. ``fatal`` lists what could not be computed:
+    code or data the real holdout test would also fail on, found in minutes instead of after hours."""
+    import pandas as pd
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    frame = pd.read_csv(csv)
+    candidates = [{"feature": c, "rho": 0.1, "q_value": 0.001, "verdict": "validated", "components": [c]}
+                  for c in stand_ins if c in frame.columns]
+    state = {"target_column": target, "confounder_columns": [c for c in confounders if c in frame.columns],
+             "excluded_columns": [], "latest_report": {"candidates": candidates}, "proposed_features": []}
+    prereg = preregister(state, out, stem, survival_time=survival_time, negative_controls=list(negative_controls),
+                         positive_controls=list(positive_controls), availability=list(availability),
+                         covariate_imputations=PREFLIGHT_IMPUTATIONS)
+    result = confirm(prereg, Path(csv), out, ledger_key=None,
+                     panel_csv=Path(panel_csv) if panel_csv and Path(panel_csv).exists() else None)
+    flags = list(result.get("audit") or [])
+    if not candidates:
+        flags.append("no stand-in hypothesis could be built from this cohort's columns")
+    target_values = pd.to_numeric(frame[target], errors="coerce") if target in frame.columns else pd.Series(dtype=float)
+    if survival_time and target_values.sum() < 10:  # say why nothing could be estimated
+        flags.append(f"the discovery share has {int(target_values.sum())} events among {len(frame)} participants: "
+                     "too few to estimate anything (could not be computed)")
+    fatal = [f for f in flags if "could not be computed" in f or "raised an error" in f or "no stand-in" in f]
+    numeric = frame.drop(columns=[c for c in (target, survival_time) if c and c in frame.columns])
+    return {"flags": flags, "fatal": fatal, "duplicates": _duplicate_columns(numeric)}
+
+
+def _preflight_args(spec: CohortSpec, csv: Path) -> dict[str, Any]:
+    """What the holdout test of this spec would use: every covariate the agents could adjust for and one
+    stand-in hypothesis per wearable source and phenotype source."""
+    demographics = ["age", "female"] if spec.include_demographics else []
+    stand_ins = ([f"{s.prefix}_{s.columns[0]}_mean" for s in spec.wearables if s.columns]
+                 + [p.output_columns()[1] for p in spec.phenotypes if len(p.output_columns()) > 1])
+    return {"stem": spec.name, "target": spec.outcome.name, "survival_time": FOLLOWUP_COLUMN if is_survival(spec) else None,
+            "confounders": demographics + [c.name for c in spec.covariates] + cohort.availability_columns(spec),
+            "stand_ins": stand_ins, "negative_controls": [c.name for c in spec.negative_controls],
+            "positive_controls": list(spec.positive_controls), "availability": cohort.availability_columns(spec),
+            "panel_csv": cohort.panel_path(csv)}
+
+
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None,
              on_agent: Any = None, lessons: list[str] | None = None) -> dict[str, Any]:
@@ -543,16 +615,27 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
     if saved is not None:  # the agents finished earlier and a later step failed: redo only the later steps
         state, recorder = saved
     else:
+        checked = None
+        goal = goal_for(spec, label, lessons)
+        if PREFLIGHT:  # minutes on the discovery share, before hours of agents
+            checked = preflight(csv, out / "preflight", **_preflight_args(spec, csv))
+            if checked["fatal"]:
+                raise PreflightError("; ".join(checked["fatal"])[:400])
+            if checked["duplicates"]:
+                goal += ("\nThese columns hold identical values in this cohort; adjust for at most one of each "
+                         "group: " + "; ".join(" = ".join(g) for g in checked["duplicates"]) + ".")
         recorder = TraceRecorder(stream_path=out / f"{spec.name}_trace.jsonl")
         context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
                    + ([FOLLOWUP_COLUMN] if is_survival(spec) else []))
-        state = run_agents(csv, goal_for(spec, label, lessons), on_tool_call, context, recorder=recorder,
+        state = run_agents(csv, goal, on_tool_call, context, recorder=recorder,
                            on_agent=on_agent,
                            state={"covariate_imputations": COVARIATE_IMPUTATIONS,
                                   "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
                                   "prior_lessons": list(lessons or []),
                                   "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()
                                                      else "")})
+        if checked is not None:
+            state["preflight"] = checked
         _save_agents(out, spec.name, key, state, recorder)
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
@@ -566,6 +649,15 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         sealed_panel = holdout_path(cohort.panel_path(csv))
         result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr),
                          panel_csv=sealed_panel if sealed_panel.exists() else None)
+        # The per-candidate debate next to the holdout result, so a candidate the debate conceded but the
+        # holdout replicated (or the reverse) is visible rather than buried in two sections.
+        verdicts = {d["feature"]: d.get("verdict") for d in state.get("candidate_debates") or [] if d.get("feature")}
+        if verdicts:
+            for row in result["hypotheses"]:
+                if row["feature"] in verdicts:
+                    row["debate"] = verdicts[row["feature"]]
+            (out / f"{spec.name}_confirmation.json").write_text(json.dumps(result, indent=2, default=str),
+                                                                encoding="utf-8")
         state["confirmation"] = result
         state["report"] = f"{state.get('report') or ''}\n\n{confirmation_markdown(result)}"
     summary = save_outputs(state, spec.name, out_dir, recorder)
@@ -627,7 +719,7 @@ def explore(
     if missing:
         raise ValueError("The CDR lacks columns the wearable spec needs: " + ", ".join(missing)
                          + ". Edit the spec's wearables to match the CDR schema.")
-    outcomes = feas.load_catalog(catalog_path)
+    outcomes = feas.resolve_codes(feas.load_catalog(catalog_path), cdr, client)
     problems = feas.verify_catalog(outcomes, cdr, client)
     verified = [o for o in outcomes if problems.get(o.name) is None]
     log(f"catalog: {len(verified)}/{len(outcomes)} outcomes verified against the concept table")

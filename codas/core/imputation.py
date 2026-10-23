@@ -154,9 +154,9 @@ def pooled_cox(time, event, x, covariates: np.ndarray | None, m: int = 10, seed:
     variances = np.array([f.se[0] ** 2 for f in sets])
     if not (np.isfinite(coefs).all() and np.isfinite(variances).all()):
         return {"coef": math.nan, "se": math.nan, "p": math.nan, "hr": math.nan, "ci95": [math.nan, math.nan],
-                "n": sets[0].n, "events": sets[0].events, "imputations": used}
+                "n": sets[0].n, "events": sets[0].events, "imputations": used, "dropped": sets[0].dropped}
     coef, se, df = pool(coefs, variances)
     crit = stats.norm.ppf(1 - alpha / 2) if math.isinf(df) else stats.t.ppf(1 - alpha / 2, df)
     return {"coef": coef, "se": se, "p": _wald_p(coef, se, df), "hr": math.exp(coef),
             "ci95": [math.exp(coef - crit * se), math.exp(coef + crit * se)], "n": sets[0].n,
-            "events": sets[0].events, "imputations": used}
+            "events": sets[0].events, "imputations": used, "dropped": sets[0].dropped}

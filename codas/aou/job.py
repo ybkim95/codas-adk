@@ -256,6 +256,31 @@ def _live_text(st: dict[str, Any], lines: list[str]) -> str:
                       *(line if len(line) <= 200 else line[:197] + "..." for line in lines)])
 
 
+def stop(out_dir: str | Path = DEFAULT_OUT_DIR, wait_s: float = 10.0) -> dict[str, Any]:
+    """Stop the running exploration (its whole process group) and record that it was stopped by the user.
+    Finished outcomes stay reusable; a later run resumes."""
+    import signal
+
+    state_path, _, _ = _paths(out_dir)
+    st = status(out_dir, tail=0)
+    if st["state"] != "running":
+        return st
+    pid = int(st.get("pid") or 0)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        deadline = time.time() + wait_s
+        while _alive(pid) and time.time() < deadline:
+            time.sleep(0.2)
+        if not _alive(pid):
+            break
+    _write(state_path, {**_read(state_path), "state": "stopped", "error": "stopped by user",
+                        "ended": time.strftime("%Y-%m-%d %H:%M:%S")})
+    return status(out_dir)
+
+
 def follow(out_dir: str | Path = DEFAULT_OUT_DIR, poll_s: float = 10.0, log: Any = print, *, quiet: bool = False,
            live: Any = None) -> dict[str, Any]:
     """Follow the job until it is no longer running and return its final status.

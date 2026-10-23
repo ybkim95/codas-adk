@@ -38,14 +38,25 @@ CONCEPTS = [
     (1585847, "Female", None, "Gender"),
     (1585846, "Male", None, "Gender"),
     (990001, "Synthetic repeated laboratory value", "S", "Measurement"),
+    (21600712, "DRUGS USED IN DIABETES", "C", "Drug"),
+    (1585857, "Smoking: 100 Cigs Lifetime", None, "Observation"),
+    (1586000, "Smoking: Smoking Frequency", None, "Observation"),
+    (1585858, "100 Cigs Lifetime: Yes", None, "Answer"),
+    (1585859, "100 Cigs Lifetime: No", None, "Answer"),
+    (903096, "PMI: Skip", None, "Answer"),
 ]
+# Vocabulary and code of the concepts a spec can name by public code instead of by id.
+CODES = {201826: ("SNOMED", "44054006"), 3004410: ("LOINC", "4548-4"), 3038553: ("LOINC", "39156-5"),
+         1503297: ("RxNorm", "6809"), 21600712: ("ATC", "A10"), 1585857: ("PPI", "Smoking_100CigsLifetime"),
+         1586000: ("PPI", "Smoking_SmokeFrequency"), 1585858: ("PPI", "CigsLifetime_Yes"),
+         1585859: ("PPI", "CigsLifetime_No"), 903096: ("PPI", "PMI_Skip")}
 # A synthetic lab measured several times per person, for the within-person (panel) tests: it rises with a
 # person's steps over the 90 days before each measurement relative to their own average (a planted
 # within-person effect) and with their average steps (a between-person effect).
 REPEATED_LAB = 990001
 _ANCESTRY = [(201826, 201826), (201826, 4193704), (3004410, 3004410), (3007070, 3007070),
              (440383, 440383), (3038553, 3038553), (1503297, 1503297), (374375, 374375), (380706, 380706),
-             (140641, 140641), (990001, 990001)]
+             (140641, 140641), (990001, 990001), (21600712, 21600712), (21600712, 1503297)]
 
 
 def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: int = 0) -> None:
@@ -114,11 +125,14 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
             cond_rows.append((pid, 374375, start + timedelta(days=int(control_rng.integers(0, n_days + 400)))))
 
     intraday, stages = _intraday(people.person_id.to_numpy(), act_rows, seed)
+    observation = _survey(people.person_id.to_numpy(), start, n_days, seed)
+    minute_hr = _minute_heart_rate(people.person_id.to_numpy(), fitness, intraday, seed)
     meas_rows += _repeated_lab(act_rows, start, n_days, mid, seed)
 
     frames = {
         "person": people,
-        "concept": pd.DataFrame(CONCEPTS, columns=["concept_id", "concept_name", "standard_concept", "domain_id"]),
+        "concept": _concepts(),
+        "observation": observation,
         "concept_ancestor": pd.DataFrame(_ANCESTRY, columns=["ancestor_concept_id", "descendant_concept_id"]),
         "measurement": pd.DataFrame(meas_rows, columns=["measurement_id", "person_id", "measurement_concept_id",
                                                         "measurement_date", "value_as_number"]),
@@ -135,6 +149,7 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
         "steps_intraday": intraday,
         "sleep_level": stages,
         "heart_rate_summary": _zones(act_rows, seed),
+        "heart_rate_minute_level": minute_hr,
     }
     for name, frame in frames.items():
         for column in frame.columns:
@@ -143,6 +158,28 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
         con.register(f"_{name}_df", frame)
         con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM _{name}_df")
         con.unregister(f"_{name}_df")
+
+
+def _concepts() -> pd.DataFrame:
+    frame = pd.DataFrame(CONCEPTS, columns=["concept_id", "concept_name", "standard_concept", "domain_id"])
+    frame["vocabulary_id"] = [CODES.get(c, ("None", ""))[0] for c in frame.concept_id]
+    frame["concept_code"] = [CODES.get(c, ("None", str(c)))[1] for c in frame.concept_id]
+    return frame
+
+
+def _survey(person_ids: np.ndarray, start: date, n_days: int, seed: int) -> pd.DataFrame:
+    """One survey question (ever smoked 100 cigarettes) answered by most people, some after their index
+    date, with skips; and a second smoking question, so a vague question text matches two. Own stream."""
+    rng = np.random.default_rng(seed + 8)
+    rows = []
+    for k, pid in enumerate(person_ids):
+        if rng.random() < 0.85:
+            answer = rng.choice([1585858, 1585859, 903096], p=[0.35, 0.58, 0.07])
+            rows.append((k * 2 + 1, pid, 1585857, int(answer), start + timedelta(days=int(rng.integers(-200, n_days)))))
+        if rng.random() < 0.3:
+            rows.append((k * 2 + 2, pid, 1586000, 903096, start + timedelta(days=int(rng.integers(0, n_days)))))
+    return pd.DataFrame(rows, columns=["observation_id", "person_id", "observation_source_concept_id",
+                                       "value_source_concept_id", "observation_date"])
 
 
 def _literal(value: Any) -> str:
@@ -233,6 +270,45 @@ def _intraday(person_ids: np.ndarray, act_rows: list[tuple], seed: int) -> tuple
                          "start_datetime": pd.to_datetime(rows.day.to_numpy()[nap]) + pd.Timedelta(hours=14),
                          "duration_in_min": 40.0})
     return intraday, pd.concat([stages, naps], ignore_index=True)
+
+
+HR_PEOPLE = 30  # minute heart rate for the first people only, to keep the synthetic database small
+
+
+def heart_rate_latents(fitness: np.ndarray, seed: int = 0) -> dict[str, np.ndarray]:
+    """Per-person resting heart rate (lower with fitness) and heart-rate rise per step/min, behind the
+    synthetic minute heart-rate table (own stream)."""
+    rng = np.random.default_rng(seed + 9)
+    n = min(HR_PEOPLE, len(fitness))
+    return {"rest": 68 - 5 * fitness[:n] + rng.normal(0, 2, n), "per_step": rng.uniform(0.05, 0.25, n)}
+
+
+def _minute_heart_rate(person_ids: np.ndarray, fitness: np.ndarray, intraday: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """Minute heart rate on the days a person has minute steps: two consecutive night hours (01:00-02:59),
+    a reading every 10 minutes from 10:00 to 19:59, and one at every minute with steps."""
+    lat = heart_rate_latents(fitness, seed)
+    rng = np.random.default_rng(seed + 10)
+    who = {int(pid): k for k, pid in enumerate(person_ids[:HR_PEOPLE])}
+    steps = intraday[intraday.person_id.isin(list(who))].copy()
+    steps["day"] = steps.datetime.dt.normalize()
+    days = steps[["person_id", "day"]].drop_duplicates()
+    k = days.person_id.map(who).to_numpy()
+    night = np.arange(60, 180)                       # minutes after midnight
+    daytime = np.arange(600, 1200, 10)
+    frames = []
+    for minutes, offset in ((night, -6.0), (daytime, 8.0)):
+        reps = len(minutes)
+        frames.append(pd.DataFrame({
+            "person_id": np.repeat(days.person_id.to_numpy(), reps),
+            "datetime": np.repeat(days.day.to_numpy(), reps) + pd.to_timedelta(np.tile(minutes, len(days)), unit="m"),
+            "heart_rate_value": np.round(np.repeat(lat["rest"][k], reps) + offset
+                                         + rng.normal(0, 3, len(days) * reps))}))
+    ks = steps.person_id.map(who).to_numpy()
+    frames.append(pd.DataFrame({"person_id": steps.person_id.to_numpy(), "datetime": steps.datetime.to_numpy(),
+                                "heart_rate_value": np.round(lat["rest"][ks] + 10 + lat["per_step"][ks] * steps.steps
+                                                             + rng.normal(0, 3, len(steps)))}))
+    hr = pd.concat(frames, ignore_index=True).drop_duplicates(["person_id", "datetime"])
+    return hr.sort_values(["person_id", "datetime"]).reset_index(drop=True)
 
 
 def _zones(act_rows: list[tuple], seed: int) -> pd.DataFrame:

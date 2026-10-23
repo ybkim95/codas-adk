@@ -1,20 +1,313 @@
 {
-  "notes": "Candidate outcomes for free exploration on the All of Us Registered Tier. Concept ids are standard OMOP ids as best known; verify_catalog() checks each against the CDR concept table (exists, domain, name contains expect_name) and skips any that fail, so a wrong id is reported rather than analysed.",
+  "notes": "Candidate outcomes for free exploration on the All of Us Registered Tier. Concept ids are standard OMOP ids as best known; verify_catalog() checks each against the CDR concept table (exists, domain, name contains expect_name) and skips any that fail, so a wrong id is reported rather than analysed. Newer entries name their concept by public code (SNOMED, LOINC); resolve_codes() looks the code up in the CDR vocabulary, and the same concept check then applies.",
   "outcomes": [
-    {"name": "hba1c", "label": "HbA1c", "kind": "measurement", "concept_ids": [3004410], "value_min": 3.0, "value_max": 20.0, "expect_name": "a1c"},
-    {"name": "ldl", "label": "LDL cholesterol", "kind": "measurement", "concept_ids": [3028288], "value_min": 10.0, "value_max": 400.0, "expect_name": "ldl"},
-    {"name": "hdl", "label": "HDL cholesterol", "kind": "measurement", "concept_ids": [3007070], "value_min": 5.0, "value_max": 200.0, "expect_name": "hdl"},
-    {"name": "triglycerides", "label": "Triglycerides", "kind": "measurement", "concept_ids": [3022192], "value_min": 10.0, "value_max": 2000.0, "expect_name": "triglyceride"},
-    {"name": "crp", "label": "C-reactive protein", "kind": "measurement", "concept_ids": [3020460, 3010156], "value_min": 0.0, "value_max": 300.0, "expect_name": "c reactive"},
-    {"name": "bmi", "label": "Body mass index", "kind": "measurement", "concept_ids": [3038553], "value_min": 12.0, "value_max": 80.0, "expect_name": "body mass"},
-    {"name": "sbp", "label": "Systolic blood pressure", "kind": "measurement", "concept_ids": [3004249], "value_min": 60.0, "value_max": 260.0, "expect_name": "systolic"},
-    {"name": "t2d", "label": "Type 2 diabetes", "kind": "condition", "concept_ids": [201826], "expect_name": "diabetes"},
-    {"name": "hypertension", "label": "Essential hypertension", "kind": "condition", "concept_ids": [320128], "expect_name": "hypertension"},
-    {"name": "depression", "label": "Depressive disorder", "kind": "condition", "concept_ids": [440383], "expect_name": "depress"},
-    {"name": "anxiety", "label": "Anxiety disorder", "kind": "condition", "concept_ids": [442077], "expect_name": "anxiety"},
-    {"name": "sleep_apnea", "label": "Sleep apnea", "kind": "condition", "concept_ids": [313459], "expect_name": "apnea"},
-    {"name": "afib", "label": "Atrial fibrillation", "kind": "condition", "concept_ids": [313217], "expect_name": "fibrillation"},
-    {"name": "obesity", "label": "Obesity", "kind": "condition", "concept_ids": [433736], "expect_name": "obes"},
-    {"name": "insomnia", "label": "Insomnia", "kind": "condition", "concept_ids": [436962], "expect_name": "insomnia"}
+    {
+      "name": "hba1c",
+      "label": "HbA1c",
+      "kind": "measurement",
+      "concept_ids": [
+        3004410
+      ],
+      "value_min": 3.0,
+      "value_max": 20.0,
+      "expect_name": "a1c"
+    },
+    {
+      "name": "ldl",
+      "label": "LDL cholesterol",
+      "kind": "measurement",
+      "concept_ids": [
+        3028288
+      ],
+      "value_min": 10.0,
+      "value_max": 400.0,
+      "expect_name": "ldl"
+    },
+    {
+      "name": "hdl",
+      "label": "HDL cholesterol",
+      "kind": "measurement",
+      "concept_ids": [
+        3007070
+      ],
+      "value_min": 5.0,
+      "value_max": 200.0,
+      "expect_name": "hdl"
+    },
+    {
+      "name": "triglycerides",
+      "label": "Triglycerides",
+      "kind": "measurement",
+      "concept_ids": [
+        3022192
+      ],
+      "value_min": 10.0,
+      "value_max": 2000.0,
+      "expect_name": "triglyceride"
+    },
+    {
+      "name": "crp",
+      "label": "C-reactive protein",
+      "kind": "measurement",
+      "concept_ids": [
+        3020460,
+        3010156
+      ],
+      "value_min": 0.0,
+      "value_max": 300.0,
+      "expect_name": "c reactive"
+    },
+    {
+      "name": "bmi",
+      "label": "Body mass index",
+      "kind": "measurement",
+      "concept_ids": [
+        3038553
+      ],
+      "value_min": 12.0,
+      "value_max": 80.0,
+      "expect_name": "body mass"
+    },
+    {
+      "name": "sbp",
+      "label": "Systolic blood pressure",
+      "kind": "measurement",
+      "concept_ids": [
+        3004249
+      ],
+      "value_min": 60.0,
+      "value_max": 260.0,
+      "expect_name": "systolic"
+    },
+    {
+      "name": "t2d",
+      "label": "Type 2 diabetes",
+      "kind": "condition",
+      "concept_ids": [
+        201826
+      ],
+      "expect_name": "diabetes"
+    },
+    {
+      "name": "hypertension",
+      "label": "Essential hypertension",
+      "kind": "condition",
+      "concept_ids": [
+        320128
+      ],
+      "expect_name": "hypertension"
+    },
+    {
+      "name": "depression",
+      "label": "Depressive disorder",
+      "kind": "condition",
+      "concept_ids": [
+        440383
+      ],
+      "expect_name": "depress"
+    },
+    {
+      "name": "anxiety",
+      "label": "Anxiety disorder",
+      "kind": "condition",
+      "concept_ids": [
+        442077
+      ],
+      "expect_name": "anxiety"
+    },
+    {
+      "name": "sleep_apnea",
+      "label": "Sleep apnea",
+      "kind": "condition",
+      "concept_ids": [
+        313459
+      ],
+      "expect_name": "apnea"
+    },
+    {
+      "name": "afib",
+      "label": "Atrial fibrillation",
+      "kind": "condition",
+      "concept_ids": [
+        313217
+      ],
+      "expect_name": "fibrillation"
+    },
+    {
+      "name": "obesity",
+      "label": "Obesity",
+      "kind": "condition",
+      "concept_ids": [
+        433736
+      ],
+      "expect_name": "obes"
+    },
+    {
+      "name": "insomnia",
+      "label": "Insomnia",
+      "kind": "condition",
+      "concept_ids": [
+        436962
+      ],
+      "expect_name": "insomnia"
+    },
+    {
+      "name": "egfr",
+      "label": "eGFR",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:33914-3"
+      ],
+      "value_min": 1.0,
+      "value_max": 200.0,
+      "expect_name": "glomerular filtration"
+    },
+    {
+      "name": "alt",
+      "label": "ALT",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:1742-6"
+      ],
+      "value_min": 1.0,
+      "value_max": 1000.0,
+      "expect_name": "alanine aminotransferase"
+    },
+    {
+      "name": "dbp",
+      "label": "Diastolic blood pressure",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:8462-4"
+      ],
+      "value_min": 30.0,
+      "value_max": 160.0,
+      "expect_name": "diastolic"
+    },
+    {
+      "name": "total_cholesterol",
+      "label": "Total cholesterol",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:2093-3"
+      ],
+      "value_min": 50.0,
+      "value_max": 600.0,
+      "expect_name": "cholesterol"
+    },
+    {
+      "name": "heart_failure",
+      "label": "Heart failure",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:84114007"
+      ],
+      "expect_name": "heart failure"
+    },
+    {
+      "name": "cad",
+      "label": "Coronary artery disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:53741008"
+      ],
+      "expect_name": "coronary arteriosclerosis"
+    },
+    {
+      "name": "stroke",
+      "label": "Cerebral infarction",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:432504007"
+      ],
+      "expect_name": "cerebral infarction"
+    },
+    {
+      "name": "ckd",
+      "label": "Chronic kidney disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:709044004"
+      ],
+      "expect_name": "chronic kidney disease"
+    },
+    {
+      "name": "copd",
+      "label": "COPD",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:13645005"
+      ],
+      "expect_name": "chronic obstructive"
+    },
+    {
+      "name": "gerd",
+      "label": "Gastroesophageal reflux",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:235595009"
+      ],
+      "expect_name": "reflux"
+    },
+    {
+      "name": "migraine",
+      "label": "Migraine",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:37796009"
+      ],
+      "expect_name": "migraine"
+    },
+    {
+      "name": "osteoarthritis",
+      "label": "Osteoarthritis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:396275006"
+      ],
+      "expect_name": "osteoarthritis"
+    },
+    {
+      "name": "hyperlipidemia",
+      "label": "Hyperlipidemia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:55822004"
+      ],
+      "expect_name": "hyperlipidemia"
+    },
+    {
+      "name": "nafld",
+      "label": "Non-alcoholic fatty liver",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:197315008"
+      ],
+      "expect_name": "fatty liver"
+    },
+    {
+      "name": "gout",
+      "label": "Gout",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:90560007"
+      ],
+      "expect_name": "gout"
+    }
   ]
 }

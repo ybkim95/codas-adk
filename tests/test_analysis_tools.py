@@ -106,3 +106,18 @@ def test_register_hypotheses_validates_and_stores_a_priori_hypotheses(tmp_path):
     ctx.state["rounds"] = [{"round": 0}]
     assert "error" in tools.register_hypotheses(json.dumps([{"feature": "a", "direction": 1,
                                                              "knownness": "emerging"}]), ctx)
+
+
+def test_a_repeated_analysis_returns_the_earlier_result_without_recomputing(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path)
+    first = tools.run_subgroup_analysis("a_over_b", "female", ctx)
+    calls = []
+    real = tools._analysis_setup
+    monkeypatch.setattr(tools, "_analysis_setup", lambda c: (calls.append(1), real(c))[1])
+    again = tools.run_subgroup_analysis("a_over_b", "female", ctx)
+    assert calls == [] and again["heterogeneity_p"] == first["heterogeneity_p"] and "Already run" in again["note"]
+    assert len(ctx.state["analyses"]) == 1
+    ctx.state["confounder_columns"] = ["age", "female"]           # a new adjustment set is a new analysis
+    tools.run_subgroup_analysis("a_over_b", "age", ctx)
+    tools.run_subgroup_analysis("a_over_b", "female", ctx)
+    assert calls == [1, 1] and len(ctx.state["analyses"]) == 3

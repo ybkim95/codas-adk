@@ -342,3 +342,13 @@ def test_agent_work_survives_a_failure_after_the_agents(synthetic_explore, monke
     monkeypatch.setattr(runner, "_analysis_version", lambda root=None: "changed-analysis")
     explore()
     assert "explore_hdl" in calls                          # a checkpoint from other analysis code is not reused
+
+
+def test_a_failed_preflight_stops_the_outcome_before_the_agents(synthetic_explore, monkeypatch):
+    explore, calls, failing = synthetic_explore
+    monkeypatch.setattr(runner, "PREFLIGHT", True)
+    monkeypatch.setattr(runner, "preflight", lambda *a, **k: {"flags": ["x"], "fatal": ["negative control a could "
+                                                                                         "not be computed"],
+                                                               "duplicates": []})
+    result = explore()
+    assert calls == [] and all("PreflightError" in r["failed"] for r in result["runs"])

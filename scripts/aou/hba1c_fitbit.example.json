@@ -1,6 +1,6 @@
 {
   "name": "hba1c_fitbit",
-  "notes": "Example spec. Prospective (incident) design: everyone is indexed 180 days after their first valid wear day (100-45,000 steps), features summarise that baseline, outcomes are counted from 90 days after the index (earlier diagnoses exclude the person; lab outcomes use the first value within 730 days), and half the participants are sealed for one-shot replication of the pre-registered candidates. Set design to window for the earlier outcome-anchored design. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically. Negative controls are conditions the wearable measures should not cause (from the OHDSI negative-control outcome lists); they are extracted into the sealed table only and every pre-registered candidate is tested against them, so an association flags confounding or differences in health-care contact. Positive controls are columns with a known association with the outcome, tested the same way to show the holdout can detect a real effect.",
+  "notes": "Example spec. Prospective (incident) design: everyone is indexed 180 days after their first valid wear day (100-45,000 steps), features summarise that baseline, outcomes are counted from 90 days after the index (earlier diagnoses exclude the person; lab outcomes use the first value within 730 days), and half the participants are sealed for one-shot replication of the pre-registered candidates. Set design to window for the earlier outcome-anchored design. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically. Negative controls are conditions the wearable measures should not cause (from the OHDSI negative-control outcome lists); they are extracted into the sealed table only and every pre-registered candidate is tested against them, so an association flags confounding or differences in health-care contact. Positive controls are columns with a known association with the outcome, tested the same way to show the holdout can detect a real effect. Covariates named by public code (LOINC, ATC) and survey questions named by text are resolved against this CDR's vocabulary before a run; any that cannot be resolved unambiguously is skipped with the reason.",
   "outcome": {
     "kind": "measurement",
     "name": "hba1c",
@@ -34,6 +34,123 @@
       "value_min": 12.0,
       "value_max": 80.0,
       "expect_name": "body mass"
+    },
+    {
+      "name": "sbp_cov",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:8480-6"
+      ],
+      "lookback_days": null,
+      "value_min": 60.0,
+      "value_max": 260.0,
+      "expect_name": "systolic"
+    },
+    {
+      "name": "dbp_cov",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:8462-4"
+      ],
+      "lookback_days": null,
+      "value_min": 30.0,
+      "value_max": 160.0,
+      "expect_name": "diastolic"
+    },
+    {
+      "name": "hr_cov",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:8867-4"
+      ],
+      "lookback_days": null,
+      "value_min": 30.0,
+      "value_max": 220.0,
+      "expect_name": "heart rate"
+    },
+    {
+      "name": "antihypertensive_use",
+      "kind": "drug",
+      "concept_ids": [],
+      "codes": [
+        "ATC:C02",
+        "ATC:C03",
+        "ATC:C07",
+        "ATC:C08",
+        "ATC:C09"
+      ],
+      "lookback_days": 365,
+      "expect_name": ""
+    },
+    {
+      "name": "beta_blocker_use",
+      "kind": "drug",
+      "concept_ids": [],
+      "codes": [
+        "ATC:C07"
+      ],
+      "lookback_days": 365,
+      "expect_name": "beta blocking"
+    },
+    {
+      "name": "statin_use",
+      "kind": "drug",
+      "concept_ids": [],
+      "codes": [
+        "ATC:C10AA"
+      ],
+      "lookback_days": 365,
+      "expect_name": "hmg coa reductase"
+    },
+    {
+      "name": "glucose_lowering_use",
+      "kind": "drug",
+      "concept_ids": [],
+      "codes": [
+        "ATC:A10"
+      ],
+      "lookback_days": 365,
+      "expect_name": "diabetes"
+    },
+    {
+      "name": "antidepressant_use",
+      "kind": "drug",
+      "concept_ids": [],
+      "codes": [
+        "ATC:N06A"
+      ],
+      "lookback_days": 365,
+      "expect_name": "antidepressants"
+    },
+    {
+      "name": "smoking_ever",
+      "kind": "survey",
+      "concept_ids": [],
+      "question_name": "100 cigs lifetime",
+      "positive_answers": "yes",
+      "lookback_days": null,
+      "any_time": true
+    },
+    {
+      "name": "education_college",
+      "kind": "survey",
+      "concept_ids": [],
+      "question_name": "highest grade",
+      "positive_answers": "college graduate|advanced degree",
+      "lookback_days": null,
+      "any_time": true
+    },
+    {
+      "name": "income_75k_plus",
+      "kind": "survey",
+      "concept_ids": [],
+      "question_name": "annual income",
+      "positive_answers": "75k 100k|100k 150k|150k 200k|more 200k",
+      "lookback_days": null,
+      "any_time": true
     }
   ],
   "negative_controls": [
@@ -165,6 +282,30 @@
       "rem_levels": [
         "rem"
       ]
+    },
+    {
+      "kind": "minute_heart_rate",
+      "table": [
+        "heart_rate_minute_level",
+        "heart_rate_intraday",
+        "heart_rate_intra_day",
+        "heart_rate_minute"
+      ],
+      "prefix": "hrmin",
+      "columns": {
+        "time": [
+          "datetime",
+          "date_time",
+          "timestamp"
+        ],
+        "value": [
+          "heart_rate_value",
+          "value",
+          "bpm",
+          "heart_rate"
+        ]
+      },
+      "steps_from": "stepsday"
     }
   ],
   "panel": {

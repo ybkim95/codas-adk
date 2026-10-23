@@ -107,3 +107,13 @@ def test_literature_table_shows_whether_search_returned_sources(tmp_path):
     row = table.iloc[0]
     assert row["searches"] == 3 and row["with sources"] == 1
     assert row["what came back"].startswith("Literature grounding failed: 403 PERMISSION_DENIED (x2)")
+
+
+def test_confirmation_table_shows_the_debate_verdict_and_how_many_checks_ran(tmp_path):
+    import json
+
+    row = {"feature": "f", "status": "replicated", "robust": False, "debate": "concede",
+           "falsification_passed": ["dose-response"], "falsification_failed": ["lag"]}
+    (tmp_path / "x_confirmation.json").write_text(json.dumps({"hypotheses": [row]}))
+    table = views.confirmation_table({"summary_path": str(tmp_path / "s.md")}, "x")
+    assert table.iloc[0]["debate"] == "concede" and table.iloc[0]["checks that ran"] == 2

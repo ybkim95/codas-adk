@@ -375,7 +375,7 @@ def _ml(name: str):
         boots = np.array([b for b in boots if np.isfinite(b)])
         params = json.loads(Counter(chosen).most_common(1)[0][0])
         fixed = clone(pipe).set_params(**{f"model__{k}": v for k, v in params.items()})
-        n_perm = 9 if name in {"random_forest", "gradient_boosting"} else 19
+        n_perm = 19  # the smallest attainable permutation p is 1/(n_perm + 1) = 0.05
         simple = (StratifiedKFold if binary else KFold)(outer, shuffle=True, random_state=seed + 1)
         method = "predict_proba" if binary else "predict"
         null = []

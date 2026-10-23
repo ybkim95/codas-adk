@@ -176,3 +176,64 @@ def test_phenotypes_track_the_latents_that_generated_them():
     assert rho(out.stepsday_acrophase_hour, latents["peak_hour"][idx]) > 0.9
     assert rho(out.stepsday_cosinor_rel_amplitude, latents["rhythm"][idx]) > 0.8
     assert rho(out.sleepstage_onset_sd, latents["onset_sd"][idx]) > 0.8
+
+
+def test_minute_heart_rate_phenotypes_match_a_hand_computation():
+    """Resting, night and day heart rate, the dip, night minute-to-minute variability and heart rate per
+    step from the synthetic minute table, checked against pandas on the same rows and valid days."""
+    from dataclasses import replace as _replace
+    from pathlib import Path as _Path
+
+    import duckdb as _duckdb
+    import numpy as _np
+
+    from codas.aou import cohort as _cohort
+    from codas.aou.cohort import CohortSpec as _Spec, build_cohort_sql as _sql
+    from codas.aou.phenotypes import PhenotypeSource
+    from codas.aou.synthetic import (SYNTHETIC_CDR as _CDR, build_synthetic_cdr as _build, duckdb_query as _dq,
+                                     inline_params)
+
+    con = _duckdb.connect()
+    _build(con)
+    base = _Spec.from_json(_Path(__file__).resolve().parents[1] / "scripts/aou/hba1c_fitbit.example.json")
+    steps = PhenotypeSource(kind="minute_activity", table="steps_intraday", prefix="stepsday",
+                            columns={"time": "datetime", "value": "steps"})
+    hr = PhenotypeSource(kind="minute_heart_rate", table=["heart_rate_intraday", "heart_rate_minute_level"],
+                         prefix="hrmin", columns={"time": ["date_time", "datetime"], "value": "heart_rate_value"},
+                         steps_from="stepsday")
+    spec = _replace(base, design="window", lag_days=0, horizon_days=None, holdout_fraction=0.0, valid_day=None,
+                    negative_controls=[], covariates=[], wearables=base.wearables[:1], phenotypes=[steps, hr], panel=None)
+    present = _dq(con)(None, *_cohort.schema_check_sql(spec, _CDR))
+    spec, _notes = _cohort.resolve_sources(spec, list(zip(present.table_name, present.column_name)))
+    assert spec.phenotypes[1].table == "heart_rate_minute_level" and spec.phenotypes[1].columns["time"] == "datetime"
+    sql, params = _sql(spec, _CDR)
+    out = _dq(con)(None, sql.replace("SELECT\n  ie.outcome_value", "SELECT\n  ie.person_id, ie.outcome_value", 1), params)
+    # The SQL's own valid days, from the same CTE chain.
+    days_sql = sql[:sql.rindex("\nSELECT\n")] + "\nSELECT person_id, d FROM valid_days"
+    days = _dq(con)(None, days_sql, params)
+    minutes = con.execute("SELECT * FROM heart_rate_minute_level").df()
+    minutes["d"] = minutes.datetime.dt.date
+    days["d"] = pd.to_datetime(days["d"]).dt.date
+    m = minutes.merge(days, on=["person_id", "d"])
+    m = m[(m.heart_rate_value >= 30) & (m.heart_rate_value <= 220)]
+    m["h"], m["mod"] = m.datetime.dt.hour, m.datetime.dt.hour * 60 + m.datetime.dt.minute
+    pid = m.person_id.value_counts().index[0]
+    one = m[m.person_id == pid].sort_values(["d", "mod"])
+    resting = one.groupby("d").heart_rate_value.apply(lambda v: _np.sort(v.to_numpy())[:30].mean()).mean()
+    night, day = one[one.h < 6].heart_rate_value.mean(), one[(one.h >= 10) & (one.h < 20)].heart_rate_value.mean()
+    gaps = []
+    for _d, g in one.groupby("d"):
+        dv, dm = g.heart_rate_value.diff(), g["mod"].diff()
+        gaps += list(dv[(dm == 1) & (g.h < 6)].abs())
+    st = con.execute("SELECT * FROM steps_intraday").df()
+    st["d"], st["mod"] = st.datetime.dt.date, st.datetime.dt.hour * 60 + st.datetime.dt.minute
+    st = st.merge(days, on=["person_id", "d"])
+    st = st[(st.person_id == pid) & (st.steps > 0)].groupby(["d", "mod"], as_index=False).steps.sum()
+    both = one.merge(st, on=["d", "mod"])
+    slope = _np.cov(both.heart_rate_value, both.steps, bias=True)[0, 1] / both.steps.var(ddof=0)
+    row = out.set_index("person_id").loc[pid]
+    assert row["hrmin_days"] == one.d.nunique()
+    assert abs(row["hrmin_resting_hr"] - resting) < 1e-6 and abs(row["hrmin_night_hr"] - night) < 1e-6
+    assert abs(row["hrmin_day_hr"] - day) < 1e-6 and abs(row["hrmin_night_dip"] - (1 - night / day)) < 1e-9
+    assert abs(row["hrmin_night_masd"] - _np.mean(gaps)) < 1e-6 and abs(row["hrmin_per_step"] - slope) < 1e-6
+    assert inline_params  # imported for symmetry with the other SQL tests

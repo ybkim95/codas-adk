@@ -16,13 +16,18 @@ The base spec's covariates and negative controls are checked against the concept
 way (``verify_covariates``), and each outcome's spec carries the verified covariates and negative
 controls that are not the outcome itself.
 
+Concepts can be named by public code instead of id (``codes``: "SNOMED:44054006", "LOINC:4548-4",
+"ATC:C10AA"); ``resolve_codes`` looks them up in the CDR's own vocabulary before the checks. A survey
+covariate names its question by text (``question_name``); ``verify_covariates`` resolves it to exactly
+one question that this CDR's survey answers use, or skips it with the questions it matched.
+
 Counts are returned as integers for the ranking; ``feasibility_table`` masks 1-20 for display.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +36,7 @@ from codas.aou.cohort import (CohortSpec, OutcomeSpec, WearableSource, build_coh
                               negative_controls_without, output_columns, resolve_cdr)
 from codas.aou.privacy import MASK, SMALL_CELL_MAX
 
-_DOMAIN = {"measurement": "Measurement", "condition": "Condition", "drug": "Drug"}
+_DOMAIN = {"measurement": "Measurement", "condition": "Condition", "drug": "Drug", "survey": "Observation"}
 MIN_MEASUREMENT_N = 1000
 MIN_CASES = 200
 
@@ -45,6 +50,7 @@ class CatalogOutcome:
     expect_name: str
     value_min: float | None = None
     value_max: float | None = None
+    codes: list[str] = field(default_factory=list)
 
     def outcome_spec(self) -> OutcomeSpec:
         return OutcomeSpec(kind=self.kind, concept_ids=list(self.concept_ids), name=self.name,
@@ -55,7 +61,7 @@ def load_catalog(path: str | Path) -> list[CatalogOutcome]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     outcomes = [CatalogOutcome(**item) for item in data["outcomes"]]
     for item in outcomes:
-        item.outcome_spec().validate()
+        OutcomeSpec(kind=item.kind, concept_ids=list(item.concept_ids), name=item.name, codes=list(item.codes)).validate()
     names = [o.name for o in outcomes]
     if len(names) != len(set(names)):
         raise ValueError("Outcome names in the catalog must be unique.")
@@ -83,6 +89,74 @@ def _keep_positive_controls(spec: CohortSpec) -> CohortSpec:
     return spec
 
 
+def resolve_codes(items: list[Any], cdr: str, client: Any) -> list[Any]:
+    """``items`` (catalog outcomes, covariates, negative controls) with the concept ids their ``codes``
+    name in this CDR's vocabulary added; an item whose codes are not all found keeps no ids and fails
+    the concept check with the missing codes."""
+    keys = sorted({c for item in items for c in getattr(item, "codes", None) or []})
+    if not keys:
+        return list(items)
+    sql = (f"SELECT concept_id, CONCAT(vocabulary_id, ':', concept_code) AS code_key FROM `{resolve_cdr(cdr)}.concept`\n"
+           "WHERE CONCAT(vocabulary_id, ':', concept_code) IN UNNEST(@keys)")
+    rows = cohort._query(client, sql, [("keys", "ARRAY<STRING>", keys)])
+    found = {str(k): int(i) for i, k in zip(rows["concept_id"], rows["code_key"])}
+    out = []
+    for item in items:
+        codes = list(getattr(item, "codes", None) or [])
+        if codes and all(c in found for c in codes):
+            item = replace(item, concept_ids=sorted({*item.concept_ids, *(found[c] for c in codes)}))
+        elif codes:
+            item = replace(item, concept_ids=[])
+        out.append(item)
+    return out
+
+
+def resolve_survey_questions(covariates: list[Any], cdr: str, client: Any) -> tuple[list[Any], dict[str, str]]:
+    """Survey covariates with ``question_name`` resolved to the single question concept whose name
+    contains it among the questions this CDR's survey answers use; the others with the reason."""
+    wanted = [c for c in covariates if getattr(c, "kind", "") == "survey" and c.question_name and not c.concept_ids]
+    if not wanted:
+        return list(covariates), {}
+    cdr = resolve_cdr(cdr)
+    sql = (f"SELECT c.concept_id, c.concept_name FROM `{cdr}.concept` c\n"
+           f"WHERE c.concept_id IN (SELECT DISTINCT observation_source_concept_id FROM `{cdr}.observation`)\n"
+           "  AND (" + " OR ".join(f"STRPOS(LOWER(c.concept_name), @q{i}) > 0" for i in range(len(wanted))) + ")")
+    rows = cohort._query(client, sql, [(f"q{i}", "STRING", c.question_name.lower()) for i, c in enumerate(wanted)])
+    names = dict(zip((int(i) for i in rows["concept_id"]), (str(n) for n in rows["concept_name"])))
+    out, problems = [], {}
+    for c in covariates:
+        if c in wanted:
+            hits = sorted(i for i, n in names.items() if c.question_name.lower() in n.lower())
+            if len(hits) != 1:
+                problems[c.name] = (f"no survey question in this CDR has '{c.question_name}' in its name" if not hits else
+                                    f"'{c.question_name}' matches {len(hits)} questions: "
+                                    + "; ".join(names[i] for i in hits[:5]) + " (make question_name more specific)")
+                continue
+            c = replace(c, concept_ids=hits, expect_name=c.expect_name or c.question_name, include_descendants=False)
+        out.append(c)
+    return out, problems
+
+
+def survey_answers(covariate: Any, cdr: str, client: Any) -> Any:
+    """The answers given to a resolved survey question, with how each is coded and how many people gave
+    it (1-20 masked): what the flag means, for review before it is used."""
+    import re
+
+    cdr = resolve_cdr(cdr)
+    sql = (f"SELECT a.concept_name AS answer, COUNT(DISTINCT o.person_id) AS people FROM `{cdr}.observation` o\n"
+           f"LEFT JOIN `{cdr}.concept` a ON a.concept_id = o.value_source_concept_id\n"
+           "WHERE o.observation_source_concept_id IN UNNEST(@ids) GROUP BY a.concept_name ORDER BY people DESC")
+    frame = cohort._query(client, sql, [("ids", "ARRAY<INT64>", list(covariate.concept_ids))])
+    def coded(answer: Any) -> str:
+        text = str(answer or "").lower()
+        if not text or re.search(covariate.missing_answers.lower(), text):
+            return "missing"
+        return "1" if re.search(covariate.positive_answers.lower(), text) else "0"
+    frame["coded as"] = [coded(a) for a in frame["answer"]]
+    frame["people"] = [MASK if 1 <= int(n) <= SMALL_CELL_MAX else int(n) for n in frame["people"]]
+    return frame
+
+
 def concept_check_sql(outcomes: list[CatalogOutcome], cdr: str) -> tuple[str, list[cohort.QueryParam]]:
     ids = sorted({cid for o in outcomes for cid in o.concept_ids})
     sql = (f"SELECT concept_id, concept_name, standard_concept, domain_id FROM `{resolve_cdr(cdr)}.concept`\n"
@@ -96,6 +170,9 @@ def check_concepts(outcomes: list[CatalogOutcome], rows: list[dict[str, Any]]) -
     result: dict[str, str | None] = {}
     for o in outcomes:
         problem = None
+        if not o.concept_ids and getattr(o, "codes", None):
+            result[o.name] = f"codes {', '.join(o.codes)} not found in this CDR's vocabulary"
+            continue
         for cid in o.concept_ids:
             row = by_id.get(cid)
             if row is None:
@@ -122,7 +199,16 @@ def verify_covariates(base: CohortSpec, cdr: str, client: Any) -> tuple[CohortSp
     check, and the reason each dropped one failed (negative controls are keyed ``negative control <name>``)."""
     if not base.covariates and not base.negative_controls:
         return base, {}
-    failed = {name: reason for name, reason in verify_catalog(base.covariates, cdr, client).items() if reason}
+    covariates, failed = resolve_survey_questions(resolve_codes(base.covariates, cdr, client), cdr, client)
+    negative_controls = resolve_codes(base.negative_controls, cdr, client)
+    base = replace(base, covariates=covariates, negative_controls=negative_controls)
+    failed.update({name: reason for name, reason in verify_catalog(base.covariates, cdr, client).items() if reason})
+    for c in base.covariates:  # a survey flag needs an answer coded 1 and one coded 0
+        if c.kind == "survey" and c.name not in failed:
+            coded = set(survey_answers(c, cdr, client)["coded as"])
+            if not {"0", "1"} <= coded:
+                failed[c.name] = (f"answers to '{c.question_name}' are coded only as {sorted(coded)}; adjust "
+                                  "positive_answers so some answers are 1 and some 0")
     bad_nc = {f"negative control {name}": reason
               for name, reason in verify_catalog(base.negative_controls, cdr, client).items() if reason}
     spec = replace(base, wearables=list(base.wearables), covariates=[c for c in base.covariates if c.name not in failed],
