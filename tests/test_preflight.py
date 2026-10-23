@@ -20,7 +20,10 @@ def _discovery(tmp_path, n=3000, broken=False):
     f["nc_ctl"] = (tn <= c).astype(float)
     path = tmp_path / "explore_x.csv"
     f.to_csv(path, index=False)
-    (tmp_path / "explore_x.holdout.csv").write_text("never read\n")
+    from codas.aou.cohort import holdout_path
+
+    holdout_path(path).parent.mkdir(parents=True, exist_ok=True)
+    holdout_path(path).write_text("never read\n")
     return path
 
 

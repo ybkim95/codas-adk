@@ -37,16 +37,18 @@ controls and dose-response stay complete-case.
 Positive controls (columns with a known association with the outcome) are tested the same way, to
 show that the confirmation can detect a real effect on this holdout.
 
-Every hypothesis tested on a holdout is appended to a ledger next to the outputs
-(``holdout_ledger.jsonl``), keyed by which participants the holdout holds. Replication is judged on
-the BH q-value across every hypothesis ever tested on that holdout, so re-running the analysis, or
-running other outcomes on the same participants, cannot buy extra chances at a false replication.
+Every hypothesis tested on a holdout is appended to a ledger next to the outputs (``holdout_ledger.jsonl``,
+``codas.aou.ledger``), keyed by which participants the holdout holds, with the verdict it got:
 
-Hypotheses the agents registered from the literature before any statistic existed (``a_priori``
-family, with their predicted direction and how established each is) are tested whatever discovery
-found and judged on BH across that family alone: they were fixed before the data could steer them,
-so they do not pay for the exploratory search. Discovery's validated candidates form the
-``exploratory`` family and are judged on the ledger.
+* a repeat of an earlier (outcome, feature) test, or any hypothesis about an outcome already tested on this
+  holdout, is reported as non-confirmatory and spends nothing;
+* novel hypotheses (emerging or unexplored a-priori hypotheses, and discovery's validated candidates) are
+  judged by online false-discovery-rate control (LORD++) in ledger order, on the one-sided p in the
+  pre-registered direction, so each verdict is final when made and re-running an analysis buys no new chance;
+* established associations form a reference family, tested at 0.05 like positive controls and never counted
+  as discoveries.
+
+Searching the discovery share costs no holdout alpha; only these registered tests do.
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from codas.aou import ledger as ledger_book
 from codas.aou.privacy import mask_identifiers, mask_small_counts
 from codas.core.analyses import rebuild_feature
 from codas.core.imputation import pooled_cox, pooled_partial_spearman_ci
@@ -67,7 +70,11 @@ from codas.core.statistics import safe_spearman
 from codas.core.survival import cox_ph, e_value
 
 NC_PREFIX = "nc_"
-LEDGER_NAME = "holdout_ledger.jsonl"
+LEDGER_NAME = ledger_book.LEDGER_NAME
+# Status shown for each ledger role, by whether its test came out positive.
+_ROLE_STATUS = {ledger_book.NOVEL: {True: "replicated", False: "not replicated"},
+                ledger_book.REFERENCE: {True: "reference reproduced", False: "reference not reproduced"},
+                ledger_book.NON_CONFIRMATORY: {True: "non-confirmatory", False: "non-confirmatory"}}
 DEFAULT_SENSITIVITY_LAG_DAYS = 365
 _MIN_ROWS = 30
 _MIN_CONTROL_EVENTS = 10  # a negative control with fewer events cannot show an association
@@ -100,7 +107,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                 positive_controls: list[str] | tuple[str, ...] = (),
                 sensitivity_lag_days: int = DEFAULT_SENSITIVITY_LAG_DAYS,
                 availability: list[str] | tuple[str, ...] = (), covariate_imputations: int = 0,
-                discovery_csv: str | Path | None = None) -> dict[str, Any]:
+                discovery_csv: str | Path | None = None, outcome: dict[str, Any] | None = None) -> dict[str, Any]:
     """Freeze the final round's validated candidates as hypotheses and write ``<stem>_prereg.json``.
 
     ``negative_controls`` are control names (the holdout has ``nc_<name>`` and ``nc_<name>_days``),
@@ -113,7 +120,10 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
     lowering the hazard. With ``discovery_csv`` (the rows the agents analysed) each exploratory
     candidate's direction is therefore taken from a Cox model on those rows, adjusted for the final
     confounders, as the holdout will test it; the screen's correlation is kept alongside and a
-    disagreement is noted. A-priori hypotheses keep the direction they predicted."""
+    disagreement is noted. A-priori hypotheses keep the direction they predicted.
+
+    ``outcome`` (kind, concept ids, codes, value bounds) identifies the outcome in the holdout ledger, so a
+    later registration about the same outcome is recognised whatever the run is called."""
     report = state.get("latest_report") or {}
     every = {c["feature"]: c for c in report.get("candidates") or []}
     candidates = [c for c in every.values() if c.get("verdict") == "validated"]
@@ -170,6 +180,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
     rounds = state.get("rounds") or []
     record = {
         "stem": stem, "target": state.get("target_column"), "survival_time": survival_time,
+        "outcome": dict(outcome) if outcome else None,
         "confounders": list(state.get("confounder_columns") or []),
         "excluded": list(state.get("excluded_columns") or []),
         "hypotheses": hypotheses, "alpha": 0.05, "correction": "benjamini-hochberg",
@@ -337,29 +348,10 @@ def _negative_controls(frame: pd.DataFrame, x: pd.Series, cov: pd.DataFrame | No
     return out
 
 
-def _ledger_entries(path: Path, key: str) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    entries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        if entry.get("key") == key:
-            entries.append(entry)
-    return entries
-
-
-def ledger_summary(out_dir: Path, key: str, alpha: float = 0.05) -> dict[str, Any]:
-    """Every hypothesis tested on the holdout ``key`` so far, BH-corrected together: how many were
-    tested, from how many registrations, and which replicate on that pooled correction."""
-    entries = _ledger_entries(Path(out_dir) / LEDGER_NAME, key)
-    q = _bh([e["p"] for e in entries])
-    replicated = [f"{e['stem']}: {e['feature']}" for e, qv in zip(entries, q)
-                  if e.get("same_direction") and np.isfinite(qv) and qv <= alpha]
-    return {"key": key, "hypotheses": len(entries), "registrations": len({e["prereg"] for e in entries}),
-            "replicated": replicated}
+def ledger_summary(out_dir: Path, key: str) -> dict[str, Any]:
+    """Everything tested on the holdout ``key`` so far, with the verdicts frozen when each was made
+    (``codas.aou.ledger.summary``)."""
+    return ledger_book.summary(Path(out_dir), key)
 
 
 def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, Any], target: str,
@@ -525,44 +517,36 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
                 row["within_person"] = _within_person(panel, h, target)
             except Exception as exc:  # noqa: BLE001 - evidence only; reported as not computed
                 row["within_person"] = {"error": _error(exc)}
-    for row, q in zip(rows, _bh([r["p"] for r in rows])):
-        row["q"] = q
-    for family in {r["family"] for r in rows}:  # BH within each family as well
-        members = [r for r in rows if r["family"] == family]
-        for row, q in zip(members, _bh([r["p"] for r in members])):
-            row["q_family"] = q
+    # Which looks count, and how each is judged, is the ledger's decision (codas.aou.ledger): repeats and
+    # outcomes already opened on this holdout are non-confirmatory, established associations are a reference
+    # family, and novel hypotheses are judged by online FDR in ledger order with verdicts frozen when made.
+    prior = ledger_book.load(out_dir, ledger_key) if ledger_key is not None else []
+    again = {e["feature"]: e for e in prior if e.get("prereg") == prereg["sha256"] and "role" in e}
+    if again and all(r["feature"] in again for r in rows):  # the same registration confirmed again
+        entries = [again[r["feature"]] for r in rows]
+    else:
+        entries = ledger_book.decide(prior, prereg, rows, prereg.get("outcome"))
+        if ledger_key is not None:
+            ledger_book.append(out_dir, ledger_key, entries)
+    ledger = ledger_book.summary(out_dir, ledger_key) if ledger_key is not None else None
 
-    ledger = None
-    if ledger_key is not None:
-        path = Path(out_dir) / LEDGER_NAME
-        prior = [e for e in _ledger_entries(path, ledger_key) if e.get("prereg") != prereg["sha256"]]
-        mine = [{"key": ledger_key, "prereg": prereg["sha256"], "stem": prereg["stem"], "feature": r["feature"],
-                 "p": r["p"], "same_direction": r.get("same_direction", False), "family": r["family"]}
-                for r in rows if np.isfinite(r["p"])]
-        pooled = _bh([e["p"] for e in prior] + [e["p"] for e in mine])[len(prior):]
-        cumulative = {e["feature"]: q for e, q in zip(mine, pooled)}
-        for row in rows:
-            row["q_ledger"] = cumulative.get(row["feature"], float("nan"))
-        with path.open("a", encoding="utf-8") as fh:
-            for e in mine:
-                fh.write(json.dumps(e, default=str) + "\n")
-        ledger = {"key": ledger_key, "hypotheses": len(prior) + len(mine),
-                  "registrations": len({e["prereg"] for e in prior}) + 1}
-
-    for row in rows:
+    for row, entry in zip(rows, entries):
         if "same_direction" not in row:
             continue
-        # A-priori hypotheses are judged within their own family; exploratory ones on the whole ledger.
-        q = (row["q_family"] if row["family"] == "a_priori"
-             else row["q_ledger"] if ledger is not None else row["q"])
-        row["q_used"] = q
-        row["replicated"] = bool(row["same_direction"] and np.isfinite(q) and q <= prereg["alpha"])
+        row["role"], row["p_one_sided"] = entry["role"], entry["p_one_sided"]
+        if entry.get("reason"):
+            row["role_reason"] = entry["reason"]
+        if entry.get("level") is not None:
+            row["test_level"] = entry["level"]
+        positive = bool(entry.get("rejected"))
+        row["replicated"] = positive and entry["role"] == ledger_book.NOVEL
+        row["reproduced"] = positive and entry["role"] == ledger_book.REFERENCE
         row["status"] = ("test failed" if "effect" in (row.get("errors") or {})
-                         else "replicated" if row["replicated"] else "not replicated")
+                         else _ROLE_STATUS[entry["role"]][positive])
         passed, failed = _falsification(row)
         row["falsification_passed"], row["falsification_failed"] = passed, failed
         # Robust needs at least one falsification test that actually ran, and none that failed.
-        row["robust"] = bool(row["replicated"] and passed and not failed)
+        row["robust"] = bool((row["replicated"] or row["reproduced"]) and passed and not failed)
 
     positive = []
     for column in prereg.get("positive_controls") or []:
@@ -596,12 +580,12 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
         "negative_controls": list(prereg.get("negative_controls") or []),
         "discovery_variants_evaluated": prereg.get("discovery_variants_evaluated"),
         "replicated": sum(1 for r in rows if r.get("replicated")),
-        "robust": sum(1 for r in rows if r.get("robust")),
-        "tested": sum(1 for r in rows if "replicated" in r),
-        "families": {f: {"tested": sum(1 for r in rows if r["family"] == f and "replicated" in r),
-                         "replicated": sum(1 for r in rows if r["family"] == f and r.get("replicated")),
-                         "robust": sum(1 for r in rows if r["family"] == f and r.get("robust"))}
-                     for f in ("a_priori", "exploratory") if any(r["family"] == f for r in rows)}})
+        "robust": sum(1 for r in rows if r.get("robust") and r.get("role") == ledger_book.NOVEL),
+        "tested": sum(1 for r in rows if r.get("role") == ledger_book.NOVEL and "replicated" in r),
+        "reference": {"tested": sum(1 for r in rows if r.get("role") == ledger_book.REFERENCE),
+                      "reproduced": sum(1 for r in rows if r.get("reproduced")),
+                      "robust": sum(1 for r in rows if r.get("robust") and r.get("role") == ledger_book.REFERENCE)},
+        "non_confirmatory": sum(1 for r in rows if r.get("role") == ledger_book.NON_CONFIRMATORY)})
     result["audit"] = audit(result)
     (out_dir / f"{prereg['stem']}_confirmation.json").write_text(json.dumps(result, indent=2, default=str),
                                                                  encoding="utf-8")
@@ -610,6 +594,25 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
 
 def _fmt_q(q: Any) -> str:
     return f"{q:.3g}" if isinstance(q, float) and np.isfinite(q) else ""
+
+
+def _test_text(r: dict[str, Any]) -> str:
+    """The one-sided p in the pre-registered direction and the level it was judged at."""
+    p, level = r.get("p_one_sided"), r.get("test_level")
+    if not isinstance(p, float) or not np.isfinite(p):
+        return ""
+    return f"{p:.3g}" + (f" (level {level:.3g})" if isinstance(level, float) else "")
+
+
+_ROLE_TITLES = {
+    ledger_book.NOVEL: ("Novel hypotheses (emerging or unexplored a-priori hypotheses and exploratory candidates; "
+                        "online false-discovery-rate control, LORD++, in ledger order: each test is judged at the "
+                        "level shown, set only by earlier tests, so the verdict is final)"),
+    ledger_book.REFERENCE: ("Reference associations (established in the literature; each tested at 0.05 like a "
+                            "positive control and never counted as a discovery)"),
+    ledger_book.NON_CONFIRMATORY: ("Not confirmatory (a repeat of an earlier test, or an outcome already tested on "
+                                   "this holdout; reported for completeness, spends nothing)"),
+}
 
 
 def _effect_text(r: dict[str, Any]) -> tuple[str, str, Any]:
@@ -638,7 +641,8 @@ def reconciliation_markdown(result: dict[str, Any], engine_verdicts: dict[str, s
              "The agents' narrative below was written before the holdout was opened. Where it disagrees "
              "with this table (a candidate it calls failed that replicated, or the reverse), this table holds; "
              "the full holdout section follows the narrative.", "",
-             "| feature | family | discovery engine | debate | holdout | q | robust |", "|---|---|---|---|---|---|---|"]
+             "| feature | family | discovery engine | debate | holdout | p (one-sided, level) | robust |",
+             "|---|---|---|---|---|---|---|"]
     for r in result.get("hypotheses") or []:
         family = r.get("family", "exploratory")
         engine = engine_verdicts.get(r["feature"]) or ("registered a priori" if family == "a_priori"
@@ -649,50 +653,47 @@ def reconciliation_markdown(result: dict[str, Any], engine_verdicts: dict[str, s
         holdout = r.get("status", "")
         if effect:
             holdout += f" ({effect}, {ci})"
-        q = r.get("q_used", r.get("q_ledger", r.get("q")))
         robust = "yes" if r.get("robust") else ("no" if "robust" in r else "")
         lines.append(f"| {r['feature']} | {family.replace('_', '-')} | {engine} | {r.get('debate') or '-'} | "
-                     f"{holdout} | {_fmt_q(q)} | {robust} |")
+                     f"{holdout} | {_test_text(r)} | {robust} |")
     return "\n".join(lines) + "\n"
 
 
 def confirmation_markdown(result: dict[str, Any]) -> str:
     """The deterministic replication and falsification section appended to the report."""
     ledger = result.get("ledger")
-    family = (f"BH-corrected across all {ledger['hypotheses']} hypotheses tested on this holdout so far "
-              f"({ledger['registrations']} pre-registrations)" if ledger
-              else "BH-corrected across the pre-registered set")
     looks = result.get("discovery_variants_evaluated")
+    reference = result.get("reference") or {}
     lines = ["## Holdout replication (pre-registered, deterministic)", "",
-             f"{result['replicated']} of {result['tested']} pre-registered candidates replicated on the sealed "
-             f"holdout ({result['holdout_rows']} participants; {family}; adjusted for "
-             f"{', '.join(result['confounders']) or 'nothing'}"
+             f"{result['replicated']} of {result['tested']} novel hypotheses replicated on the sealed holdout "
+             f"({result['holdout_rows']} participants; online false-discovery-rate control across every novel "
+             f"hypothesis tested on these participants; adjusted for {', '.join(result['confounders']) or 'nothing'}"
              + (f", missing confounder values multiply imputed ({result['covariate_imputations']} draws, "
                 "complete-case estimates kept alongside)" if result.get("covariate_imputations") else "")
-             + f"), and {result.get('robust', 0)} also passed every "
-             f"falsification test that could run. The agents never saw these data or results"
+             + f"), and {result.get('robust', 0)} also passed every falsification test that could run. "
+             + (f"{reference.get('reproduced', 0)} of {reference.get('tested', 0)} reference (established) "
+                "associations were reproduced. " if reference.get("tested") else "")
+             + (f"{result['non_confirmatory']} hypotheses are not confirmatory (repeats or an outcome already "
+                "tested on this holdout). " if result.get("non_confirmatory") else "")
+             + "The agents never saw these data or results"
              + (f"; discovery evaluated {looks} candidate variants before registering" if looks else "")
              + f". Pre-registration hash: `{result['prereg_sha256'][:16]}`.", ""]
+    if ledger:
+        lines += [f"The ledger for these participants holds {ledger['hypotheses']} hypotheses from "
+                  f"{ledger['registrations']} registrations ({ledger.get('novel_tested', 0)} novel tests so far); "
+                  f"the next novel test will be judged at level {ledger.get('next_level', float('nan')):.3g}.", ""]
     if result.get("audit"):
         lines += ["**Checks of this analysis** (read before the table):", "",
                   *[f"- {flag}" for flag in result["audit"]], ""]
-    families = result.get("families") or {}
-    groups = [("a_priori", "A-priori hypotheses (registered from the literature before any statistic existed; "
-                           "direction as predicted; BH within this family of {n})"),
-              ("exploratory", "Exploratory candidates (validated in discovery; " + family + ")")]
-    for key, title in groups:
-        members = [r for r in result["hypotheses"] if r.get("family", "exploratory") == key]
+    for role in (ledger_book.NOVEL, ledger_book.REFERENCE, ledger_book.NON_CONFIRMATORY):
+        members = [r for r in result["hypotheses"] if r.get("role", ledger_book.NOVEL) == role]
         if not members:
             continue
-        if len(families) > 1 or key == "a_priori":
-            counts = families.get(key, {})
-            lines += [f"**{title.format(n=len(members))}**: {counts.get('replicated', 0)} of "
-                      f"{counts.get('tested', 0)} replicated, {counts.get('robust', 0)} robust.", ""]
-        lines += ["| feature | discovery | holdout effect | 95% CI | q | E-value | status | dose-response | "
-                  "falsification failed |", "|---|---|---|---|---|---|---|---|---|"]
+        lines += [f"**{_ROLE_TITLES[role]}**", "",
+                  "| feature | family | discovery | holdout effect | 95% CI | p (one-sided, level) | E-value | status | "
+                  "dose-response | falsification failed |", "|---|---|---|---|---|---|---|---|---|---|"]
         for r in members:
             effect, ci, ev = _effect_text(r)
-            q = r.get("q_used", r.get("q_ledger", r.get("q")))
             dose = r.get("dose_response")
             dose_text = "" if dose is None else ("monotone" if dose["monotone"] else "not monotone")
             status = r.get("status", "") + (" (robust)" if r.get("robust") else "")
@@ -700,8 +701,11 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
                 status += f"; {r['knownness']}"
             if r.get("debate"):
                 status += f"; debate: {r['debate']}"
-            lines.append(f"| {r['feature']} | {_discovery_text(r)} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
-                         f"{dose_text} | {', '.join(r.get('falsification_failed') or []) or '-'} |")
+            if r.get("role_reason"):
+                status += f"; {r['role_reason']}"
+            lines.append(f"| {r['feature']} | {r.get('family', 'exploratory').replace('_', '-')} | {_discovery_text(r)} | "
+                         f"{effect} | {ci} | {_test_text(r)} | {ev} | {status} | {dose_text} | "
+                         f"{', '.join(r.get('falsification_failed') or []) or '-'} |")
         lines.append("")
     failed_checks = [f"{r['feature']}: {', '.join(f'{k} ({v})' for k, v in r['errors'].items())}"
                      for r in result["hypotheses"] if r.get("errors")]

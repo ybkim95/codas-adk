@@ -455,7 +455,10 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
         if prereg["survival_time"]:  # a time-to-event direction comes from the discovery Cox model
             assert all(h.get("direction_from") for h in prereg["hypotheses"] if h["family"] == "exploratory")
         # The agents analysed only the discovery share; the sealed share never reached a model request.
-        discovery, sealed = pd.read_csv(RUN_DIR / f"{stem}.csv"), pd.read_csv(RUN_DIR / f"{stem}.holdout.csv")
+        from codas.aou.cohort import holdout_path
+
+        discovery, sealed = pd.read_csv(RUN_DIR / f"{stem}.csv"), pd.read_csv(holdout_path(RUN_DIR / f"{stem}.csv"))
+        assert holdout_path(RUN_DIR / f"{stem}.csv").parent.name == "sealed"
         assert len(discovery) and len(sealed)
         # Negative controls reach the sealed table only, and every candidate is tested against them.
         assert "nc_impacted_cerumen" in sealed.columns and not any(c.startswith("nc_") for c in discovery.columns)
@@ -469,7 +472,7 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
         assert [pc["control"] for pc in confirmation["positive_controls"]] == ["age", "bmi_cov"]
         first = confirmation["hypotheses"][0]  # registered before any statistic: tested in its own family
         assert first["feature"] == "act_steps_mean" and first["family"] == "a_priori"
-        assert first["knownness"] == "established" and "a_priori" in confirmation["families"]
+        assert first["knownness"] == "established" and first["role"] in {"reference", "non_confirmatory"}
         assert confirmation["ledger"]["registrations"] >= 1
         kinds[stem] = prereg["survival_time"]
     # One measurement (value outcome) and one condition (time to event, tested with Cox).

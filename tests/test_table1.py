@@ -22,6 +22,7 @@ def test_counts_and_percents_are_masked_where_they_would_reveal_a_small_count(tm
                          "act_steps_mean": [1.0] * n, "act_steps_sd": [1.0] * n})
     path = tmp_path / "t.csv"
     disc.to_csv(path, index=False)
+    cohort.holdout_path(path).parent.mkdir(parents=True, exist_ok=True)  # the sealed share's own folder
     disc.head(15).to_csv(cohort.holdout_path(path), index=False)
     table = cohort_table(spec, path)
     rows = {r[0]: r[1:] for r in table["rows"]}

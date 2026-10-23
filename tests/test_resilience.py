@@ -278,9 +278,11 @@ def test_wear_adherence_is_adjustment_only_and_covariates_are_imputed(synthetic_
 
 def test_lessons_from_one_outcome_reach_the_next_without_changing_resume_keys(synthetic_explore, monkeypatch):
     goals: list[str] = []
+    states: list[dict] = []
 
     def capture(csv, goal, on_tool_call=None, context_columns=None, recorder=None, state=None, **_):
         goals.append(goal)
+        states.append(dict(state or {}))
         out = _fake_state()
         if len(goals) == 1:
             out["lessons"] = [{"lesson": "act_days measures how much the device was worn, not physiology",
@@ -291,8 +293,11 @@ def test_lessons_from_one_outcome_reach_the_next_without_changing_resume_keys(sy
     explore, _calls, _failing = synthetic_explore
     explore()
     assert len(goals) == 2
-    assert "Lessons from earlier analyses" not in goals[0]
-    assert "act_days measures how much the device was worn" in goals[1]
+    # Lessons come from other outcomes' discovery statistics: never in the goal the a-priori stage reads,
+    # only in state, from which the tools reveal them once registration has closed.
+    assert not any("act_days measures how much the device was worn" in g for g in goals)
+    assert states[0]["prior_lessons"] == []
+    assert "act_days measures how much the device was worn" in "; ".join(states[1]["prior_lessons"])
     memory = (RUN_DIR / "codas_memory.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(memory) == 1 and "act_days" in memory[0]
     goals.clear()

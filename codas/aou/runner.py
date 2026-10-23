@@ -88,12 +88,10 @@ PANEL_NOTE = (" A repeated-measures panel is also available for a within-person 
               "of the outcome paired with the wearable summary of the {period} days before it (run_mixed_model). A "
               "within-person effect compares a person with themselves, so stable differences between people "
               "(adherence, body size, socioeconomic position) cannot produce it.")
-LESSONS_NOTE = (" Lessons from earlier analyses of this cohort's discovery share (other outcomes), recorded by "
-                "the agents from their evidence: {lessons}.")
 MEMORY_NAME = "codas_memory.jsonl"
 
 
-def goal_for(spec: CohortSpec, label: str | None = None, lessons: list[str] | None = None) -> str:
+def goal_for(spec: CohortSpec, label: str | None = None) -> str:
     kind = spec.outcome.kind
     note = "first qualifying lab value" if kind == "measurement" else "1 = diagnosed, 0 = not"
     index_note = INDEX_NOTES[kind]
@@ -121,8 +119,6 @@ def goal_for(spec: CohortSpec, label: str | None = None, lessons: list[str] | No
         covariates += IMPUTATION_NOTE.format(m=COVARIATE_IMPUTATIONS)
     if cohort.has_panel(spec):
         covariates += PANEL_NOTE.format(period=spec.panel["period_days"])
-    if lessons:
-        covariates += LESSONS_NOTE.format(lessons="; ".join(lessons))
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
                                 target_note=note, window=spec.window_days, index_note=index_note,
                                 covariates=covariates)
@@ -371,8 +367,8 @@ def _code_version() -> str:
 # The code that decides what an outcome's results are. Changes elsewhere (the notebook, the background
 # job, report rendering, views) leave finished outcomes reusable; a change here reruns them.
 ANALYSIS_CODE = ("codas/core", "codas/agents", "codas/aou/cohort.py", "codas/aou/phenotypes.py",
-                 "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/privacy.py",
-                 "codas/aou/table1.py")
+                 "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/ledger.py",
+                 "codas/aou/privacy.py", "codas/aou/table1.py")
 
 
 def _analysis_version(root: Path | None = None) -> str:
@@ -482,15 +478,19 @@ def _ledger_lines(out: Path, keys: list[str]) -> list[str]:
         led = ledger_summary(out, key)
         if not led["hypotheses"]:
             continue
-        # A candidate registered by several runs is listed once, with how many registrations replicated it.
-        hits = led["replicated"]
-        led["replicated"] = [h if hits.count(h) == 1 else f"{h} (x{hits.count(h)})" for h in dict.fromkeys(hits)]
         lines += ["## Sealed holdout ledger", "",
-                  f"{led['hypotheses']} hypotheses from {led['registrations']} pre-registrations have been tested on "
-                  "this holdout. Corrected together (BH, q <= 0.05, same direction as discovery), "
-                  f"{len(led['replicated'])} distinct candidates replicate"
-                  + (": " + "; ".join(led["replicated"]) if led["replicated"] else "")
-                  + ".", ""]
+                  f"{led['hypotheses']} hypotheses from {led['registrations']} registrations have been tested on "
+                  f"this holdout. Novel tests under online false-discovery-rate control: {led['novel_tested']}, of "
+                  f"which {len(led['novel_replicated'])} replicated"
+                  + (": " + "; ".join(led["novel_replicated"]) if led["novel_replicated"] else "")
+                  + f". Reference (established) associations: {len(led['reference_reproduced'])} of "
+                  f"{led['reference_tested']} reproduced. Not confirmatory: {led['non_confirmatory']} (repeats or "
+                  f"outcomes already tested here). The next novel test will be judged at level "
+                  f"{led['next_level']:.3g}.", ""]
+        if led["legacy"]:
+            lines += [f"{led['legacy']} earlier hypotheses were tested before verdicts were frozen; their outcomes "
+                      f"({', '.join(led['legacy_outcomes'])}) count as already tested, so new registrations about "
+                      "them are not confirmatory.", ""]
     return lines
 
 
@@ -589,6 +589,13 @@ def preflight(csv: str | Path, out_dir: str | Path, *, stem: str, target: str, s
     return {"flags": flags, "fatal": fatal, "duplicates": _duplicate_columns(numeric)}
 
 
+def outcome_identity(spec: CohortSpec) -> dict[str, Any]:
+    """What the outcome is, independent of what the run is called: the holdout ledger's outcome key."""
+    o = spec.outcome
+    return {"kind": o.kind, "concept_ids": sorted(int(c) for c in o.concept_ids), "codes": sorted(o.codes),
+            "value_min": o.value_min, "value_max": o.value_max}
+
+
 def _preflight_args(spec: CohortSpec, csv: Path) -> dict[str, Any]:
     """What the holdout test of this spec would use: every covariate the agents could adjust for and one
     stand-in hypothesis per wearable source and phenotype source."""
@@ -606,7 +613,9 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None,
              on_agent: Any = None, lessons: list[str] | None = None) -> dict[str, Any]:
     """Extract one cohort, run the agents on it, save the masked outputs and the agent trace. ``lessons``
-    are earlier outcomes' lessons about this cohort, given to the agents in the goal."""
+    are earlier outcomes' lessons about this cohort. They come from other outcomes' discovery statistics on
+    the same people, so the agents see them only once registration has closed (state ``cohort_lessons``),
+    never in the goal."""
     if check_schema:  # fit optional sources to this CDR first, so the goal and context match the table
         if client is None:
             from google.cloud import bigquery
@@ -622,7 +631,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         state, recorder = saved
     else:
         checked = None
-        goal = goal_for(spec, label, lessons)
+        goal = goal_for(spec, label)
         if PREFLIGHT:  # minutes on the discovery share, before hours of agents
             checked = preflight(csv, out / "preflight", **_preflight_args(spec, csv))
             if checked["fatal"]:
@@ -650,7 +659,8 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                              negative_controls=[c.name for c in spec.negative_controls],
                              positive_controls=list(spec.positive_controls),
                              availability=cohort.availability_columns(spec),
-                             covariate_imputations=CONFIRM_IMPUTATIONS, discovery_csv=csv)
+                             covariate_imputations=CONFIRM_IMPUTATIONS, discovery_csv=csv,
+                             outcome=outcome_identity(spec))
         # The pre-registration is on disk before the holdout is read.
         sealed_panel = holdout_path(cohort.panel_path(csv))
         result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr),

@@ -229,7 +229,7 @@ def _analysis_figures(analyses: list[dict[str, Any]]) -> list[tuple[str, list[tu
 def _forest_items(confirmation: dict[str, Any]) -> tuple[list[tuple], list[tuple]]:
     """(hazard-ratio rows, correlation rows) from a confirmation result: candidates, then positive controls."""
     cox, rank = [], []
-    rows = [(r["feature"], r, bool(r.get("replicated"))) for r in confirmation.get("hypotheses") or []]
+    rows = [(r["feature"], r, bool(r.get("replicated") or r.get("reproduced"))) for r in confirmation.get("hypotheses") or []]
     rows += [(f"positive control: {r['control']}", r, bool(r.get("detected"))) for r in confirmation.get("positive_controls") or []]
     for label, r, filled in rows:
         ci = r.get("ci95") or [None, None]

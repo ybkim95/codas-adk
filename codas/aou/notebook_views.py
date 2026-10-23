@@ -360,7 +360,7 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
         ci = h.get("ci95") or [None, None]
         effect = (f"HR/SD {h.get('hr_per_sd')}" if h.get("test") == "cox" else
                   f"rho {h.get('rho')}" if "rho" in h else "")
-        q = h.get("q_used", h.get("q_ledger", h.get("q")))
+        p_one, level = h.get("p_one_sided"), h.get("test_level")
         family = h.get("family", "exploratory").replace("_", "-")
         adherence = h.get("adherence_adjusted")
         rows.append({"feature": h["feature"],
@@ -369,13 +369,16 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
                                    + (f"; HR {h['discovery_hr']}" if h.get("discovery_hr") is not None else "")),
                      "holdout effect": effect,
                      "95% CI": "" if ci[0] is None else f"{ci[0]} to {ci[1]}",
-                     "q": None if not isinstance(q, float) or not np.isfinite(q) else round(q, 4),
+                     "role": (h.get("role") or "").replace("_", "-"),
+                     "p (one-sided)": None if not isinstance(p_one, float) or not np.isfinite(p_one) else float(f"{p_one:.3g}"),
+                     "level": None if not isinstance(level, float) else float(f"{level:.3g}"),
                      "status": h.get("status"), "robust": h.get("robust"), "debate": h.get("debate") or "",
                      "checks that ran": len(h.get("falsification_passed") or []) + len(h.get("falsification_failed") or []),
                      "holds after adherence": None if adherence is None else adherence.get("holds"),
                      "within-person": _within_text(h.get("within_person")),
                      "failed checks": ", ".join(h.get("falsification_failed") or []) or "-"})
-    columns = ["feature", "family", "discovery", "holdout effect", "95% CI", "q", "status", "robust", "debate",
+    columns = ["feature", "family", "role", "discovery", "holdout effect", "95% CI", "p (one-sided)", "level", "status",
+               "robust", "debate",
                "checks that ran", "holds after adherence", "within-person", "failed checks"]
     return pd.DataFrame(rows, columns=columns)  # keeps its columns when nothing was pre-registered
 

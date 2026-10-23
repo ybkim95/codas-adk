@@ -35,7 +35,7 @@ def test_continuous_outcome_replication_and_tamper_check(tmp_path):
     status = {r["feature"]: r["status"] for r in result["hypotheses"]}
     assert status == {"a_over_b": "replicated", "f1": "replicated", "prod_cf2": "replicated", "f2": "not replicated"}
     assert result["replicated"] == 3 and result["tested"] == 4 and result["confounders"] == ["age"]
-    assert "3 of 4 pre-registered candidates replicated" in confirmation_markdown(result)
+    assert "3 of 4 novel hypotheses replicated" in confirmation_markdown(result)
     tampered = {**prereg, "hypotheses": prereg["hypotheses"][:1]}
     with pytest.raises(ValueError, match="modified"):
         confirm(tampered, tmp_path / "x.holdout.csv", tmp_path)
@@ -109,31 +109,53 @@ def test_dose_response_is_not_monotone_for_a_threshold_reversal(tmp_path):
     assert x["falsification_failed"] == ["dose-response"] and not x["robust"]
 
 
-def test_ledger_pools_every_hypothesis_tested_on_the_same_holdout(tmp_path):
+def test_ledger_never_lets_a_rerun_or_a_known_outcome_count_again(tmp_path):
+    """One cumulative ledger per holdout: a repeat of an (outcome, feature) test, or any later registration
+    about an outcome already tested there, is reported but not confirmatory; novel tests are judged by online
+    FDR in ledger order, with verdicts frozen when made."""
+    from codas.aou import ledger
+
     rng = np.random.default_rng(5)
-    n = 300
+    n = 3000
     h = pd.DataFrame({f"f{i}": rng.normal(size=n) for i in range(8)})
     h["y"] = 0.17 * h.f0 + rng.normal(size=n)
     h.to_csv(tmp_path / "l.holdout.csv", index=False)
-    first = preregister(_state([_cand("f0", 0.2, ["f0"])], []), tmp_path, "l")
+    outcome_a, outcome_b = {"kind": "measurement", "concept_ids": [1]}, {"kind": "measurement", "concept_ids": [2]}
+    first = preregister(_state([_cand("f0", 0.2, ["f0"])], []), tmp_path, "l", outcome=outcome_a)
     alone = confirm(first, tmp_path / "l.holdout.csv", tmp_path, ledger_key="k")
-    assert alone["ledger"] == {"key": "k", "hypotheses": 1, "registrations": 1}
+    (f0,) = alone["hypotheses"]
+    assert f0["role"] == "novel" and f0["replicated"] and f0["test_level"] == pytest.approx(ledger.lord_level(1, []))
+    # A second run on the same outcome (renamed, more candidates, f0 again): nothing in it is confirmatory.
     many = [_cand(f"f{i}", 0.1, [f"f{i}"]) for i in range(1, 8)] + [_cand("f0", 0.2, ["f0"])]
-    second = preregister(_state(many, []), tmp_path, "l2")
-    pooled = confirm(second, tmp_path / "l.holdout.csv", tmp_path, ledger_key="k")
-    assert pooled["ledger"] == {"key": "k", "hypotheses": 9, "registrations": 2}
-    f0 = next(r for r in pooled["hypotheses"] if r["feature"] == "f0")
-    from codas.aou.confirm import _bh
-    looks = [alone["hypotheses"][0]["p"]] + [r["p"] for r in pooled["hypotheses"]]
-    at = 1 + [r["feature"] for r in pooled["hypotheses"]].index("f0")
-    assert f0["q_ledger"] == pytest.approx(_bh(looks)[at])  # BH over all nine looks at the holdout
-    assert f0["q_ledger"] > alone["hypotheses"][0]["q_ledger"]  # more looks, a stricter bar for f0
-    again = confirm(second, tmp_path / "l.holdout.csv", tmp_path, ledger_key="k")  # the same registration
-    assert again["ledger"]["hypotheses"] == 9  # is not counted twice
-    other = confirm(first, tmp_path / "l.holdout.csv", tmp_path, ledger_key="other-holdout")
-    assert other["ledger"]["hypotheses"] == 1
-    from codas.aou.confirm import ledger_summary
-    assert ledger_summary(tmp_path, "k")["hypotheses"] == 17  # the file keeps every look, repeats included
+    second = preregister(_state(many, []), tmp_path, "l_renamed", outcome=outcome_a)
+    rerun = confirm(second, tmp_path / "l.holdout.csv", tmp_path, ledger_key="k")
+    roles = {r["feature"]: (r["role"], r.get("role_reason", "")) for r in rerun["hypotheses"]}
+    assert all(role == "non_confirmatory" for role, _ in roles.values())
+    assert "repeat" in roles["f0"][1] and "already tested" in roles["f1"][1]
+    assert rerun["replicated"] == 0 and rerun["tested"] == 0 and rerun["non_confirmatory"] == 8
+    # Confirming the same registration again adds nothing and changes no verdict.
+    again = confirm(second, tmp_path / "l.holdout.csv", tmp_path, ledger_key="k")
+    assert again["ledger"]["hypotheses"] == 9 and [r["status"] for r in again["hypotheses"]] == \
+        [r["status"] for r in rerun["hypotheses"]]
+    # A new outcome continues the online stream: its first test comes after f0's rejection.
+    third = preregister(_state([_cand("f0", 0.2, ["f0"])], []), tmp_path, "m", outcome=outcome_b)
+    fresh = confirm(third, tmp_path / "l.holdout.csv", tmp_path, ledger_key="k")
+    assert fresh["hypotheses"][0]["role"] == "novel"
+    assert fresh["hypotheses"][0]["test_level"] == pytest.approx(ledger.lord_level(2, [1]))
+    summary = ledger.summary(tmp_path, "k")
+    assert summary["novel_tested"] == 2 and summary["non_confirmatory"] == 8 and summary["hypotheses"] == 10
+    assert confirm(first, tmp_path / "l.holdout.csv", tmp_path, ledger_key="other")["ledger"]["hypotheses"] == 1
+
+
+def test_lord_levels_are_valid_and_reward_discoveries():
+    from codas.aou import ledger
+
+    assert sum(ledger.gamma(j) for j in range(1, 200000)) < 1  # the spending sequence never overspends
+    levels = [ledger.lord_level(t, []) for t in range(1, 50)]
+    assert all(b <= a for a, b in zip(levels, levels[1:])) and levels[0] < ledger.ALPHA
+    assert ledger.lord_level(5, [1, 3]) > ledger.lord_level(5, [])  # earlier discoveries earn more wealth
+    assert ledger.one_sided_p(0.04, True) == pytest.approx(0.02)
+    assert ledger.one_sided_p(0.04, False) == pytest.approx(0.98)
 
 
 def _adherence_holdout(rng, n=6000):
@@ -183,12 +205,12 @@ def test_missing_confounder_is_imputed_on_the_holdout(tmp_path):
     assert mi["complete_case"]["n"] == cc["n"]
 
 
-def test_a_priori_hypotheses_form_their_own_family(tmp_path):
+def test_established_hypotheses_form_a_reference_family_and_old_entries_open_their_outcomes(tmp_path):
     rng = np.random.default_rng(21)
     n = 6000
     h = pd.DataFrame({"f1": rng.normal(size=n), "f2": rng.normal(size=n), "p1": rng.normal(size=n),
                       "p2": rng.normal(size=n), "age": rng.normal(size=n)})
-    h["y"] = 0.25 * h.f1 + 0.04 * h.p1 + rng.normal(size=n)  # p1: a small real effect (p around 0.002)
+    h["y"] = 0.25 * h.f1 + 0.08 * h.p1 + rng.normal(size=n)
     h.to_csv(tmp_path / "a.holdout.csv", index=False)
     state = _state([_cand("f1", 0.2, ["f1"]), _cand("f2", 0.1, ["f2"])], ["age"])
     state["a_priori_hypotheses"] = [
@@ -199,17 +221,22 @@ def test_a_priori_hypotheses_form_their_own_family(tmp_path):
     prereg = preregister(state, tmp_path, "a")
     fam = {x["feature"]: x["family"] for x in prereg["hypotheses"]}
     assert fam == {"p1": "a_priori", "p2": "a_priori", "f1": "a_priori", "f2": "exploratory"}
-    # Many earlier hypotheses on this holdout: the exploratory family pays for them, the a-priori one does not.
+    # Entries written before verdicts were frozen: their outcome ("old") counts as opened, nothing else.
     ledger = tmp_path / "holdout_ledger.jsonl"
     ledger.write_text("".join(json.dumps({"key": "k", "prereg": f"old{i}", "stem": "old", "feature": f"x{i}",
                                           "p": 0.5, "same_direction": False}) + "\n" for i in range(200)))
     result = confirm(prereg, tmp_path / "a.holdout.csv", tmp_path, ledger_key="k")
     rows = {r["feature"]: r for r in result["hypotheses"]}
-    assert rows["p1"]["family"] == "a_priori" and rows["p1"]["replicated"]       # BH over 3, not 205
-    assert rows["p1"]["q_family"] < 0.05 < rows["p1"]["q_ledger"]
-    assert not rows["p2"]["replicated"] and rows["f1"]["knownness"] == "established"
+    assert rows["f1"]["role"] == "reference" and rows["f1"]["reproduced"] and not rows["f1"]["replicated"]
+    assert rows["p1"]["role"] == "novel" and rows["p1"]["replicated"]       # judged online, not against 200 old looks
+    assert rows["p2"]["role"] == "novel" and not rows["p2"]["replicated"]
+    assert result["reference"] == {"tested": 1, "reproduced": 1, "robust": result["reference"]["robust"]}
+    assert result["ledger"]["legacy"] == 200 and result["ledger"]["legacy_outcomes"] == ["old"]
     md = confirmation_markdown(result)
-    assert "A-priori hypotheses" in md and "Exploratory candidates" in md
+    assert "Novel hypotheses" in md and "Reference associations" in md
+    later = preregister({**state, "a_priori_hypotheses": []}, tmp_path, "old")  # an outcome tested before
+    assert all(r["role"] == "non_confirmatory" for r in confirm(later, tmp_path / "a.holdout.csv", tmp_path,
+                                                                 ledger_key="k")["hypotheses"])
 
 
 def test_within_person_effect_is_reported_from_the_sealed_panel(tmp_path):

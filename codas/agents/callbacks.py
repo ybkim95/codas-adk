@@ -32,10 +32,16 @@ ALLOWED_DATA_ROOTS = [
 ]
 
 
+# The sealed replication shares, and caches that hold every participant, are never an agent's input.
+SEALED_DIR_NAME = "sealed"
+
+
 def _is_allowed_path(value: str) -> bool:
     try:
         path = Path(value).expanduser().resolve()
     except OSError:
+        return False
+    if SEALED_DIR_NAME in path.parts or path.name.endswith(".holdout.csv"):
         return False
     return any(path == root or root in path.parents for root in ALLOWED_DATA_ROOTS)
 

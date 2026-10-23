@@ -76,8 +76,18 @@ _ROUND_RESAMPLES = int(os.getenv("CODAS_ROUND_RESAMPLES", "1000"))
 _MIN_METRIC_GAIN = float(os.getenv("CODAS_CONVERGENCE_MIN_METRIC_GAIN", "0.01"))
 
 
+def registration_open(state: Any) -> bool:
+    """True until the first discovery round runs: hypotheses registered now are a priori, so no tool may
+    return anything computed from the outcome (its association with a feature, or with an outcome proxy).
+    The information barrier is enforced here, in the tools, not left to the prompts."""
+    return not (state.get("rounds") if state is not None else None)
+
+
 def _resolve_csv_path(state_path: Any, arg_path: str | None) -> Path | None:
-    raw = (arg_path or "").strip() or (str(state_path).strip() if state_path else "")
+    # In All of Us mode the dataset is fixed by the runner: a path an agent supplies is ignored, so no tool
+    # call can reach the sealed share or a cache that holds every participant.
+    raw = "" if aou_mode() else (arg_path or "").strip()
+    raw = raw or (str(state_path).strip() if state_path else "")
     if not raw:
         return None
     return Path(raw).expanduser().resolve()
@@ -413,7 +423,8 @@ def propose_feature(
     exploratory: dict[str, Any] | None = None
     path = _resolve_csv_path(tool_context.state.get("csv_path"), "")
     target = str(tool_context.state.get("target_column") or "").strip()
-    if path is not None and target:
+    withheld = registration_open(tool_context.state)  # a priori: no association with the outcome yet
+    if path is not None and target and not withheld:
         try:
             df = read_csv_dataset(path)
             if all(c in df.columns for c in (feature_a, feature_b, target)):
@@ -433,8 +444,10 @@ def propose_feature(
         "feature_a": feature_a,
         "feature_b": feature_b,
         "exploratory_association": exploratory,
-        "note": "Registered. The next discovery round screens and validates this feature with the full "
-                "FDR correction and validation battery; the exploratory rho is a preview, not the verdict.",
+        "note": ("Registered. Its association with the outcome is withheld until the first discovery round, so "
+                 "hypotheses registered now stay a priori." if withheld else
+                 "Registered. The next discovery round screens and validates this feature with the full "
+                 "FDR correction and validation battery; the exploratory rho is a preview, not the verdict."),
         "proposed_features": [p["name"] for p in proposals],
     })
 
@@ -543,6 +556,8 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
     tool_context.state["rounds"] = rounds + [summary]
     tool_context.state["fact_sheet"] = report.get("fact_sheet", {})
     tool_context.state["latest_report"] = report
+    if not rounds:  # registration has just closed: what earlier outcomes taught may now be shown
+        tool_context.state["cohort_lessons"] = list(tool_context.state.get("prior_lessons") or [])
     return summary
 
 

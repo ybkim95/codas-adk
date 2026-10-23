@@ -103,7 +103,8 @@ def test_after_tool_sanitizes_response_and_memory(aou):
 
 
 def test_preview_withholds_rows_in_aou(aou):
-    out = preview_columns(str(SAMPLE))
+    # In All of Us mode the dataset comes from shared memory only; a path an agent passes is ignored.
+    out = preview_columns("/somewhere/else.csv", tool_context=SimpleNamespace(state={"csv_path": str(SAMPLE)}))
     assert out["columns"] and "preview_rows" not in out
 
 
@@ -261,12 +262,35 @@ def test_bigquery_jobs_record_and_print_the_bytes_billed(monkeypatch, capsys, tm
         def result(self):
             return SimpleNamespace(to_dataframe=lambda: pd.DataFrame({"a": [1]}))
 
-    monkeypatch.setattr(cohort, "_job_config", lambda params: None)
+    configs = []
+    monkeypatch.setattr(cohort, "_job_config", lambda params, **options: options)
+    client = SimpleNamespace(query=lambda sql, job_config=None: (
+        configs.append(job_config), SimpleNamespace(total_bytes_processed=2 * 10**12)
+        if job_config.get("dry_run") else Job())[1])
     start = len(cohort.QUERY_LOG)
-    cohort._query(SimpleNamespace(query=lambda sql, job_config=None: Job()), "SELECT 1", [])
+    cohort._query(client, "SELECT 1", [])
     assert cohort.QUERY_LOG[start]["bytes_billed"] == 2 * 10**12
-    assert "2.00 TB billed" in capsys.readouterr().out
+    assert configs[0] == {"dry_run": True} and configs[1]["max_bytes"] == cohort.MAX_BYTES_PER_JOB
+    out = capsys.readouterr().out
+    assert "2.00 TB to process" in out and "2.00 TB billed" in out
     out = tmp_path / "s"
     out.mkdir()
     path = runner._write_summary(out, "table", [], billed=cohort.QUERY_LOG[start:])
     assert "BigQuery in this run: 2.00 TB billed" in path.read_text()
+
+
+def test_bigquery_jobs_over_the_cost_caps_are_refused_before_they_run(monkeypatch):
+    from types import SimpleNamespace
+
+    ran = []
+    monkeypatch.setattr(cohort, "_job_config", lambda params, **options: options)
+    client = SimpleNamespace(query=lambda sql, job_config=None: (
+        SimpleNamespace(total_bytes_processed=20 * 10**12) if job_config.get("dry_run") else ran.append(sql)))
+    with pytest.raises(cohort.CostLimitError, match="per-job cap"):
+        cohort._query(client, "SELECT big", [])
+    monkeypatch.setattr(cohort, "QUERY_LOG", [{"bytes_billed": 35 * 10**12, "seconds": 1.0}])
+    small = SimpleNamespace(query=lambda sql, job_config=None: (
+        SimpleNamespace(total_bytes_processed=10 * 10**12) if job_config.get("dry_run") else ran.append(sql)))
+    with pytest.raises(cohort.CostLimitError, match="per-run cap"):
+        cohort._query(small, "SELECT more", [])
+    assert ran == []  # neither job ran

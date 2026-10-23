@@ -43,7 +43,7 @@ dates, it is git-ignored, and CoDaS only ever shows the model aggregates compute
 
 Under the incident design the intraday phenotypes depend on the person only (the index date is fixed
 by the first wear day), so ``extract_cohort`` computes them once per CDR and phenotype definition,
-keeps them in ``.codas_runs/aou/phenotype_cache/`` (participant-level, keyed by person for the merge,
+keeps them in ``.codas_runs/aou/sealed/phenotype_cache/`` (participant-level, keyed by person for the merge,
 never read by the agents) and merges them into each outcome's table, dropping the person id. The
 minute-level tables are terabytes; reading them once per run instead of once per outcome is most of
 the BigQuery cost. ``CODAS_PHENOTYPE_CACHE=0`` computes them inline instead. Every BigQuery job's
@@ -996,20 +996,56 @@ _LOG_BILLED_FROM = 10 * 10**9  # jobs billing at least this many bytes are print
 USD_PER_TIB = float(os.getenv("CODAS_BQ_USD_PER_TIB", "6.25"))  # on-demand list price; set yours
 
 
-def _job_config(params: list[QueryParam]) -> Any:
+# Cost guard: every job is dry-run first. One that would bill more than a job's cap, or push this process's
+# total past the run's cap, is refused before it runs; the real job also carries BigQuery's own
+# maximum_bytes_billed, so the cap holds even if the estimate was low.
+MAX_BYTES_PER_JOB = int(float(os.getenv("CODAS_BQ_MAX_TB_PER_JOB", "16")) * 10**12)
+MAX_BYTES_PER_RUN = int(float(os.getenv("CODAS_BQ_MAX_TB_PER_RUN", "40")) * 10**12)
+
+
+class CostLimitError(RuntimeError):
+    """A BigQuery job was refused because it would exceed the per-job or per-run byte cap."""
+
+
+def _job_config(params: list[QueryParam], *, dry_run: bool = False, max_bytes: int | None = None) -> Any:
     from google.cloud import bigquery
 
-    return bigquery.QueryJobConfig(query_parameters=_bq_params(params))
+    options: dict[str, Any] = {"query_parameters": _bq_params(params)}
+    if dry_run:
+        options.update(dry_run=True, use_query_cache=False)
+    if max_bytes:
+        options["maximum_bytes_billed"] = int(max_bytes)
+    return bigquery.QueryJobConfig(**options)
 
 
-def billed_text(n_bytes: int) -> str:
-    """Bytes billed as TB with the cost at ``USD_PER_TIB`` (an estimate: the workspace bill is the truth)."""
-    return f"{n_bytes / 10**12:.2f} TB billed (about ${n_bytes / 2**40 * USD_PER_TIB:,.0f} at ${USD_PER_TIB}/TiB)"
+def billed_text(n_bytes: int, verb: str = "billed") -> str:
+    """Bytes as TB with the cost at ``USD_PER_TIB`` (an estimate: the workspace bill is the truth)."""
+    return f"{n_bytes / 10**12:.2f} TB {verb} (about ${n_bytes / 2**40 * USD_PER_TIB:,.0f} at ${USD_PER_TIB}/TiB)"
+
+
+def _estimate(client: Any, sql: str, params: list[QueryParam]) -> int | None:
+    """Bytes the job would process (a free dry run), or None when the dry run itself fails."""
+    try:
+        dry = client.query(sql, job_config=_job_config(params, dry_run=True))
+        return int(getattr(dry, "total_bytes_processed", None) or 0)
+    except Exception:  # noqa: BLE001 - the real job then raises its own, more useful error
+        return None
 
 
 def _query(client: Any, sql: str, params: list[QueryParam]):
     start = time.monotonic()
-    job = client.query(sql, job_config=_job_config(params))
+    estimate = _estimate(client, sql, params)
+    spent = sum(e["bytes_billed"] for e in QUERY_LOG)
+    if estimate is not None and estimate > MAX_BYTES_PER_JOB:
+        raise CostLimitError(f"BigQuery job refused: it would process {billed_text(estimate, 'processed')}, above "
+                             f"the per-job cap of {MAX_BYTES_PER_JOB / 10**12:g} TB (CODAS_BQ_MAX_TB_PER_JOB).")
+    if estimate is not None and spent + estimate > MAX_BYTES_PER_RUN:
+        raise CostLimitError(f"BigQuery job refused: this run has billed {spent / 10**12:.2f} TB and the job would add "
+                             f"{estimate / 10**12:.2f} TB, above the per-run cap of {MAX_BYTES_PER_RUN / 10**12:g} TB "
+                             "(CODAS_BQ_MAX_TB_PER_RUN).")
+    if estimate is not None and estimate >= _LOG_BILLED_FROM:
+        print(f"BigQuery job starting: {billed_text(estimate, 'to process')}", flush=True)
+    job = client.query(sql, job_config=_job_config(params, max_bytes=MAX_BYTES_PER_JOB))
     frame = job.result().to_dataframe()
     billed = int(getattr(job, "total_bytes_billed", None) or 0)
     QUERY_LOG.append({"bytes_billed": billed, "seconds": round(time.monotonic() - start, 1)})
@@ -1027,7 +1063,7 @@ def _phenotype_table(client: Any, spec: CohortSpec, cdr: str, out: Path):
 
     sql, params = build_phenotype_sql(spec, cdr)
     key = hashlib.sha256(json.dumps([cdr, sql, params], default=str).encode()).hexdigest()[:16]
-    path = out / "phenotype_cache" / f"phenotypes_{key}.csv"
+    path = sealed_dir(out) / "phenotype_cache" / f"phenotypes_{key}.csv"
     if path.exists():
         return pd.read_csv(path, float_precision="round_trip")
     frame = _query(client, sql, params)
@@ -1086,6 +1122,7 @@ def extract_cohort(
     path = out / f"{spec.name}.csv"
     if spec.holdout_fraction > 0:
         sealed = frame[HOLDOUT_COLUMN].astype(bool)
+        holdout_path(path).parent.mkdir(parents=True, exist_ok=True)
         frame.loc[sealed, holdout_columns(spec)].to_csv(holdout_path(path), index=False)
         frame = frame.loc[~sealed]
     frame[output_columns(spec)].to_csv(path, index=False)
@@ -1099,7 +1136,15 @@ def extract_cohort(
     return path
 
 
+SEALED_DIR = "sealed"  # sealed shares and every cache holding all participants; no agent tool may open it
+
+
+def sealed_dir(out_dir: str | Path) -> Path:
+    """Where the sealed share and the all-participant caches of a run folder live."""
+    return Path(out_dir) / SEALED_DIR
+
+
 def holdout_path(discovery_csv: str | Path) -> Path:
-    """The sealed replication table next to a discovery table (``<name>.holdout.csv``)."""
+    """The sealed replication table of a discovery table (``sealed/<name>.holdout.csv`` beside it)."""
     p = Path(discovery_csv)
-    return p.with_name(p.stem + ".holdout.csv")
+    return sealed_dir(p.parent) / (p.stem + ".holdout.csv")

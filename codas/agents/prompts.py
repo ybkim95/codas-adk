@@ -24,6 +24,8 @@ The task (from the user): {goal?}
 Analysis design so far: target {target_column?}; confounders {confounder_columns?}; excluded as leakage
 {excluded_columns?}; adjustment-only columns {context_columns?}; constraints from the gap finder
 {constraints?}. Columns in the dataset: {dataset_columns?}
+Lessons from earlier analyses of other outcomes on this cohort (shown only once registration has closed):
+{cohort_lessons?}
 """
 
 # --- Phase A: Data Profiling + Literature Grounding --------------------------------------------
