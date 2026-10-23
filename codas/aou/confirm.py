@@ -24,7 +24,9 @@ Falsification, for every candidate, on the same holdout and with the same confou
 * wear adherence (negative-control exposure): the effect re-estimated with the days-with-data
   columns added to the confounders should keep its direction with a CI that excludes the null. A
   feature that only tracks how much a participant wears the device loses it; the days columns' own
-  associations with the outcome are reported as the benchmark.
+  associations with the outcome are reported as the benchmark. Days columns that are already
+  confounders, or duplicate one, are left out; when none is left the check is reported as not counted
+  rather than as passed.
 A candidate is ``robust`` when it replicates and passes every falsification test that could run.
 
 Missing confounder values are multiply imputed when the pre-registration asks for it (chained
@@ -79,17 +81,39 @@ def _digest(record: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _discovery_cox(frame: pd.DataFrame, h: dict[str, Any], target: str, time_col: str, confounders: list[str],
+                   m: int) -> dict[str, Any]:
+    """The feature's Cox hazard ratio on the discovery rows, adjusted as the holdout test will be."""
+    x = _feature(frame, h)
+    if x is None or x.notna().sum() < _MIN_ROWS:
+        return {}
+    cov = frame[confounders].apply(pd.to_numeric, errors="coerce") if confounders else None
+    try:
+        res = _cox(_num(frame, time_col), _num(frame, target), x, cov, m)
+    except Exception:  # noqa: BLE001 - the direction then falls back to the screen's
+        return {}
+    return res if _finite(res) and res["sign"] != 0 else {}
+
+
 def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_time: str | None = None,
                 max_hypotheses: int = 10, negative_controls: list[str] | tuple[str, ...] = (),
                 positive_controls: list[str] | tuple[str, ...] = (),
                 sensitivity_lag_days: int = DEFAULT_SENSITIVITY_LAG_DAYS,
-                availability: list[str] | tuple[str, ...] = (), covariate_imputations: int = 0) -> dict[str, Any]:
+                availability: list[str] | tuple[str, ...] = (), covariate_imputations: int = 0,
+                discovery_csv: str | Path | None = None) -> dict[str, Any]:
     """Freeze the final round's validated candidates as hypotheses and write ``<stem>_prereg.json``.
 
     ``negative_controls`` are control names (the holdout has ``nc_<name>`` and ``nc_<name>_days``),
     ``positive_controls`` column names, ``availability`` the days-with-data columns used for the
     adherence check, ``covariate_imputations`` how many times missing confounder values are imputed. The record also counts the tests the discovery ran, so the
-    report can say how many looks preceded the registration."""
+    report can say how many looks preceded the registration.
+
+    For a time to event, the discovery screen ranks candidates on the event flag, which ignores how
+    long each participant was followed: a feature that lengthens follow-up can raise the flag while
+    lowering the hazard. With ``discovery_csv`` (the rows the agents analysed) each exploratory
+    candidate's direction is therefore taken from a Cox model on those rows, adjusted for the final
+    confounders, as the holdout will test it; the screen's correlation is kept alongside and a
+    disagreement is noted. A-priori hypotheses keep the direction they predicted."""
     report = state.get("latest_report") or {}
     every = {c["feature"]: c for c in report.get("candidates") or []}
     candidates = [c for c in every.values() if c.get("verdict") == "validated"]
@@ -107,17 +131,42 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         return {"discovery_rho": round(float(rho), 4) if isinstance(rho, (int, float)) else None,
                 "discovery_q": c.get("q_value")}
 
+    frame = pd.read_csv(discovery_csv) if survival_time and discovery_csv and Path(discovery_csv).exists() else None
+    target = state.get("target_column")
+    adjust = [c for c in state.get("confounder_columns") or []
+              if frame is not None and c in frame.columns and c != survival_time]
+
+    def hazard(h: dict[str, Any]) -> dict[str, Any]:
+        """The discovery Cox estimate for ``h`` (empty without a time to event or when it cannot be fitted)."""
+        if frame is None or target not in frame.columns:
+            return {}
+        res = _discovery_cox(frame, h, target, survival_time, adjust, int(covariate_imputations))
+        return {"discovery_hr": res["hr_per_sd"], "discovery_hr_ci95": res["ci95"], "sign": res["sign"]} if res else {}
+
     hypotheses = []
     for h in (state.get("a_priori_hypotheses") or [])[:max_hypotheses]:
-        hypotheses.append({"feature": h["feature"], "definition": definition(h["feature"]),
-                           "direction": 1 if int(h["direction"]) > 0 else -1, **seen(h["feature"]),
-                           "family": "a_priori", "knownness": h.get("knownness"), "construct": h.get("construct"),
-                           "citation": h.get("citation")})
+        row = {"feature": h["feature"], "definition": definition(h["feature"]),
+               "direction": 1 if int(h["direction"]) > 0 else -1, **seen(h["feature"]),
+               "family": "a_priori", "knownness": h.get("knownness"), "construct": h.get("construct"),
+               "citation": h.get("citation")}
+        row.update({k: v for k, v in hazard(row).items() if k != "sign"})
+        hypotheses.append(row)
     registered = {h["feature"] for h in hypotheses}
     for c in [c for c in candidates if c["feature"] not in registered][:max_hypotheses]:
         name = c["feature"]
-        hypotheses.append({"feature": name, "definition": definition(name), "direction": 1 if c["rho"] > 0 else -1,
-                           **seen(name), "family": "exploratory"})
+        row = {"feature": name, "definition": definition(name), "direction": 1 if c["rho"] > 0 else -1,
+               **seen(name), "family": "exploratory"}
+        cox = hazard(row)
+        if cox:
+            sign = 1 if cox.pop("sign") > 0 else -1
+            row.update(cox, direction_from="discovery Cox model")
+            if sign != row["direction"]:
+                row["direction_note"] = ("direction from the discovery Cox model; the binary screen disagreed "
+                                         "(follow-up length differs with the feature)")
+            row["direction"] = sign
+        elif frame is not None:
+            row["direction_from"] = "discovery screen (the discovery Cox model could not be fitted)"
+        hypotheses.append(row)
     rounds = state.get("rounds") or []
     record = {
         "stem": stem, "target": state.get("target_column"), "survival_time": survival_time,
@@ -318,7 +367,8 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
                      with_adherence: pd.DataFrame | None = None) -> dict[str, Any]:
     row: dict[str, Any] = {"feature": h["feature"], "direction": h["direction"], "discovery_rho": h["discovery_rho"],
                            "family": h.get("family", "exploratory")}
-    for key in ("knownness", "construct", "citation"):
+    for key in ("knownness", "construct", "citation", "discovery_hr", "discovery_hr_ci95", "direction_from",
+                "direction_note"):
         if h.get(key) is not None:
             row[key] = h[key]
     x = _feature(frame, h)
@@ -412,10 +462,38 @@ def audit(result: dict[str, Any]) -> list[str]:
             flags.append(f"positive control {pc['control']} could not be computed")
         elif not pc.get("detected"):
             flags.append(f"positive control {pc['control']} was not detected: the holdout may lack power")
+    reversed_ = [r["feature"] for r in rows if r.get("direction_note")]
+    if reversed_:
+        flags.append("pre-registered direction taken from the discovery Cox model because the binary screen "
+                     "disagreed (the event flag ignores follow-up length): " + ", ".join(reversed_))
     failed = sorted({k for r in rows for k in (r.get("errors") or {})})
     if failed:
         flags.append("checks that raised an error for some hypotheses: " + ", ".join(failed))
     return flags
+
+
+def _availability(frame: pd.DataFrame, declared: list[str], confounders: list[str],
+                  time_col: str | None) -> tuple[list[str], str]:
+    """The days-with-data columns that add something to the confounders, and what the check can show.
+
+    A column with the same values as a confounder or as an earlier days column (two summaries of one
+    wearable table count the same days) adds nothing: adjusting for it again leaves the estimate where
+    it was, so the check would pass without testing anything."""
+    present = [c for c in declared if c in frame.columns and c != time_col]
+    values = {c: pd.to_numeric(frame[c], errors="coerce") for c in dict.fromkeys(present + confounders)}
+    kept: list[str] = []
+    for c in present:
+        if c in confounders or any(values[c].equals(values[o]) for o in confounders + kept):
+            continue
+        kept.append(c)
+    if kept:
+        status = "tested: " + ", ".join(kept) + " added to the confounders"
+    elif present:
+        status = ("not counted: wear adherence is already in the adjustment set (" + ", ".join(present)
+                  + " are confounders or duplicate one), so adding it again cannot change the estimate")
+    else:
+        status = "not tested: no days-with-data column in this table"
+    return kept, status
 
 
 def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_key: str | None = None,
@@ -436,8 +514,7 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
     cov = frame[confounders].apply(pd.to_numeric, errors="coerce") if confounders else None
     m = int(prereg.get("covariate_imputations") or 0)
     # Wear adherence as a negative-control exposure: the days-with-data columns added to the confounders.
-    availability = [c for c in prereg.get("availability") or [] if c in frame.columns and c not in confounders
-                    and c != time_col]
+    availability, adherence_status = _availability(frame, list(prereg.get("availability") or []), confounders, time_col)
     with_adherence = (frame[confounders + availability].apply(pd.to_numeric, errors="coerce")
                       if availability else None)
     rows = [_test_hypothesis(frame, h, prereg, target, time_col, cov, with_adherence) for h in prereg["hypotheses"]]
@@ -514,7 +591,8 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
         "audit": [],
         "prereg_sha256": prereg["sha256"], "holdout_rows": int(len(frame)), "confounders": confounders,
         "hypotheses": rows, "positive_controls": positive, "ledger": ledger,
-        "availability": availability, "adherence_benchmark": benchmark, "covariate_imputations": m,
+        "availability": availability, "adherence_status": adherence_status, "adherence_benchmark": benchmark,
+        "covariate_imputations": m,
         "negative_controls": list(prereg.get("negative_controls") or []),
         "discovery_variants_evaluated": prereg.get("discovery_variants_evaluated"),
         "replicated": sum(1 for r in rows if r.get("replicated")),
@@ -541,6 +619,41 @@ def _effect_text(r: dict[str, Any]) -> tuple[str, str, Any]:
         ci = r.get("ci95")
         return f"rho {r['rho']}", (f"{ci[0]}-{ci[1]}" if ci else ""), ""
     return "", "", ""
+
+
+def _discovery_text(r: dict[str, Any]) -> str:
+    """What discovery saw: the screen's correlation and, for a time to event, the Cox hazard ratio that
+    set the pre-registered direction."""
+    text = f"rho {r.get('discovery_rho')}"
+    if r.get("discovery_hr") is not None:
+        text += f"; HR {r['discovery_hr']}"
+    return text
+
+
+def reconciliation_markdown(result: dict[str, Any], engine_verdicts: dict[str, str]) -> str:
+    """One row per pre-registered hypothesis: what the discovery engine decided, what the per-candidate
+    debate concluded, and what the sealed holdout showed. It goes above the agents' narrative, which was
+    written before the holdout was opened and so cannot know the last column."""
+    lines = ["## Conclusions checked against the sealed holdout", "",
+             "The agents' narrative below was written before the holdout was opened. Where it disagrees "
+             "with this table (a candidate it calls failed that replicated, or the reverse), this table holds; "
+             "the full holdout section follows the narrative.", "",
+             "| feature | family | discovery engine | debate | holdout | q | robust |", "|---|---|---|---|---|---|---|"]
+    for r in result.get("hypotheses") or []:
+        family = r.get("family", "exploratory")
+        engine = engine_verdicts.get(r["feature"]) or ("registered a priori" if family == "a_priori"
+                                                       else "not in the final round")
+        if family == "a_priori" and r["feature"] in engine_verdicts:
+            engine = f"registered a priori; {engine}"
+        effect, ci, _ev = _effect_text(r)
+        holdout = r.get("status", "")
+        if effect:
+            holdout += f" ({effect}, {ci})"
+        q = r.get("q_used", r.get("q_ledger", r.get("q")))
+        robust = "yes" if r.get("robust") else ("no" if "robust" in r else "")
+        lines.append(f"| {r['feature']} | {family.replace('_', '-')} | {engine} | {r.get('debate') or '-'} | "
+                     f"{holdout} | {_fmt_q(q)} | {robust} |")
+    return "\n".join(lines) + "\n"
 
 
 def confirmation_markdown(result: dict[str, Any]) -> str:
@@ -575,7 +688,7 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
             counts = families.get(key, {})
             lines += [f"**{title.format(n=len(members))}**: {counts.get('replicated', 0)} of "
                       f"{counts.get('tested', 0)} replicated, {counts.get('robust', 0)} robust.", ""]
-        lines += ["| feature | discovery rho | holdout effect | 95% CI | q | E-value | status | dose-response | "
+        lines += ["| feature | discovery | holdout effect | 95% CI | q | E-value | status | dose-response | "
                   "falsification failed |", "|---|---|---|---|---|---|---|---|---|"]
         for r in members:
             effect, ci, ev = _effect_text(r)
@@ -587,7 +700,7 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
                 status += f"; {r['knownness']}"
             if r.get("debate"):
                 status += f"; debate: {r['debate']}"
-            lines.append(f"| {r['feature']} | {r['discovery_rho']} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
+            lines.append(f"| {r['feature']} | {_discovery_text(r)} | {effect} | {ci} | {_fmt_q(q)} | {ev} | {status} | "
                          f"{dose_text} | {', '.join(r.get('falsification_failed') or []) or '-'} |")
         lines.append("")
     failed_checks = [f"{r['feature']}: {', '.join(f'{k} ({v})' for k, v in r['errors'].items())}"
@@ -608,6 +721,8 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
                           for b in result.get("adherence_benchmark") or [])
         if bench:
             lines += ["", f"Wear adherence alone, for comparison: {bench}."]
+    elif (result.get("adherence_status") or "").startswith("not counted"):
+        lines += ["", f"Wear-adherence check {result['adherence_status']}."]
     within = [r for r in result["hypotheses"] if r.get("within_person") and "error" not in r["within_person"]]
     if within:
         lines += ["", "Within-person effects on the sealed repeated measurements (mixed model, random intercept per "

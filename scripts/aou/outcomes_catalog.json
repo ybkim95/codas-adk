@@ -157,7 +157,14 @@
       "kind": "measurement",
       "concept_ids": [],
       "codes": [
-        "LOINC:33914-3"
+        "LOINC:33914-3",
+        "LOINC:48642-3",
+        "LOINC:48643-1",
+        "LOINC:50044-7",
+        "LOINC:62238-1",
+        "LOINC:88293-6",
+        "LOINC:88294-4",
+        "LOINC:98979-8"
       ],
       "value_min": 1.0,
       "value_max": 200.0,

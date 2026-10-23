@@ -121,3 +121,14 @@ def test_a_repeated_analysis_returns_the_earlier_result_without_recomputing(tmp_
     tools.run_subgroup_analysis("a_over_b", "age", ctx)
     tools.run_subgroup_analysis("a_over_b", "female", ctx)
     assert calls == [1, 1] and len(ctx.state["analyses"]) == 3
+
+
+def test_every_analysis_run_is_counted_for_the_report_writers(tmp_path):
+    from codas.agents import prompts
+
+    ctx = _ctx(tmp_path)
+    tools.run_subgroup_analysis("a_over_b", "female", ctx)
+    tools.run_subgroup_analysis("a_over_b", "age", ctx)
+    tools.run_dose_response("a_over_b", ctx)
+    assert ctx.state["analyses_counts"] == "subgroup_analysis x2; dose_response x1"
+    assert "{analyses_counts?}" in prompts.REPORT and "{analyses_counts?}" in prompts.REPORT_REVIEWER

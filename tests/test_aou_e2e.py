@@ -448,7 +448,12 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
         confirmation = json.loads((RUN_DIR / f"{stem}_confirmation.json").read_text())
         assert confirmation["prereg_sha256"] == prereg["sha256"]
         assert run["replication"] == f"{confirmation['replicated']}/{confirmation['tested']}"
-        assert "Holdout replication (pre-registered" in Path(run["report_path"]).read_text()
+        report = Path(run["report_path"]).read_text()
+        assert "Holdout replication (pre-registered" in report
+        # The holdout check of the conclusions sits above the narrative written before the holdout opened.
+        assert -1 < report.find("Conclusions checked against the sealed holdout") < report.find("Holdout replication")
+        if prereg["survival_time"]:  # a time-to-event direction comes from the discovery Cox model
+            assert all(h.get("direction_from") for h in prereg["hypotheses"] if h["family"] == "exploratory")
         # The agents analysed only the discovery share; the sealed share never reached a model request.
         discovery, sealed = pd.read_csv(RUN_DIR / f"{stem}.csv"), pd.read_csv(RUN_DIR / f"{stem}.holdout.csv")
         assert len(discovery) and len(sealed)

@@ -148,6 +148,11 @@ def run_discovery(
     return _json_safe(run_discovery_from_csv(Path(csv_path).expanduser().resolve(), request).to_dict())
 
 
+# Identical literature queries within a run (the mechanism and novelty agents of several outcomes
+# often ask the same question) are answered once; failures are not kept, so they are retried.
+LITERATURE_CACHE: dict[str, dict[str, Any]] = {}
+
+
 def search_literature(query: str, tool_context: ToolContext | None = None) -> dict[str, Any]:
     """Retrieve grounded scientific-literature context for a biomarker query (Phase A biological
     anchoring / Phase D deep research). Runs a Google-search-grounded Gemini call and returns a short
@@ -167,6 +172,9 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
                     "note": "Literature search is turned off for this All of Us run. Reason from general "
                             "principles and do not fabricate citations."}
         query = mask_small_counts_in_text(query)
+    key = " ".join(query.lower().split())
+    if key in LITERATURE_CACHE:
+        return {**LITERATURE_CACHE[key], "note": "Same query as earlier in this run; the earlier sources."}
     reply = gemini.generate_grounded_reply(
         query.strip(),
         context=("You are grounding a wearable-biomarker discovery finding in the scientific literature. "
@@ -185,7 +193,7 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
     # which is parametric recall wearing the costume of retrieval; reporting that as grounded is how
     # an unsourced claim ends up in a report that says it was literature-anchored.
     grounded = bool(reply.sources)
-    return _json_safe({
+    result = _json_safe({
         "grounded": grounded,
         "summary": reply.text,
         "sources": reply.sources,
@@ -195,6 +203,9 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
         "literature. Treat it as a prior to be checked, attach no citations to it, and say in the "
         "report that literature grounding was unavailable.",
     })
+    if grounded:  # only retrieved evidence is kept; a reply without sources is asked again next time
+        LITERATURE_CACHE[key] = result
+    return result
 
 
 # --- stateful tools (shared session memory) ----------------------------------------------------
@@ -688,6 +699,7 @@ def _record(tool_context: ToolContext, tool: str, args: dict[str, Any], result: 
     tool_context.state["analyses"] = list(tool_context.state.get("analyses") or []) + [
         {"tool": tool, "args": args, "result": result,
          "confounders": list(tool_context.state.get("confounder_columns") or [])}]
+    tool_context.state["analyses_counts"] = analyses_counts(tool_context.state["analyses"])
     return result
 
 
@@ -830,6 +842,15 @@ _METHOD_FEATURES = int(os.getenv("CODAS_METHOD_FEATURES", "8"))
 _DIGEST_ITEMS = int(os.getenv("CODAS_ANALYSES_DIGEST_ITEMS", "12"))
 
 
+def analyses_counts(records: list[dict[str, Any]]) -> str:
+    """Every analysis tool run in this outcome with how many times, in order of first use: the digest
+    shows only the latest analyses, so a report writer reading it alone could miss that a tool ran."""
+    counts: dict[str, int] = {}
+    for rec in records:
+        counts[str(rec.get("tool", ""))] = counts.get(str(rec.get("tool", "")), 0) + 1
+    return "; ".join(f"{tool} x{n}" for tool, n in counts.items())
+
+
 def analyses_digest(records: list[dict[str, Any]], limit: int = _DIGEST_ITEMS) -> str:
     """The latest analyses as one line each: what the agents read instead of the raw results."""
     from codas.core.methods import record_headline
@@ -895,6 +916,7 @@ def run_method(method: str, tool_context: ToolContext, features_csv: str = "", b
     state["methods_explored"] = explored + ([method] if method not in explored else [])
     digest = analyses_digest(state["analyses"])
     state["analyses_digest"] = mask_small_counts_in_text(digest) if aou_mode() else digest
+    state["analyses_counts"] = analyses_counts(state["analyses"])
     return record["result"]
 
 
@@ -1001,7 +1023,8 @@ def run_method_batch(state: dict[str, Any], per_pool: int = 1) -> dict[str, Any]
     digest = analyses_digest(analyses)
     return {"analyses": analyses, "methods_explored": explored + [m for m in ran if m not in explored],
             "next_methods": [], "rounds": rounds, "method_pool_active": True,
-            "analyses_digest": mask_small_counts_in_text(digest) if aou_mode() else digest}
+            "analyses_digest": mask_small_counts_in_text(digest) if aou_mode() else digest,
+            "analyses_counts": analyses_counts(analyses)}
 
 
 def record_gap_analysis(gaps_json: str, tool_context: ToolContext) -> dict[str, Any]:

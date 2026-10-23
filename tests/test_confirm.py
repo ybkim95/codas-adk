@@ -299,3 +299,86 @@ def test_robust_needs_at_least_one_check_that_ran(tmp_path):
     prereg = preregister(_state([_cand("f1", 0.4, ["f1"])], ["age"]), tmp_path, "r")
     row = confirm(prereg, tmp_path / "r.holdout.csv", tmp_path)["hypotheses"][0]
     assert row["replicated"] and not row["robust"] and row["falsification_passed"] == []
+
+
+def _followup_confounded(rng, n=6000):
+    """``x`` lowers the hazard but lengthens follow-up (those with high x joined earlier), so more of
+    them are diagnosed in the window: the event flag rises with x while the hazard ratio is below 1."""
+    h = pd.DataFrame({"x": rng.normal(size=n), "age": rng.normal(size=n)})
+    t = rng.exponential(1 / (0.4 * np.exp(-0.3 * h.x + 0.3 * h.age)))
+    censor = np.minimum(rng.uniform(0.2, 1.0, n) * np.exp(1.2 * h.x), 6)
+    h["followup_days"] = np.ceil(np.minimum(t, censor) * 365)
+    h["y"] = (t <= censor).astype(int)
+    return h
+
+
+def test_survival_direction_comes_from_the_discovery_cox_model(tmp_path):
+    discovery, holdout = _followup_confounded(np.random.default_rng(31)), _followup_confounded(np.random.default_rng(32))
+    discovery.to_csv(tmp_path / "d.csv", index=False)
+    holdout.to_csv(tmp_path / "d.holdout.csv", index=False)
+    # The engine's binary screen sees the event flag rise with x.
+    state = _state([_cand("x", 0.37, ["x"])], ["age"])
+    prereg = preregister(state, tmp_path, "d", survival_time="followup_days", discovery_csv=tmp_path / "d.csv")
+    (h,) = prereg["hypotheses"]
+    assert h["direction"] == -1 and h["discovery_hr"] < 1 and h["discovery_rho"] == 0.37
+    assert "disagreed" in h["direction_note"]
+    result = confirm(prereg, tmp_path / "d.holdout.csv", tmp_path)
+    (row,) = result["hypotheses"]
+    assert row["replicated"] and row["hr_per_sd"] < 1 and row["discovery_hr"] == h["discovery_hr"]
+    assert any("binary screen disagreed" in flag and "x" in flag for flag in result["audit"])
+    assert "HR " in confirmation_markdown(result)
+
+
+def test_a_priori_direction_is_kept_and_continuous_outcomes_are_unchanged(tmp_path):
+    discovery = _followup_confounded(np.random.default_rng(33))
+    discovery.to_csv(tmp_path / "a.csv", index=False)
+    state = {**_state([], ["age"]), "a_priori_hypotheses": [{"feature": "x", "direction": 1, "knownness": "emerging"}]}
+    prereg = preregister(state, tmp_path, "a", survival_time="followup_days", discovery_csv=tmp_path / "a.csv")
+    (h,) = prereg["hypotheses"]
+    assert h["direction"] == 1 and h["discovery_hr"] < 1  # the literature's prediction stands; the HR is recorded
+    no_time = preregister(_state([_cand("x", 0.37, ["x"])], ["age"]), tmp_path, "c", discovery_csv=tmp_path / "a.csv")
+    assert no_time["hypotheses"][0]["direction"] == 1 and "discovery_hr" not in no_time["hypotheses"][0]
+
+
+def test_adherence_check_is_not_counted_when_wear_is_already_adjusted_for(tmp_path):
+    h = _adherence_holdout(np.random.default_rng(13))
+    h["hr_days"] = h["act_days"]  # a second days column from the same table: identical values
+    h.to_csv(tmp_path / "v.holdout.csv", index=False)
+    state = _state([_cand("x", 0.1, ["x"])], ["age", "bmi", "act_days"])
+    prereg = preregister(state, tmp_path, "v", survival_time="followup_days", availability=["act_days", "hr_days"])
+    result = confirm(prereg, tmp_path / "v.holdout.csv", tmp_path)
+    (row,) = result["hypotheses"]
+    assert "adherence_adjusted" not in row
+    assert not any("adherence" in t for t in row["falsification_passed"] + row["falsification_failed"])
+    assert result["availability"] == [] and "already in the adjustment set" in result["adherence_status"]
+    assert "already in the adjustment set" in confirmation_markdown(result)
+
+
+def test_duplicate_availability_columns_are_used_once(tmp_path):
+    h = _adherence_holdout(np.random.default_rng(14))
+    h["hr_days"] = h["act_days"]
+    h.to_csv(tmp_path / "u.holdout.csv", index=False)
+    state = _state([_cand("proxy", 0.12, ["proxy"])], ["age"])
+    prereg = preregister(state, tmp_path, "u", survival_time="followup_days", availability=["act_days", "hr_days"])
+    result = confirm(prereg, tmp_path / "u.holdout.csv", tmp_path)
+    assert result["availability"] == ["act_days"] and [b["column"] for b in result["adherence_benchmark"]] == ["act_days"]
+    (row,) = result["hypotheses"]
+    assert np.isfinite(row["adherence_adjusted"]["p"]) and "adherence adjustment" in row["falsification_failed"]
+
+
+def test_reconciliation_puts_engine_debate_and_holdout_side_by_side(tmp_path):
+    from codas.aou.confirm import reconciliation_markdown
+
+    h = _survival_holdout(np.random.default_rng(15))
+    h.to_csv(tmp_path / "r.holdout.csv", index=False)
+    state = {**_state([_cand("x", 0.1, ["x"]), _cand("w", 0.1, ["w"])], ["age"]),
+             "a_priori_hypotheses": [{"feature": "age_x", "direction": 1}]}
+    prereg = preregister(state, tmp_path, "r", survival_time="followup_days")
+    result = confirm(prereg, tmp_path / "r.holdout.csv", tmp_path)
+    next(r for r in result["hypotheses"] if r["feature"] == "w")["debate"] = "concede"
+    md = reconciliation_markdown(result, {"x": "validated", "w": "validated"})
+    assert md.startswith("## ") and "written before the holdout was opened" in md
+    lines = {line.split("|")[1].strip(): line for line in md.splitlines() if line.startswith("| ") and "---" not in line}
+    assert "validated" in lines["x"] and "replicated" in lines["x"]
+    assert "concede" in lines["w"]
+    assert "not testable" in lines["age_x"] and "registered a priori" in lines["age_x"]

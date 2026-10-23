@@ -41,6 +41,14 @@ adjust for one is decided during the analysis.
 The table is participant-level data. It stays inside the Workbench: it carries no person_id or
 dates, it is git-ignored, and CoDaS only ever shows the model aggregates computed from it.
 
+Under the incident design the intraday phenotypes depend on the person only (the index date is fixed
+by the first wear day), so ``extract_cohort`` computes them once per CDR and phenotype definition,
+keeps them in ``.codas_runs/aou/phenotype_cache/`` (participant-level, keyed by person for the merge,
+never read by the agents) and merges them into each outcome's table, dropping the person id. The
+minute-level tables are terabytes; reading them once per run instead of once per outcome is most of
+the BigQuery cost. ``CODAS_PHENOTYPE_CACHE=0`` computes them inline instead. Every BigQuery job's
+bytes billed are recorded in ``QUERY_LOG`` and large ones printed to the job log.
+
 The SQL builder is pure (no BigQuery import) so it can be unit-tested anywhere; ``extract_cohort``
 imports ``google.cloud.bigquery`` only when it runs.
 """
@@ -50,6 +58,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -403,8 +412,101 @@ _LAST_SEEN = ("last_seen AS (\n"
               ")")
 
 
-def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
-    """Return the extraction SQL and its parameters. Identifiers are validated, values are bound."""
+def _valid_rule(spec: CohortSpec, params: list[QueryParam]) -> str:
+    """The optional valid-day rule on the primary wearable's rows (aliased as ``{a}``); binds its bounds."""
+    valid = ""
+    if spec.valid_day is not None:
+        column = spec.valid_day["column"]
+        if spec.valid_day.get("min") is not None:
+            valid += f"\n      AND {{a}}.{column} >= @valid_min"
+            params.append(("valid_min", "FLOAT64", float(spec.valid_day["min"])))
+        if spec.valid_day.get("max") is not None:
+            valid += f"\n      AND {{a}}.{column} <= @valid_max"
+            params.append(("valid_max", "FLOAT64", float(spec.valid_day["max"])))
+    return valid
+
+
+def _first_wear_cte(primary: WearableSource, t: Any, valid: str) -> str:
+    return ("first_wear AS (\n"
+            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear\n"
+            f"  FROM {t(primary.table)} w\n"
+            f"  WHERE TRUE{valid.format(a='w')}\n"
+            "  GROUP BY w.person_id\n"
+            ")")
+
+
+def _phenotype_parts(spec: CohortSpec, t: Any, valid: str,
+                     params: list[QueryParam]) -> tuple[list[str], list[tuple[str, PhenotypeSource]]]:
+    """The intraday phenotype CTEs over ``index_events`` (person_id, index_date), and each source's CTE
+    alias. They read only the person and the index date, never the outcome."""
+    primary = spec.wearables[0]
+    ctes: list[str] = []
+    if any(ph.kind in ("minute_activity", "minute_heart_rate") for ph in spec.phenotypes):
+        # The primary wearable's valid days in the window: the only days intraday phenotypes use.
+        ctes.append(
+            "valid_days AS (\n"
+            f"  SELECT DISTINCT ie.person_id, DATE(s.{primary.date_column}) AS d\n"
+            "  FROM index_events ie\n"
+            f"  JOIN {t(primary.table)} s ON s.person_id = ie.person_id\n"
+            f"    AND DATE(s.{primary.date_column}) >= DATE_SUB(ie.index_date, INTERVAL @window_days DAY)\n"
+            f"    AND DATE(s.{primary.date_column}) < ie.index_date{valid.format(a='s')}"
+            + (f"\n    AND LOWER(CAST(s.{primary.filter_column} AS STRING)) = LOWER(CAST(@w0_filter AS STRING))"
+               if primary.filter_column is not None else "") + "\n"
+            ")"
+        )
+    aliases: list[tuple[str, PhenotypeSource]] = []
+    steps_min = {ph.prefix: f"q{k}_min" for k, ph in enumerate(spec.phenotypes) if ph.kind == "minute_activity"}
+    # Heart-rate sources come last: they read a minute-activity source's minutes for per_step.
+    order = sorted(enumerate(spec.phenotypes), key=lambda kp: kp[1].kind == "minute_heart_rate")
+    for k, phenotype in order:
+        if phenotype.kind == "minute_activity":
+            aliases.append((f"q{k}", phenotype))
+            ctes += minute_activity_ctes(k, phenotype, t(phenotype.tables()[0]))
+        elif phenotype.kind == "minute_heart_rate":
+            aliases.append((f"h{k}", phenotype))
+            ctes += minute_heart_rate_ctes(k, phenotype, t(phenotype.tables()[0]), steps_min.get(phenotype.steps_from))
+        else:
+            aliases.append((f"z{k}", phenotype))
+            sleep_sql, sleep_params = sleep_stage_ctes(k, phenotype, t(phenotype.tables()[0]))
+            ctes += sleep_sql
+            params += sleep_params
+    return ctes, aliases
+
+
+def build_phenotype_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
+    """The intraday phenotypes of every participant with a valid wear day, under the incident design.
+
+    There the index date is the end of the baseline window that starts at the first valid wear day: a
+    property of the person, not of the outcome. So these values are the same in every outcome's cohort,
+    and the minute-level tables (terabytes) can be read once per run instead of once per outcome. The
+    result carries ``person_id`` for the merge and is never written where the agents read."""
+    spec.validate()
+    if spec.design != "incident":
+        raise ValueError("Phenotypes are shared across outcomes only under the incident design.")
+    cdr = resolve_cdr(cdr)
+    t = lambda name: f"`{cdr}.{name}`"  # noqa: E731 - table reference helper
+    primary = spec.wearables[0]
+    params: list[QueryParam] = [("window_days", "INT64", int(spec.window_days))]
+    valid = _valid_rule(spec, params)
+    if primary.filter_column is not None:
+        params.append(("w0_filter", _scalar_type(primary.filter_value), primary.filter_value))
+    ctes = [_first_wear_cte(primary, t, valid),
+            "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
+            "  FROM first_wear\n)"]
+    extra, aliases = _phenotype_parts(spec, t, valid, params)
+    select = ["ie.person_id"] + [f"{alias}.{column}" for alias, ph in aliases for column in ph.output_columns()]
+    joins = [f"LEFT JOIN {alias} ON {alias}.person_id = ie.person_id" for alias, _ph in aliases]
+    sql = ("WITH " + ",\n".join(ctes + extra) + "\n"
+           "SELECT\n  " + ",\n  ".join(select) + "\n"
+           "FROM index_events ie\n" + "\n".join(joins))
+    return sql, params
+
+
+def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> tuple[str, list[QueryParam]]:
+    """Return the extraction SQL and its parameters. Identifiers are validated, values are bound.
+
+    With ``phenotypes=False`` the intraday phenotypes are left out and ``person_id`` is selected so that
+    the phenotypes computed once by ``build_phenotype_sql`` can be merged in (then dropped)."""
     spec.validate()
     cdr = resolve_cdr(cdr)
     t = lambda name: f"`{cdr}.{name}`"  # noqa: E731 - table reference helper
@@ -421,15 +523,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
     ctes = [f"outcome_concepts AS (\n  {concepts}\n)"]
 
     primary = spec.wearables[0]
-    valid = ""  # optional valid-day rule on the primary wearable's rows, aliased as {a}
-    if spec.valid_day is not None:
-        column = spec.valid_day["column"]
-        if spec.valid_day.get("min") is not None:
-            valid += f"\n      AND {{a}}.{column} >= @valid_min"
-            params.append(("valid_min", "FLOAT64", float(spec.valid_day["min"])))
-        if spec.valid_day.get("max") is not None:
-            valid += f"\n      AND {{a}}.{column} <= @valid_max"
-            params.append(("valid_max", "FLOAT64", float(spec.valid_day["max"])))
+    valid = _valid_rule(spec, params)
     bounds = ""
     if spec.outcome.kind == "measurement":
         if spec.outcome.value_min is not None:
@@ -443,14 +537,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         # One index rule for everyone: the end of a baseline window that starts at the first valid
         # wear day. Outcomes are observed from index + lag; earlier ones exclude the person.
         params.append(("outcome_from", "INT64", int(spec.window_days + spec.lag_days)))
-        ctes.append(
-            "first_wear AS (\n"
-            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear\n"
-            f"  FROM {t(primary.table)} w\n"
-            f"  WHERE TRUE{valid.format(a='w')}\n"
-            "  GROUP BY w.person_id\n"
-            ")"
-        )
+        ctes.append(_first_wear_cte(primary, t, valid))
         if spec.outcome.kind == "measurement":
             horizon = ""
             if spec.horizon_days is not None:
@@ -625,37 +712,14 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
                 ")"
             )
 
-    if any(ph.kind in ("minute_activity", "minute_heart_rate") for ph in spec.phenotypes):
-        # The primary wearable's valid days in the window: the only days intraday phenotypes use.
-        ctes.append(
-            "valid_days AS (\n"
-            f"  SELECT DISTINCT ie.person_id, DATE(s.{primary.date_column}) AS d\n"
-            "  FROM index_events ie\n"
-            f"  JOIN {t(primary.table)} s ON s.person_id = ie.person_id\n"
-            f"    AND DATE(s.{primary.date_column}) >= DATE_SUB(ie.index_date, INTERVAL @window_days DAY)\n"
-            f"    AND DATE(s.{primary.date_column}) < ie.index_date{valid.format(a='s')}"
-            + (f"\n    AND LOWER(CAST(s.{primary.filter_column} AS STRING)) = LOWER(CAST(@w0_filter AS STRING))"
-               if primary.filter_column is not None else "") + "\n"
-            ")"
-        )
-    phenotype_ctes = []
-    steps_min = {ph.prefix: f"q{k}_min" for k, ph in enumerate(spec.phenotypes) if ph.kind == "minute_activity"}
-    # Heart-rate sources come last: they read a minute-activity source's minutes for per_step.
-    order = sorted(enumerate(spec.phenotypes), key=lambda kp: kp[1].kind == "minute_heart_rate")
-    for k, phenotype in order:
-        if phenotype.kind == "minute_activity":
-            phenotype_ctes.append((f"q{k}", phenotype))
-            ctes += minute_activity_ctes(k, phenotype, t(phenotype.tables()[0]))
-        elif phenotype.kind == "minute_heart_rate":
-            phenotype_ctes.append((f"h{k}", phenotype))
-            ctes += minute_heart_rate_ctes(k, phenotype, t(phenotype.tables()[0]), steps_min.get(phenotype.steps_from))
-        else:
-            phenotype_ctes.append((f"z{k}", phenotype))
-            sleep_sql, sleep_params = sleep_stage_ctes(k, phenotype, t(phenotype.tables()[0]))
-            ctes += sleep_sql
-            params += sleep_params
+    phenotype_ctes: list[tuple[str, PhenotypeSource]] = []
+    if phenotypes:
+        extra, phenotype_ctes = _phenotype_parts(spec, t, valid, params)
+        ctes += extra
 
     select = [f"ie.outcome_value AS {spec.outcome.name}"]
+    if not phenotypes:  # the caller merges the phenotypes computed once (phenotype_table) by person
+        select.insert(0, "ie.person_id")
     if is_survival(spec):
         select.append(f"ie.{FOLLOWUP_COLUMN}")
     joins = []
@@ -926,11 +990,51 @@ def _bq_params(params: list[QueryParam]) -> list[Any]:
     return out
 
 
-def _query(client: Any, sql: str, params: list[QueryParam]):
+# Every BigQuery job this process ran: bytes billed and seconds, for the job log and the run summary.
+QUERY_LOG: list[dict[str, Any]] = []
+_LOG_BILLED_FROM = 10 * 10**9  # jobs billing at least this many bytes are printed to the job log
+USD_PER_TIB = float(os.getenv("CODAS_BQ_USD_PER_TIB", "6.25"))  # on-demand list price; set yours
+
+
+def _job_config(params: list[QueryParam]) -> Any:
     from google.cloud import bigquery
 
-    job = client.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=_bq_params(params)))
-    return job.result().to_dataframe()
+    return bigquery.QueryJobConfig(query_parameters=_bq_params(params))
+
+
+def billed_text(n_bytes: int) -> str:
+    """Bytes billed as TB with the cost at ``USD_PER_TIB`` (an estimate: the workspace bill is the truth)."""
+    return f"{n_bytes / 10**12:.2f} TB billed (about ${n_bytes / 2**40 * USD_PER_TIB:,.0f} at ${USD_PER_TIB}/TiB)"
+
+
+def _query(client: Any, sql: str, params: list[QueryParam]):
+    start = time.monotonic()
+    job = client.query(sql, job_config=_job_config(params))
+    frame = job.result().to_dataframe()
+    billed = int(getattr(job, "total_bytes_billed", None) or 0)
+    QUERY_LOG.append({"bytes_billed": billed, "seconds": round(time.monotonic() - start, 1)})
+    if billed >= _LOG_BILLED_FROM:
+        print(f"BigQuery job: {billed_text(billed)}, {QUERY_LOG[-1]['seconds']:.0f} s", flush=True)
+    return frame
+
+
+def _phenotype_table(client: Any, spec: CohortSpec, cdr: str, out: Path):
+    """The phenotypes of ``build_phenotype_sql``, computed once per CDR and phenotype definition and kept
+    in the git-ignored runs folder (participant-level, like the cohort tables) for the other outcomes."""
+    import hashlib
+
+    import pandas as pd
+
+    sql, params = build_phenotype_sql(spec, cdr)
+    key = hashlib.sha256(json.dumps([cdr, sql, params], default=str).encode()).hexdigest()[:16]
+    path = out / "phenotype_cache" / f"phenotypes_{key}.csv"
+    if path.exists():
+        return pd.read_csv(path, float_precision="round_trip")
+    frame = _query(client, sql, params)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path.with_suffix(".tmp"), index=False)
+    path.with_suffix(".tmp").replace(path)  # complete or absent, never half-written
+    return pd.read_csv(path, float_precision="round_trip")
 
 
 def _check_out_dir(out_dir: Path) -> Path:
@@ -973,8 +1077,12 @@ def extract_cohort(
             raise ValueError("The CDR lacks columns this spec needs: " + ", ".join(missing)
                              + ". Check the table schema in the Workbench and edit the spec.")
 
-    sql, params = build_cohort_sql(spec, cdr)
-    frame = _query(client, sql, params)
+    shared = (spec.design == "incident" and bool(spec.phenotypes)
+              and os.getenv("CODAS_PHENOTYPE_CACHE", "1") != "0")
+    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared))
+    if shared:  # the minute-level tables are read once per run, not once per outcome
+        frame = frame.merge(_phenotype_table(client, spec, cdr, out), on="person_id", how="left",
+                            validate="many_to_one").drop(columns="person_id")
     path = out / f"{spec.name}.csv"
     if spec.holdout_fraction > 0:
         sealed = frame[HOLDOUT_COLUMN].astype(bool)

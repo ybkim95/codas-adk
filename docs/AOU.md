@@ -386,7 +386,10 @@ the recorded result instead of recomputing it.
 - Outcomes, covariates and negative controls can name concepts by code instead of id, e.g.
   `"codes": ["SNOMED:84114007"]`, `["LOINC:8480-6"]` or `["ATC:C10AA"]`.
 - `feasibility.resolve_codes` looks the codes up in the CDR's own vocabulary. The existing check then
-  confirms domain and name, and a code that is not found is skipped with the reason.
+  confirms domain and name.
+- Several codes are alternatives for one quantity (eGFR is reported under MDRD and CKD-EPI formulas):
+  the codes found are used and the ones missing are named in the log. An item with none found is
+  skipped with the reason.
 - A drug class (ATC) covers its ingredients through `concept_ancestor`.
 
 **Survey covariates** (`"kind": "survey"`):
@@ -408,6 +411,44 @@ the recorded result instead of recomputing it.
   - with `steps_from`, heart-rate rise per step/min
 - These queries read the minute table, which is large. The inventory cell shows its size; BigQuery bills
   by bytes read.
+
+**BigQuery cost.**
+- Under the incident design the intraday phenotypes depend on the person only, so they are computed once
+  per CDR and phenotype definition, kept in `.codas_runs/aou/phenotype_cache/` (participant-level, never
+  read by the agents) and merged into each outcome's table by person. The person id is dropped before
+  the table is written.
+- In the run after v8, every outcome re-read about 13 TB of minute tables; now one run reads them once.
+  `CODAS_PHENOTYPE_CACHE=0` computes them inline again.
+- Every BigQuery job's bytes billed are recorded. Jobs over 10 GB are printed to the job log, and the run
+  total, with a cost estimate at `CODAS_BQ_USD_PER_TIB` (default the $6.25/TiB on-demand list price),
+  goes to the log and `explore_summary.md`. The workspace bill is the authority.
+
+**Time-to-event direction.**
+- Discovery screens an incident outcome on its event flag, which ignores how long each person was
+  followed. A feature that lengthens follow-up can raise the flag while lowering the hazard.
+- So each exploratory candidate's pre-registered direction comes from a Cox model on the discovery
+  share, adjusted for the final confounders, as the holdout tests it (`discovery_hr`). A disagreement
+  with the screen's sign is noted and listed in the audit. A-priori hypotheses keep the direction they
+  predicted.
+- In the run after v8, a hyperlipidemia candidate had a binary screen rho of +0.20 but a holdout HR of
+  0.85 (q 5e-5). It was labelled "not replicated" for the sign alone. Its holdout test is now spent;
+  only new data can confirm it.
+
+**Wear adherence already adjusted for.** Days-with-data columns that are already confounders, or
+duplicate one, are left out of the adherence check. When none is left the check is reported as not
+counted, never as passed.
+
+**Report and holdout side by side.**
+- Each report opens with one table per pre-registered hypothesis: the discovery engine's verdict, the
+  debate's, and the sealed holdout's (with q and robust).
+- The agents' narrative is written before the holdout is opened, so it cannot know the holdout result.
+- The report writer and reviewer also get every analysis tool run with its count. The one-line digest
+  shows only the latest analyses, and a report once said a mixed model was not run when it had run four
+  times.
+
+**Literature search.** A 429 from the search tool's quota is retried with exponential backoff and jitter
+(`CODAS_GROUNDING_RETRIES`, default 3). Identical queries within a run are answered from the first
+grounded reply.
 
 **Data inventory** (checks cell):
 - Every table with its columns, the participants each person-level table covers, and how many of them

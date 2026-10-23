@@ -30,7 +30,8 @@ from codas.aou import feasibility as feas
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
 from codas.aou.phenotypes import describe as describe_phenotypes
-from codas.aou.confirm import confirm, confirmation_markdown, ledger_summary, preregister
+from codas.aou.confirm import (confirm, confirmation_markdown, ledger_summary, preregister,
+                              reconciliation_markdown)
 from codas.aou.privacy import check_llm_backend, mask_identifiers, mask_small_counts, mask_small_counts_in_text
 from codas.aou.table1 import cohort_table
 from codas.aou.trace import TraceRecorder
@@ -493,10 +494,14 @@ def _ledger_lines(out: Path, keys: list[str]) -> list[str]:
     return lines
 
 
-def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_keys: list[str] | None = None) -> Path:
+def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_keys: list[str] | None = None,
+                   billed: list[dict[str, Any]] | None = None) -> Path:
     lines = ["# CoDaS free exploration on All of Us", "",
-             "Counts of 1-20 are masked. Review before anything leaves the Workbench.", "",
-             "## Feasibility screen", "", table, "", "## Runs", ""]
+             "Counts of 1-20 are masked. Review before anything leaves the Workbench.", ""]
+    if billed:
+        lines += [f"BigQuery in this run: {cohort.billed_text(sum(b['bytes_billed'] for b in billed))} over "
+                  f"{len(billed)} jobs.", ""]
+    lines += ["## Feasibility screen", "", table, "", "## Runs", ""]
     for r in runs:
         if r.get("failed"):
             lines += [f"### {r['cohort']}", f"- failed: {r['failed']}",
@@ -568,10 +573,11 @@ def preflight(csv: str | Path, out_dir: str | Path, *, stem: str, target: str, s
              "excluded_columns": [], "latest_report": {"candidates": candidates}, "proposed_features": []}
     prereg = preregister(state, out, stem, survival_time=survival_time, negative_controls=list(negative_controls),
                          positive_controls=list(positive_controls), availability=list(availability),
-                         covariate_imputations=PREFLIGHT_IMPUTATIONS)
+                         covariate_imputations=PREFLIGHT_IMPUTATIONS, discovery_csv=csv)
     result = confirm(prereg, Path(csv), out, ledger_key=None,
                      panel_csv=Path(panel_csv) if panel_csv and Path(panel_csv).exists() else None)
-    flags = list(result.get("audit") or [])
+    # The stand-ins carry a placeholder screen correlation, so a direction disagreement means nothing here.
+    flags = [f for f in result.get("audit") or [] if "binary screen disagreed" not in f]
     if not candidates:
         flags.append("no stand-in hypothesis could be built from this cohort's columns")
     target_values = pd.to_numeric(frame[target], errors="coerce") if target in frame.columns else pd.Series(dtype=float)
@@ -644,7 +650,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                              negative_controls=[c.name for c in spec.negative_controls],
                              positive_controls=list(spec.positive_controls),
                              availability=cohort.availability_columns(spec),
-                             covariate_imputations=CONFIRM_IMPUTATIONS)
+                             covariate_imputations=CONFIRM_IMPUTATIONS, discovery_csv=csv)
         # The pre-registration is on disk before the holdout is read.
         sealed_panel = holdout_path(cohort.panel_path(csv))
         result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr),
@@ -659,7 +665,9 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
             (out / f"{spec.name}_confirmation.json").write_text(json.dumps(result, indent=2, default=str),
                                                                 encoding="utf-8")
         state["confirmation"] = result
-        state["report"] = f"{state.get('report') or ''}\n\n{confirmation_markdown(result)}"
+        engine = {c.get("feature"): c.get("verdict") for c in (state.get("latest_report") or {}).get("candidates") or []}
+        state["report"] = (f"{reconciliation_markdown(result, engine)}\n{state.get('report') or ''}\n\n"
+                           f"{confirmation_markdown(result)}")
     summary = save_outputs(state, spec.name, out_dir, recorder)
     _agents_checkpoint(out, spec.name).unlink(missing_ok=True)
     return summary
@@ -703,7 +711,8 @@ def explore(
 
         client = bigquery.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
     cdr = resolve_cdr(cdr)
-    base, failed_covariates = feas.verify_covariates(base, cdr, client)
+    first_job = len(cohort.QUERY_LOG)  # this run's BigQuery jobs, for the bytes-billed line
+    base, failed_covariates = feas.verify_covariates(base, cdr, client, log)
     for name, reason in failed_covariates.items():
         log(f"covariate {name} skipped: {reason}")
     if base.covariates:
@@ -719,7 +728,7 @@ def explore(
     if missing:
         raise ValueError("The CDR lacks columns the wearable spec needs: " + ", ".join(missing)
                          + ". Edit the spec's wearables to match the CDR schema.")
-    outcomes = feas.resolve_codes(feas.load_catalog(catalog_path), cdr, client)
+    outcomes = feas.resolve_codes(feas.load_catalog(catalog_path), cdr, client, log)
     problems = feas.verify_catalog(outcomes, cdr, client)
     verified = [o for o in outcomes if problems.get(o.name) is None]
     log(f"catalog: {len(verified)}/{len(outcomes)} outcomes verified against the concept table")
@@ -744,7 +753,7 @@ def explore(
     runs: list[dict[str, Any]] = []
     keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
     memory_key = keys[0] if keys else cdr  # lessons are shared across outcomes on the same participants
-    summary_path = _write_summary(out, table, runs, keys)
+    summary_path = _write_summary(out, table, runs, keys, cohort.QUERY_LOG[first_job:])
     if not screen_only:
         by_name = {o.name: o for o in verified}
         for row in chosen:
@@ -773,7 +782,10 @@ def explore(
                     log(f"  finished: {result.get('rounds')} rounds, {result.get('validated_count')} validated in "
                         f"the last round" + (f", replicated on the sealed holdout: {result['replication']}"
                                              if result.get("replication") else ""))
-            summary_path = _write_summary(out, table, runs, keys)
+            summary_path = _write_summary(out, table, runs, keys, cohort.QUERY_LOG[first_job:])
+    billed = cohort.QUERY_LOG[first_job:]
+    if billed:
+        log(f"BigQuery in this run: {cohort.billed_text(sum(b['bytes_billed'] for b in billed))}")
 
     return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path),
             "rows": mask_small_counts(rows)}

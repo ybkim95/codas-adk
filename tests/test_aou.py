@@ -248,3 +248,25 @@ def test_engine_runs_on_extractor_shaped_table():
     report = run_discovery(_synthetic_cohort(spec), DiscoveryRequest(
         target_column="hba1c", confounder_columns=["age", "female"], validation_resamples=50))
     assert any(c.feature.startswith("act_steps_mean") for c in report.candidates)
+
+
+def test_bigquery_jobs_record_and_print_the_bytes_billed(monkeypatch, capsys, tmp_path):
+    from types import SimpleNamespace
+
+    from codas.aou import runner
+
+    class Job:
+        total_bytes_billed = 2 * 10**12
+
+        def result(self):
+            return SimpleNamespace(to_dataframe=lambda: pd.DataFrame({"a": [1]}))
+
+    monkeypatch.setattr(cohort, "_job_config", lambda params: None)
+    start = len(cohort.QUERY_LOG)
+    cohort._query(SimpleNamespace(query=lambda sql, job_config=None: Job()), "SELECT 1", [])
+    assert cohort.QUERY_LOG[start]["bytes_billed"] == 2 * 10**12
+    assert "2.00 TB billed" in capsys.readouterr().out
+    out = tmp_path / "s"
+    out.mkdir()
+    path = runner._write_summary(out, "table", [], billed=cohort.QUERY_LOG[start:])
+    assert "BigQuery in this run: 2.00 TB billed" in path.read_text()

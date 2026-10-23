@@ -290,3 +290,53 @@ def test_literature_summary_without_sources_is_not_reported_as_grounded(monkeypa
 
     monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", sourced)
     assert tools_mod.search_literature("x")["grounded"] is True
+
+
+def test_grounded_search_retries_when_rate_limited(monkeypatch):
+    """Search grounding has a per-minute quota: a 429 is retried with backoff instead of costing the
+    hypothesis its literature (14 of 70 searches in one All of Us run failed this way)."""
+    from types import SimpleNamespace
+
+    from codas.core import gemini
+
+    calls, slept = [], []
+
+    def generate_content(model, contents, config):
+        calls.append(model)
+        if len(calls) < 3:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED. Resource exhausted, please try again later.")
+        web = SimpleNamespace(uri="https://example.org/a", title="A")
+        meta = SimpleNamespace(grounding_chunks=[SimpleNamespace(web=web)], web_search_queries=["q"])
+        return SimpleNamespace(text="Evidence.", candidates=[SimpleNamespace(grounding_metadata=meta)])
+
+    monkeypatch.setattr(gemini, "configured", lambda: True)
+    monkeypatch.setattr(gemini, "_client", lambda: SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)))
+    monkeypatch.setattr(gemini, "_sleep", slept.append)
+    reply = gemini.generate_grounded_reply("q")
+    assert reply.error is None and reply.sources and len(calls) == 3 and len(slept) == 2
+    assert slept[1] > slept[0] > 0  # exponential backoff
+
+
+def test_identical_literature_queries_are_served_from_the_run_cache(monkeypatch):
+    from codas.agents import tools as tools_mod
+    from codas.core.gemini import GroundedResponse
+
+    calls = []
+
+    def sourced(query, context=""):
+        calls.append(query)
+        return GroundedResponse(text="…", model="m", configured=True, sources=[{"title": "t", "url": "u"}], queries=[])
+
+    monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", sourced)
+    first = tools_mod.search_literature("resting heart rate and blood pressure")
+    again = tools_mod.search_literature("  Resting heart rate and blood pressure ")
+    assert calls == ["resting heart rate and blood pressure"] and again["sources"] == first["sources"]
+
+    def failing(query, context=""):
+        calls.append(query)
+        return GroundedResponse(text=None, model="m", configured=True, sources=[], queries=[], error="429")
+
+    monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", failing)
+    tools_mod.search_literature("night heart rate dip")
+    tools_mod.search_literature("night heart rate dip")
+    assert calls.count("night heart rate dip") == 2  # a failure is never cached

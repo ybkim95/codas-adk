@@ -365,7 +365,9 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
         adherence = h.get("adherence_adjusted")
         rows.append({"feature": h["feature"],
                      "family": family + (f" ({h['knownness']})" if h.get("knownness") else ""),
-                     "discovery rho": h.get("discovery_rho"), "holdout effect": effect,
+                     "discovery": (f"rho {h.get('discovery_rho')}"
+                                   + (f"; HR {h['discovery_hr']}" if h.get("discovery_hr") is not None else "")),
+                     "holdout effect": effect,
                      "95% CI": "" if ci[0] is None else f"{ci[0]} to {ci[1]}",
                      "q": None if not isinstance(q, float) or not np.isfinite(q) else round(q, 4),
                      "status": h.get("status"), "robust": h.get("robust"), "debate": h.get("debate") or "",
@@ -373,7 +375,7 @@ def confirmation_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
                      "holds after adherence": None if adherence is None else adherence.get("holds"),
                      "within-person": _within_text(h.get("within_person")),
                      "failed checks": ", ".join(h.get("falsification_failed") or []) or "-"})
-    columns = ["feature", "family", "discovery rho", "holdout effect", "95% CI", "q", "status", "robust", "debate",
+    columns = ["feature", "family", "discovery", "holdout effect", "95% CI", "q", "status", "robust", "debate",
                "checks that ran", "holds after adherence", "within-person", "failed checks"]
     return pd.DataFrame(rows, columns=columns)  # keeps its columns when nothing was pre-registered
 

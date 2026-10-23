@@ -68,3 +68,15 @@ def test_ambiguous_or_unknown_survey_questions_are_skipped_with_the_reason(cdr):
     _spec, failed = feas.verify_covariates(replace(_window_spec(), covariates=[vague, absent]), SYNTHETIC_CDR, None)
     assert "2 questions" in failed["vague"] and "Smoking Frequency" in failed["vague"]
     assert "no survey question" in failed["absent"]
+
+
+def test_codes_missing_from_this_vocabulary_are_left_out_and_reported(cdr):
+    """Alternative codes for one quantity (a lab reported under several formulas): the ones this CDR's
+    vocabulary has are used, the others named in the log; nothing found still fails the check."""
+    mixed = feas.CatalogOutcome(name="t2d_mixed", label="T2D", kind="condition", concept_ids=[],
+                                codes=["SNOMED:44054006", "SNOMED:000000"], expect_name="type 2 diabetes")
+    said = []
+    (resolved,) = feas.resolve_codes([mixed], SYNTHETIC_CDR, None, log=said.append)
+    assert resolved.concept_ids == [201826] and resolved.codes == ["SNOMED:44054006"]
+    assert said and "SNOMED:000000" in said[0] and "t2d_mixed" in said[0]
+    assert feas.verify_catalog([resolved], SYNTHETIC_CDR, None)["t2d_mixed"] is None

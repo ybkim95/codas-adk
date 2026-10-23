@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import random
 import time
 from typing import Any
 
@@ -164,6 +165,21 @@ def _candidate_models(model: str | None) -> list[str]:
     return ordered[: max(1, max_fallbacks)]
 
 
+_GROUNDING_RETRIES = int(os.getenv("CODAS_GROUNDING_RETRIES", "3"))
+_GROUNDING_BACKOFF_S = float(os.getenv("CODAS_GROUNDING_BACKOFF_S", "4"))
+_sleep = time.sleep
+
+
+def _rate_limited(error: str | None) -> bool:
+    lower = (error or "").lower()
+    return any(token in lower for token in ("429", "resource_exhausted", "resource exhausted", "rate limit"))
+
+
+def _backoff(attempt: int) -> float:
+    """Exponential backoff with jitter, so concurrent searches do not retry in lockstep."""
+    return min(60.0, _GROUNDING_BACKOFF_S * 2 ** attempt) * (1 + random.random())
+
+
 def _model_unavailable_error(error: str | None) -> bool:
     if not error:
         return False
@@ -208,35 +224,44 @@ def generate_grounded_reply(
         )
     last_error: str | None = None
     for candidate_model in _candidate_models(model):
-        try:
-            from google.genai import types
+        response = None
+        # A 429 (the search tool's per-minute quota) is retried with backoff before moving on.
+        for attempt in range(_GROUNDING_RETRIES + 1):
+            try:
+                from google.genai import types
 
-            client = _client()
-            prompt = f"{context.strip()}\n\nTask:\n{message}".strip()
-            response = client.models.generate_content(
-                model=candidate_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    temperature=0.1,
-                    max_output_tokens=max_output_tokens,
-                ),
-            )
-            sources, queries = _grounding_from_response(response)
-            text = (response.text or "").strip()
-            if not text:
-                last_error = f"{candidate_model} returned an empty grounded text response."
-                continue
-            return GroundedResponse(
-                text=text,
-                model=candidate_model,
-                configured=True,
-                sources=sources,
-                queries=queries,
-            )
-        except Exception as exc:
-            last_error = str(exc)
-            if _model_unavailable_error(last_error):
+                client = _client()
+                prompt = f"{context.strip()}\n\nTask:\n{message}".strip()
+                response = client.models.generate_content(
+                    model=candidate_model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        temperature=0.1,
+                        max_output_tokens=max_output_tokens,
+                    ),
+                )
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                if _rate_limited(last_error) and attempt < _GROUNDING_RETRIES:
+                    _sleep(_backoff(attempt))
+                    continue
+                break
+        if response is None:
+            if _model_unavailable_error(last_error) or _rate_limited(last_error):
                 continue
             return GroundedResponse(text=None, model=candidate_model, configured=True, sources=[], queries=[], error=last_error)
+        sources, queries = _grounding_from_response(response)
+        text = (response.text or "").strip()
+        if not text:
+            last_error = f"{candidate_model} returned an empty grounded text response."
+            continue
+        return GroundedResponse(
+            text=text,
+            model=candidate_model,
+            configured=True,
+            sources=sources,
+            queries=queries,
+        )
     return GroundedResponse(text=None, model=selected_model, configured=True, sources=[], queries=[], error=last_error or "No configured Gemini model is available.")

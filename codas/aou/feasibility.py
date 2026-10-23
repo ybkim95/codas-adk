@@ -89,10 +89,12 @@ def _keep_positive_controls(spec: CohortSpec) -> CohortSpec:
     return spec
 
 
-def resolve_codes(items: list[Any], cdr: str, client: Any) -> list[Any]:
+def resolve_codes(items: list[Any], cdr: str, client: Any, log: Any = None) -> list[Any]:
     """``items`` (catalog outcomes, covariates, negative controls) with the concept ids their ``codes``
-    name in this CDR's vocabulary added; an item whose codes are not all found keeps no ids and fails
-    the concept check with the missing codes."""
+    name in this CDR's vocabulary added. Codes are alternatives for one quantity (a lab reported under
+    several formulas, a drug class by its subclasses): the ones found are kept and those this
+    vocabulary lacks are left out and named through ``log``; an item with none found keeps no ids and
+    fails the concept check with its codes."""
     keys = sorted({c for item in items for c in getattr(item, "codes", None) or []})
     if not keys:
         return list(items)
@@ -103,8 +105,12 @@ def resolve_codes(items: list[Any], cdr: str, client: Any) -> list[Any]:
     out = []
     for item in items:
         codes = list(getattr(item, "codes", None) or [])
-        if codes and all(c in found for c in codes):
-            item = replace(item, concept_ids=sorted({*item.concept_ids, *(found[c] for c in codes)}))
+        known = [c for c in codes if c in found]
+        if known:
+            item = replace(item, codes=known, concept_ids=sorted({*item.concept_ids, *(found[c] for c in known)}))
+            if len(known) < len(codes) and log is not None:
+                log(f"{item.name}: codes not in this CDR's vocabulary, left out: "
+                    + ", ".join(c for c in codes if c not in found))
         elif codes:
             item = replace(item, concept_ids=[])
         out.append(item)
@@ -194,13 +200,13 @@ def verify_catalog(outcomes: list[Any], cdr: str, client: Any) -> dict[str, str 
     return check_concepts(outcomes, frame.to_dict(orient="records"))
 
 
-def verify_covariates(base: CohortSpec, cdr: str, client: Any) -> tuple[CohortSpec, dict[str, str]]:
+def verify_covariates(base: CohortSpec, cdr: str, client: Any, log: Any = None) -> tuple[CohortSpec, dict[str, str]]:
     """``base`` with only the covariates and negative controls whose concepts pass the catalog's concept
     check, and the reason each dropped one failed (negative controls are keyed ``negative control <name>``)."""
     if not base.covariates and not base.negative_controls:
         return base, {}
-    covariates, failed = resolve_survey_questions(resolve_codes(base.covariates, cdr, client), cdr, client)
-    negative_controls = resolve_codes(base.negative_controls, cdr, client)
+    covariates, failed = resolve_survey_questions(resolve_codes(base.covariates, cdr, client, log), cdr, client)
+    negative_controls = resolve_codes(base.negative_controls, cdr, client, log)
     base = replace(base, covariates=covariates, negative_controls=negative_controls)
     failed.update({name: reason for name, reason in verify_catalog(base.covariates, cdr, client).items() if reason})
     for c in base.covariates:  # a survey flag needs an answer coded 1 and one coded 0

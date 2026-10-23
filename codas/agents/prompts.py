@@ -282,11 +282,13 @@ REPORT_REVIEWER = """
 You are the CoDaS Report Reviewer. Check the draft report against the facts it must rest on and list
 every problem; do not rewrite it. The draft: {report?}
 
-The facts: the fact sheet {fact_sheet?}; the discovery rounds {rounds?}; the analyses run, one line each:
-{analyses_digest?}; the per-candidate debates {candidate_debates?}; the hypotheses registered before the
-data were seen {a_priori_hypotheses?}.
+The facts: the fact sheet {fact_sheet?}; the discovery rounds {rounds?}; the latest analyses, one line each:
+{analyses_digest?}; every analysis tool run in this outcome, with how many times: {analyses_counts?}; the
+per-candidate debates {candidate_debates?}; the hypotheses registered before the data were seen
+{a_priori_hypotheses?}.
 
 Flag: a number that does not appear in the facts; a candidate verdict that contradicts the engine; a
+claim that an analysis was not run when the counts show it ran (or the reverse); a
 debate verdict, a within-person result or another analysis that bears on a conclusion but is missing;
 causal or deployment language; a novelty claim without literature evidence; a missing limitation (for
 example a proxy for wear or body size, missing covariates, a small effect). Output a numbered list of
@@ -363,7 +365,8 @@ would most change the conclusions, so a human can steer an optional next iterati
 Inputs you report from:
 - hypotheses registered before the data were seen: {a_priori_hypotheses?}
 - the Researcher's expectations: {hypotheses?}
-- the analyses run, one line each: {analyses_digest?}
+- the latest analyses, one line each: {analyses_digest?}
+- every analysis tool run in this outcome, with how many times: {analyses_counts?}
 - the per-candidate debates (verdict, reason, evidence): {candidate_debates?}
 - mechanisms: {mechanisms?}
 - novelty: {novelty?}

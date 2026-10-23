@@ -477,3 +477,45 @@ def test_holdout_bucket_is_uniform_and_the_salt_reshuffles_it():
     again = {i for i in ids if cohort.holdout_bucket(i, 1) < 500}
     assert abs(len(first & again) / len(first) - 0.5) < 0.02  # a new salt is a new split, not a shifted one
     assert all(0 <= cohort.holdout_bucket(i, 0) < 1000 for i in (1, 2**62, AOU_SIZED_ID))
+
+
+def _incident_spec() -> CohortSpec:
+    from dataclasses import replace
+
+    spec = CohortSpec.from_json(SPEC)
+    return replace(spec, covariates=[c for c in spec.covariates if c.concept_ids])
+
+
+def test_phenotypes_are_read_once_per_run_and_match_the_inline_extraction(synthetic, monkeypatch):
+    """Under the incident design the index date depends on the person only, so the minute-level
+    phenotypes are the same for every outcome: they are computed once and merged by person locally."""
+    run = duckdb_query(synthetic)
+    sql_seen: list[str] = []
+    monkeypatch.setattr(cohort, "_query", lambda c, sql, p: (sql_seen.append(sql), run(c, sql, p))[1])
+    outcomes = {o.name: o for o in feas.load_catalog(CATALOG)}
+    base = _incident_spec()
+    specs = [feas.spec_for(outcomes["hba1c"], base), feas.spec_for(outcomes["t2d"], base)]
+    intraday = ("steps_intraday", "sleep_level", "heart_rate_minute_level")
+    root = ROOT / ".codas_runs" / "aou_phenotype_cache_test"
+    shutil.rmtree(root, ignore_errors=True)
+    try:
+        monkeypatch.setenv("CODAS_PHENOTYPE_CACHE", "0")
+        inline = [cohort.extract_cohort(s, SYNTHETIC_CDR, root / "inline", client=object(), check_schema=False)
+                  for s in specs]
+        assert len([sql for sql in sql_seen if any(t in sql for t in intraday)]) == 2  # inline: each extraction
+        monkeypatch.setenv("CODAS_PHENOTYPE_CACHE", "1")
+        sql_seen.clear()
+        cached = [cohort.extract_cohort(s, SYNTHETIC_CDR, root / "cached", client=object(), check_schema=False)
+                  for s in specs]
+        reads = [sql for sql in sql_seen if any(t in sql for t in intraday)]
+        assert len(reads) == 1  # the first outcome computes the phenotypes; the second reuses them
+        for a, b in zip(inline, cached):
+            for pa, pb in ((a, b), (cohort.holdout_path(a), cohort.holdout_path(b))):
+                left, right = pd.read_csv(pa), pd.read_csv(pb)
+                assert "person_id" not in right.columns and list(left.columns) == list(right.columns)
+                order = list(left.columns)  # row order is up to the database; compare as sets of rows
+                pd.testing.assert_frame_equal(left.sort_values(order).reset_index(drop=True),
+                                              right.sort_values(order).reset_index(drop=True), check_dtype=False)
+        assert (pd.read_csv(cached[0])[["stepsday_peak30_mean", "hrmin_resting_hr"]].notna().sum() > 0).all()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
