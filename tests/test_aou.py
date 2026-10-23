@@ -29,8 +29,12 @@ def _window_spec() -> CohortSpec:
     """The example spec with the outcome-anchored design these tests characterise (no split, no lag)."""
     from dataclasses import replace
 
-    return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
-                   holdout_fraction=0.0, min_wear_days=30, negative_controls=[])
+    spec = CohortSpec.from_json(SPEC)
+    # Covariates named by code or survey text are resolved against a CDR first; these tests build SQL
+    # straight from the spec, so they keep the ones given by concept id.
+    return replace(spec, design="window", lag_days=0, horizon_days=None, valid_day=None,
+                   holdout_fraction=0.0, min_wear_days=30, negative_controls=[],
+                   covariates=[c for c in spec.covariates if c.concept_ids])
 
 CDR = "fc-aou-cdr-prod.R2025Q4R6"
 
@@ -138,7 +142,11 @@ def test_example_spec_loads():
     spec = _window_spec()
     assert spec.outcome.kind == "measurement" and len(spec.wearables) == 4
     assert [w.optional for w in spec.wearables] == [False, False, True, True]
-    assert [p.kind for p in spec.phenotypes] == ["minute_activity", "sleep_stages"]
+    assert [p.kind for p in spec.phenotypes] == ["minute_activity", "sleep_stages", "minute_heart_rate"]
+    assert spec.phenotypes[2].steps_from == spec.phenotypes[0].prefix
+    full = CohortSpec.from_json(SPEC).covariates
+    assert {"measurement", "drug", "survey"} <= {c.kind for c in full}
+    assert all(c.concept_ids or c.codes or c.question_name for c in full)  # resolved against the CDR before a run
 
 
 def test_measurement_sql_binds_values_and_omits_identifiers():

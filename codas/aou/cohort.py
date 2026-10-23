@@ -619,7 +619,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         else:
             ctes.append(
                 f"c{i} AS (\n"
-                "  SELECT DISTINCT ie.person_id\n"
+                "  SELECT DISTINCT ie.person_id, 1 AS present\n"
                 + join +
                 f"  WHERE {where}\n"
                 ")"
@@ -645,13 +645,13 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
     for k, phenotype in order:
         if phenotype.kind == "minute_activity":
             phenotype_ctes.append((f"q{k}", phenotype))
-            ctes += minute_activity_ctes(k, phenotype, t(phenotype.table))
+            ctes += minute_activity_ctes(k, phenotype, t(phenotype.tables()[0]))
         elif phenotype.kind == "minute_heart_rate":
             phenotype_ctes.append((f"h{k}", phenotype))
-            ctes += minute_heart_rate_ctes(k, phenotype, t(phenotype.table), steps_min.get(phenotype.steps_from))
+            ctes += minute_heart_rate_ctes(k, phenotype, t(phenotype.tables()[0]), steps_min.get(phenotype.steps_from))
         else:
             phenotype_ctes.append((f"z{k}", phenotype))
-            sleep_sql, sleep_params = sleep_stage_ctes(k, phenotype, t(phenotype.table))
+            sleep_sql, sleep_params = sleep_stage_ctes(k, phenotype, t(phenotype.tables()[0]))
             ctes += sleep_sql
             params += sleep_params
 
@@ -680,7 +680,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
         if covariate.kind in ("measurement", "survey"):
             select.append(f"c{i}.{covariate.name}")
         else:
-            select.append(f"IF(c{i}.person_id IS NULL, 0, 1) AS {covariate.name}")
+            select.append(f"IF(c{i}.present IS NULL, 0, 1) AS {covariate.name}")
         joins.append(f"LEFT JOIN c{i} ON c{i}.person_id = ie.person_id")
     if spec.negative_controls:
         # Follow-up for a negative control starts where the outcome's does (index + lag); a diagnosis

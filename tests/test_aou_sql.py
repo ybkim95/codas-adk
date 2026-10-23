@@ -27,8 +27,12 @@ def _window_spec() -> CohortSpec:
     """The example spec with the outcome-anchored design these tests characterise (no split, no lag)."""
     from dataclasses import replace
 
-    return replace(CohortSpec.from_json(SPEC), design="window", lag_days=0, horizon_days=None, valid_day=None,
-                   holdout_fraction=0.0, min_wear_days=30, negative_controls=[])
+    spec = CohortSpec.from_json(SPEC)
+    # Covariates named by code or survey text are resolved against a CDR first; these tests build SQL
+    # straight from the spec, so they keep the ones given by concept id.
+    return replace(spec, design="window", lag_days=0, horizon_days=None, valid_day=None,
+                   holdout_fraction=0.0, min_wear_days=30, negative_controls=[],
+                   covariates=[c for c in spec.covariates if c.concept_ids])
 
 CATALOG = ROOT / "scripts" / "aou" / "outcomes_catalog.json"
 
