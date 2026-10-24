@@ -33,6 +33,7 @@ LEDGER_NAME = "holdout_ledger.jsonl"
 ALPHA = 0.05
 INITIAL_WEALTH = ALPHA / 2  # LORD++'s W0; must not exceed ALPHA
 NOVEL, REFERENCE, NON_CONFIRMATORY = "novel", "reference", "non_confirmatory"
+OPENED = "opened"  # an outcome whose holdout was read by something other than a registration (a full-cohort scan)
 _REPEAT = "repeat of an earlier test of this outcome and feature on this holdout"
 _OPENED = "this outcome was already tested on this holdout, so its holdout results were known when this was registered"
 
@@ -158,10 +159,19 @@ def append(out_dir: Path, key: str, entries: list[dict[str, Any]]) -> None:
             fh.write(json.dumps({**e, "key": key}, default=str) + "\n")
 
 
+def mark_opened(out_dir: Path, key: str, outcomes: list[tuple[str, dict[str, Any] | None]], reason: str) -> None:
+    """Record outcomes as opened on the holdout ``key`` without a test: later registrations about them are
+    non-confirmatory (``decide``). ``outcomes`` are (name, identity) pairs."""
+    append(out_dir, key, [{"stem": f"opened: {name}", "outcome_key": outcome_key(identity, name), "role": OPENED,
+                           "reason": reason} for name, identity in outcomes])
+
+
 def summary(out_dir: Path, key: str) -> dict[str, Any]:
     """What has been tested on the holdout ``key``: totals by family, the online procedure's state, and the
     frozen verdicts (novel replications and reproduced reference associations)."""
-    entries = load(out_dir, key)
+    every = load(out_dir, key)
+    marks = [e for e in every if e.get("role") == OPENED]
+    entries = [e for e in every if e.get("role") != OPENED]
     legacy = [e for e in entries if "role" not in e]
     current = [e for e in entries if "role" in e]
     novel = [e for e in current if e["role"] == NOVEL and e.get("tested")]
@@ -171,6 +181,7 @@ def summary(out_dir: Path, key: str) -> dict[str, Any]:
         "key": key, "hypotheses": len(entries), "registrations": len({e.get("prereg") for e in entries}),
         "legacy": len(legacy), "legacy_outcomes": sorted({str(e.get("stem")) for e in legacy}),
         "opened_outcomes": sorted({str(e.get("stem")) for e in entries}),
+        "opened_without_a_test": sorted({str(e.get("stem"))[len("opened: "):] for e in marks}),
         "novel_tested": len(novel), "novel_replicated": [f"{e['stem']}: {e['feature']}" for e in novel if e.get("rejected")],
         "reference_tested": len(reference),
         "reference_reproduced": [f"{e['stem']}: {e['feature']}" for e in reference if e.get("rejected")],

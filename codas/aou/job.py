@@ -550,11 +550,15 @@ def main(argv: list[str]) -> int:
 
             heartbeat.now.update(outcome="rehearsal (synthetic data)", agent=None, tool=None)
             rehearsal.run_once(out, log=on_log, on_tool_call=on_tool, on_agent=on_agent)
+        from dataclasses import replace
+
+        spec = replace(CohortSpec.from_json(args["spec"]), discovery_share=str(args.get("discovery_share") or "A"))
         result = runner.explore(
-            args["catalog"], CohortSpec.from_json(args["spec"]), args.get("cdr"), client=client,
+            args["catalog"], spec, args.get("cdr"), client=client,
             top_k=int(args.get("top_k", 3)), outcome_names=args.get("outcomes") or None,
             max_outcomes=args.get("max_outcomes") or None, test_holdout=bool(args.get("test_holdout", True)),
-            out_dir=out, log=on_log, on_tool_call=on_tool, on_agent=on_agent)
+            out_dir=out, log=on_log, on_tool_call=on_tool, on_agent=on_agent,
+            full_cohort=bool(args.get("full_cohort_scan", False)))
         _write(result_path, result)
         ending = {"state": "finished", "summary_path": result["summary_path"]}
         _say("exploration finished", milestone=True)

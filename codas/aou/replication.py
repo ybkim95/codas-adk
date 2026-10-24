@@ -167,6 +167,10 @@ def write_package(out: Path, spec: cohort.CohortSpec, label: str, prereg: dict[s
         from codas.aou import daystore
 
         blocks.append(("day_store.sql", *daystore.build_daystore_sql(spec, PLACEHOLDER_CDR)))
+    if spec.month_store is not None and spec.design == "incident":
+        from codas.aou import monthstore
+
+        blocks.append(("month_store.sql", *monthstore.build_monthstore_sql(spec, PLACEHOLDER_CDR)))
     files: dict[str, str] = {}
     for name, text, bound in blocks:
         files[name] = (f"-- {spec.name}: replace {PLACEHOLDER_CDR} with your CDR; parameters below are bound, not inlined\n"

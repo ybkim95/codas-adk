@@ -347,5 +347,8 @@
       "sleepseg",
       "stepsday"
     ]
+  },
+  "month_store": {
+    "block_days": 30
   }
 }

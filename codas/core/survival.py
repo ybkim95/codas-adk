@@ -7,6 +7,11 @@ analysis tools (``codas.core.analyses``); the discovery screen does not depend o
 
 For screens over many columns (``codas.aou.phenome``) there is also a vectorised fit under Breslow's ties
 (``breslow_fit``) and the score test of each column against one such base fit (``score_tests``).
+
+With ``entry`` times the model is fitted in counting-process form: a row is at risk from its entry to its time
+(left truncation), so a person split into intervals with the exposure of each interval gives a time-varying
+exposure; one person's unsplit row and the same follow-up split into intervals of equal covariates give the
+same fit. The risk-set sums are then taken segment by segment, so memory stays linear in the rows.
 """
 
 from __future__ import annotations
@@ -77,6 +82,66 @@ def _efron(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np.ndarray)
     return loglik, grad, hess
 
 
+def _prefix_sums(w: np.ndarray, x: np.ndarray, ends: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sums of w, w x and w x x' over the first ``ends[j]`` rows, for each j (``ends`` ascending), taken segment
+    by segment so no (rows, k, k) array is built."""
+    k = x.shape[1]
+    s0, s1, s2 = np.zeros(len(ends)), np.zeros((len(ends), k)), np.zeros((len(ends), k, k))
+    a0, a1, a2, last = 0.0, np.zeros(k), np.zeros((k, k)), 0
+    for j, end in enumerate(ends):
+        if end > last:
+            seg_w, seg_x = w[last:end], x[last:end]
+            a0 += seg_w.sum()
+            a1 = a1 + seg_w @ seg_x
+            a2 = a2 + (seg_x * seg_w[:, None]).T @ seg_x
+            last = end
+        s0[j], s1[j], s2[j] = a0, a1, a2
+    return s0, s1, s2
+
+
+def _efron_counting(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np.ndarray, entry: np.ndarray):
+    """``_efron`` for rows at risk from ``entry`` to ``time`` (rows sorted by descending time): the risk set at t
+    is every row with time >= t less every row that entered at or after t."""
+    k = x.shape[1]
+    eta = x @ beta
+    eta -= eta.max()
+    w = np.exp(eta)
+    wx = w[:, None] * x
+    ends = np.flatnonzero(np.r_[time[1:] != time[:-1], True])
+    starts = np.r_[0, ends[:-1] + 1]
+    blocks = [(a, b) for a, b in zip(starts, ends) if event[a:b + 1].any()]
+    if not blocks:
+        return 0.0, np.zeros(k), np.zeros((k, k))
+    at = np.asarray([b + 1 for _, b in blocks])                      # rows with time >= t: a prefix
+    r0, r1, r2 = _prefix_sums(w, x, at)
+    by_entry = np.argsort(-entry, kind="mergesort")
+    entered = entry[by_entry]
+    late = np.searchsorted(-entered, -time[[b for _, b in blocks]], side="right")  # rows with entry >= t
+    order = np.argsort(late, kind="mergesort")
+    l0, l1, l2 = (np.empty_like(v) for v in (r0, r1, r2))
+    l0[order], l1[order], l2[order] = _prefix_sums(w[by_entry], x[by_entry], late[order])
+    loglik, grad, hess = 0.0, np.zeros(k), np.zeros((k, k))
+    for j, (start, end) in enumerate(blocks):
+        ev = np.flatnonzero(event[start:end + 1]) + start
+        d = len(ev)
+        tie0, tie1 = w[ev].sum(), wx[ev].sum(axis=0)
+        tie2 = (wx[ev][:, :, None] * x[ev][:, None, :]).sum(axis=0)
+        loglik += eta[ev].sum()
+        grad += x[ev].sum(axis=0)
+        for m in range(d):
+            frac = m / d
+            s0 = r0[j] - l0[j] - frac * tie0
+            s1 = r1[j] - l1[j] - frac * tie1
+            s2 = r2[j] - l2[j] - frac * tie2
+            if not s0 > 0:
+                return -math.inf, grad, hess
+            loglik -= math.log(s0)
+            mean = s1 / s0
+            grad -= mean
+            hess -= s2 / s0 - np.outer(mean, mean)
+    return loglik, grad, hess
+
+
 def _independent_columns(x: np.ndarray) -> list[int]:
     """Columns that are neither constant nor a linear combination of earlier columns, in order: a
     covariate repeated under two names (two sources counting the same days) makes the information
@@ -90,10 +155,12 @@ def _independent_columns(x: np.ndarray) -> list[int]:
     return kept
 
 
-def _newton(time: np.ndarray, event: np.ndarray, x: np.ndarray, max_iter: int, tol: float):
+def _newton(time: np.ndarray, event: np.ndarray, x: np.ndarray, max_iter: int, tol: float,
+            entry: np.ndarray | None = None):
     k = x.shape[1]
     beta = np.zeros(k)
-    loglik, grad, hess = _efron(beta, time, event, x)
+    _efron_ = _efron if entry is None else (lambda b, t, e, z: _efron_counting(b, t, e, z, entry))
+    loglik, grad, hess = _efron_(beta, time, event, x)
     converged = False
     for _ in range(max_iter):
         try:
@@ -101,12 +168,12 @@ def _newton(time: np.ndarray, event: np.ndarray, x: np.ndarray, max_iter: int, t
         except np.linalg.LinAlgError:
             break
         new = beta + step
-        new_loglik, new_grad, new_hess = _efron(new, time, event, x)
+        new_loglik, new_grad, new_hess = _efron_(new, time, event, x)
         halvings = 0
         while new_loglik < loglik - 1e-12 and halvings < 20:  # step-halving keeps the ascent monotone
             step /= 2
             new = beta + step
-            new_loglik, new_grad, new_hess = _efron(new, time, event, x)
+            new_loglik, new_grad, new_hess = _efron_(new, time, event, x)
             halvings += 1
         if not np.isfinite(new_loglik):  # no finite step left: keep the last estimate, not converged
             break
@@ -124,16 +191,21 @@ def _newton(time: np.ndarray, event: np.ndarray, x: np.ndarray, max_iter: int, t
     return beta, se, cov, converged
 
 
-def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
+def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9, entry=None) -> CoxResult:
     """Fit a Cox model. ``x`` is an (n, k) array of covariates; rows with any missing value are dropped.
     Columns that are constant or collinear with earlier ones are left out (``dropped``, estimates NaN);
-    column 0, the exposure of interest, is never displaced by a later column."""
+    column 0, the exposure of interest, is never displaced by a later column. With ``entry`` each row is at
+    risk from its entry to its time (counting-process form; ``n`` then counts rows, not people)."""
     time = np.asarray(time, dtype=float)
     event = np.asarray(event, dtype=float)
     x = np.asarray(x, dtype=float)
     if x.ndim == 1:
         x = x.reshape(-1, 1)
     keep = np.isfinite(time) & np.isfinite(event) & np.all(np.isfinite(x), axis=1) & (time > 0)
+    if entry is not None:
+        entry = np.asarray(entry, dtype=float)
+        keep &= np.isfinite(entry) & (entry < time)
+        entry = entry[keep]
     time, event, x = time[keep], event[keep].astype(bool), x[keep]
     k = x.shape[1]
     nan = np.full(k, np.nan)
@@ -143,7 +215,8 @@ def cox_ph(time, event, x, max_iter: int = 50, tol: float = 1e-9) -> CoxResult:
                          [j for j in range(k) if j not in cols])
     order = np.argsort(-time, kind="mergesort")
     time, event, x = time[order], event[order], x[order]
-    b, s, c, converged = _newton(time, event, x[:, cols], max_iter, tol)
+    b, s, c, converged = _newton(time, event, x[:, cols], max_iter, tol,
+                                 None if entry is None else entry[order])
     beta, se, cov = nan.copy(), nan.copy(), np.full((k, k), np.nan)
     beta[cols], se[cols] = b, s
     cov[np.ix_(cols, cols)] = c

@@ -316,6 +316,40 @@ of 0.005 / 0.01 / 0.02 (0.005 is about what HDL cholesterol or CRP add to establ
 models). A replicated effect that is negligible is said to be so, in the reconciliation table and below
 the effect table.
 
+**Followed over time** (`codas/aou/monthstore.py`, `codas/core/trajectory.py`; the spec's `month_store`, on in
+the example). One BigQuery pass over the daily tables keeps every participant's daily sources over the whole time
+they wore the device, in blocks of 30 days from the index date (in the sealed folder, with person ids; each
+outcome's shares get their blocks keyed by cohort row, without dates or identifiers). A registered feature that
+is a daily column's mean over the baseline is then read on the holdout two more ways, both fixed in the
+pre-registration before the holdout is opened:
+* as a **time-varying exposure** (as in Master et al., Nat Med 2022): follow-up cut at block edges, each interval's
+  exposure the mean of the 3 blocks ending 6 blocks before it (the lag keeps changes caused by a disease not yet
+  diagnosed out of the exposure; the latest earlier value is carried forward when those blocks are empty), in a
+  counting-process Cox model with the confounders (complete cases), per registered SD. The counting-process fit
+  gives exactly the unsplit fit when the covariates do not change (a test);
+* its **course before each diagnosis**: each case against up to four controls still followed and free of the
+  event at that time (incidence density sampling), matched on sex and age within 3 years, in the windows 36-24,
+  24-12 and 12-0 blocks before the diagnosis; per window the mean case-minus-controls difference in SD units with
+  its 95% interval. The onset is `stable` (a difference in every window: a trait that precedes the disease by
+  years), `prodromal` (only nearest the diagnosis: a change the disease may cause), `none` or `mixed`. A window
+  with 1-20 cases is not estimated.
+
+**Two-way confirmation** (`codas/aou/crossfit.py`; the notebook's `DISCOVERY_SHARE`). The split seals half the
+participants. With `"A"` (the default) the agents see share A and what they register is tested on share B; with
+`"B"` the roles swap: the half sealed under `"A"` discovers and the other confirms. Each direction has its own run
+folder (`<runs>/aou_share_b` for B), phenome scan, lessons and ledger (its key names the share), so nothing one
+direction learned reaches the other's agents and each keeps its own error control. Once both directions have
+tested an outcome, `crossfit_summary.md` lists each feature's two results side by side; one replicated both
+ways has two independent confirmations. Designs changed after reading the first direction may still favour
+what worked there; the summary says so.
+
+**Full-cohort scan** (the notebook's `FULL_COHORT_SCAN`; off by default). The phenome scan on every participant,
+sealed share included, as a confirmatory phenome-wide study of its own: its settings, outcomes and features are
+written to `phenome_scan_full_cohort_prereg.json` (with a hash) before any test, its result to
+`phenome_scan_full_cohort.json` and `full_cohort_scan.md`, and every outcome it screens is recorded as opened
+in both halves' ledgers, so no sealed half can confirm anything about those outcomes afterwards. It belongs at
+the very end, after the confirmations.
+
 ## How far the evidence reaches, and what the analysis covered
 
 Each outcome's report ends with a scorecard computed from the run's records (`codas/aou/scorecard.py`):
@@ -329,8 +363,9 @@ Each outcome's report ends with a scorecard computed from the run's records (`co
   share it went through: adjusted, per natural unit and by quarter, absolute risk, dose-response, a lag, negative
   controls, wear adherence, the incumbent head to head, added predictive value, within-person change,
   consistency across strata, the sealed-holdout test, an E-value, the gain beyond the strong baseline, the share
-  a declared mediator carries, and how specific the feature is across the phenome scan. A step is yes (ran, whatever it showed), no
-  (applicable but missing or not computable: the time-varying exposure is always no in this version) or n/a.
+  a declared mediator carries, how specific the feature is across the phenome scan, the time-varying exposure and
+  the course before the diagnosis. A step is yes (ran, whatever it showed), no (applicable but missing or not
+  computable, e.g. a feature that is not a daily source's mean cannot be followed over time) or n/a.
 * **The evidence ladder** (after Hlatky et al., Circulation 2009): 1, associated on the sealed holdout in the
   registered direction; 2, replicated under the ledger's error control and robust to every falsification test
   that ran; 3, adding predictive value (a gain whose interval excludes zero, not negligible in size) beyond the

@@ -33,7 +33,7 @@ from codas.aou import cohort  # noqa: E402
 from codas.aou import daystore  # noqa: E402
 from codas.aou import feasibility as feas
 from codas.aou import ledger as ledger_book
-from codas.aou import data_atlas, phenome
+from codas.aou import crossfit, data_atlas, monthstore, phenome
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
 from codas.aou.phenotypes import describe as describe_phenotypes
@@ -398,7 +398,7 @@ def _code_version() -> str:
 # The code that decides what an outcome's results are. Changes elsewhere (the notebook, the background
 # job, report rendering, views) leave finished outcomes reusable; a change here reruns them.
 ANALYSIS_CODE = ("codas/core", "codas/agents", "codas/aou/cohort.py", "codas/aou/phenotypes.py",
-                 "codas/aou/daystore.py", "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/ledger.py",
+                 "codas/aou/daystore.py", "codas/aou/monthstore.py", "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/ledger.py",
                  "codas/aou/privacy.py", "codas/aou/table1.py")
 
 
@@ -516,10 +516,40 @@ def _opened_outcomes(out: Path, keys: list[str], outcomes: dict[str, Any], base:
     return opened
 
 
+def _full_cohort_scan(verified: list[Any], base: CohortSpec, cdr: str, client: Any, out: Path, *, min_cases: int,
+                      min_n: int, log: Any) -> dict[str, Any]:
+    """The full-cohort scan (``phenome.scan(everyone=True)``), then every screened outcome recorded as opened
+    on both halves' ledgers; its tables go to ``full_cohort_scan.md``."""
+    from dataclasses import replace
+
+    out.mkdir(parents=True, exist_ok=True)
+    result = phenome.scan(verified, base, cdr, client, out, min_events=min_cases, min_n=min_n, log=log, everyone=True)
+    screened = {r["name"] for r in result["outcomes"] if r.get("tested")}
+    opened = [(o.name, outcome_identity(feas.spec_for(o, base))) for o in verified if o.name in screened]
+    for share in ("A", "B"):
+        folder = crossfit.run_folder(out, share)
+        folder.mkdir(parents=True, exist_ok=True)
+        ledger_book.mark_opened(folder, holdout_key(replace(base, discovery_share=share), cdr), opened,
+                                "the full-cohort scan read this outcome on every participant")
+    text = ("## Full-cohort scan (every participant; pre-registered in "
+            f"{phenome.FULL_PREREG}; every screened outcome is now opened on both halves)\n\n"
+            + phenome.scan_table(result) + "\n\n### Strongest hits\n\n" + phenome.hits_table(result)
+            + "\n\n### Replication atlas\n\n" + phenome.atlas_table(result) + "\n")
+    path = out / "full_cohort_scan.md"
+    path.write_text(text, encoding="utf-8")
+    log(f"full-cohort scan: {result['tested_pairs']:,} pairs, {sum(p['hit'] for p in result['pairs'])} hits; "
+        f"{len(opened)} outcomes opened on both halves")
+    return {"table": text, "chosen": [], "runs": [], "summary_path": str(path), "rows": [], "selection": "full cohort",
+            "scan": {"path": str(out / phenome.FULL_SCAN_FILE), "pairs": result["tested_pairs"],
+                     "hits": sum(1 for p in result["pairs"] if p["hit"]), "features": result["features"],
+                     "literature": result.get("literature")}, "data_atlas": None}
+
+
 def holdout_key(spec: CohortSpec, cdr: str | None) -> str:
     """Which participants a spec's holdout holds: the split depends only on the person id, the salt and
     the share, so every spec with the same three seals the same people."""
-    return f"{resolve_cdr(cdr)}|salt={spec.split_salt}|permille={int(round(spec.holdout_fraction * 1000))}"
+    key = f"{resolve_cdr(cdr)}|salt={spec.split_salt}|permille={int(round(spec.holdout_fraction * 1000))}"
+    return key if spec.discovery_share == "A" else f"{key}|share=B"  # share B seals the other half
 
 
 def _ledger_lines(out: Path, keys: list[str]) -> list[str]:
@@ -889,7 +919,9 @@ def _run_tables(spec: CohortSpec, csv: Path, cdr: str | None, *, label: str | No
                              positive_controls=list(spec.positive_controls),
                              availability=cohort.availability_columns(spec),
                              covariate_imputations=CONFIRM_IMPUTATIONS, discovery_csv=csv,
-                             outcome=outcome_identity(spec), heterogeneity=cohort.heterogeneity_columns(spec))
+                             outcome=outcome_identity(spec), heterogeneity=cohort.heterogeneity_columns(spec),
+                             followed=({"block_days": monthstore.block_days(spec), "origin_days": spec.lag_days}
+                                       if spec.month_store is not None and spec.design == "incident" else None))
         # The pre-registration is on disk before the holdout is read. Phenotypes defined on the discovery
         # share's days are computed on the sealed share's days by their registered definitions.
         sealed_days = daystore.holdout_days_path(csv)
@@ -898,8 +930,10 @@ def _run_tables(spec: CohortSpec, csv: Path, cdr: str | None, *, label: str | No
 
             phenotype_dsl.add_columns(prereg["defined_phenotypes"], pd.read_csv(sealed_days), sealed)
         sealed_panel = holdout_path(cohort.panel_path(csv))
+        sealed_months = monthstore.holdout_months_path(csv)
         result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr),
-                         panel_csv=sealed_panel if sealed_panel.exists() else None)
+                         panel_csv=sealed_panel if sealed_panel.exists() else None,
+                         months_csv=sealed_months if sealed_months.exists() else None)
         # The per-candidate debate next to the holdout result, so a candidate the debate conceded but the
         # holdout replicated (or the reverse) is visible rather than buried in two sections.
         verdicts = {d["feature"]: d.get("verdict") for d in state.get("candidate_debates") or [] if d.get("feature")}
@@ -947,6 +981,7 @@ def explore(
     rerun: bool = False,
     on_agent: Any = None,
     selection: str | None = None,
+    full_cohort: bool = False,
 ) -> dict[str, Any]:
     """Verify the catalog, screen the outcomes, then run CoDaS on the top-K outcomes.
 
@@ -972,6 +1007,11 @@ def explore(
 
     Returns the masked screen table, the chosen outcomes and one summary per run (with ``failed`` set
     for a failed one), and writes ``explore_summary.md`` next to the per-outcome reports.
+
+    With ``base.discovery_share = "B"`` the halves swap roles (``codas.aou.crossfit``) and the run lives in its
+    own folder beside ``out_dir``; once both directions have tested an outcome, the two-way summary is written.
+    ``full_cohort`` runs the full-cohort scan instead (``phenome.scan(everyone=True)``): the last step, since it
+    opens every screened outcome on both halves.
     """
     if client is None:
         from google.cloud import bigquery
@@ -1001,6 +1041,11 @@ def explore(
     log(f"catalog: {len(verified)}/{len(outcomes)} outcomes verified against the concept table")
 
     out = Path(out_dir).expanduser().resolve()
+    if base.discovery_share == "B":  # its own folder: scan, lessons, ledger and reports of this direction
+        out = crossfit.run_folder(out, "B")
+    if full_cohort:
+        return _full_cohort_scan(verified, base, cdr, client, crossfit.run_folder(out, "A"), min_cases=min_cases,
+                                 min_n=min_measurement_n, log=log)
     selection = (selection or os.getenv("CODAS_OUTCOME_SELECTION", "scan")).strip().lower()
     scan = atlas = None
     if selection == "scan" and base.design == "incident":
@@ -1085,6 +1130,12 @@ def explore(
     billed = cohort.QUERY_LOG[first_job:]
     if billed:
         log(f"BigQuery in this run: {cohort.billed_text(sum(b['bytes_billed'] for b in billed))}")
+    both = crossfit.write(out)  # once both directions have tested an outcome
+    if both is not None:
+        text = both.read_text(encoding="utf-8")
+        log(text)
+        with Path(summary_path).open("a", encoding="utf-8") as fh:
+            fh.write("\n" + text)
 
     return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path),
             "rows": mask_small_counts(rows), "selection": "scan" if scan is not None else "size",

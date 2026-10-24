@@ -268,6 +268,9 @@ class CohortSpec:
     valid_day: dict[str, Any] | None = None
     holdout_fraction: float = 0.0  # share of participants sealed for replication (0 = no split)
     split_salt: int = 0
+    # Which half the agents see: "A" (the default; the other half is sealed) or "B", which swaps the roles so
+    # the half sealed under "A" discovers and the other confirms (codas/aou/crossfit.py).
+    discovery_share: str = "A"
     # Conditions the exposures should not cause, tested on the sealed table only (incident design).
     negative_controls: list[OutcomeSpec] = field(default_factory=list)
     # Columns of the table with a known association with the outcome, tested on the sealed table the
@@ -284,6 +287,10 @@ class CohortSpec:
     # The day-by-day baseline new phenotypes are defined on (codas/aou/daystore.py), e.g.
     # {"from": ["hrmin", "sleepseg"]}: the daily sources always, and the minute-level sources named here.
     day_store: dict[str, Any] | None = None
+    # The daily sources over the whole time a participant wore the device, in blocks of days from the index
+    # (codas/aou/monthstore.py), e.g. {} or {"block_days": 30}: features followed over time on the holdout.
+    # Used under the incident design only, where the index belongs to the person.
+    month_store: dict[str, Any] | None = None
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
@@ -310,6 +317,8 @@ class CohortSpec:
             raise ValueError("holdout_fraction must be in [0, 1).")
         if not 0 <= self.split_salt <= MAX_SPLIT_SALT:
             raise ValueError(f"split_salt must be in [0, {MAX_SPLIT_SALT}].")
+        if self.discovery_share not in ("A", "B"):
+            raise ValueError(f"discovery_share must be 'A' or 'B', not {self.discovery_share!r}.")
         if self.valid_day is not None:
             _ident(str(self.valid_day.get("column", "")), "valid_day column")
             if self.valid_day.get("column") not in self.wearables[0].columns:
@@ -350,6 +359,10 @@ class CohortSpec:
             named = self.day_store.get("from") if isinstance(self.day_store, dict) else None
             if not isinstance(named, list) or not all(isinstance(n, str) and _IDENT.match(n) for n in named):
                 raise ValueError('day_store must be {"from": [phenotype source prefixes]}.')
+        if self.month_store is not None:  # used under the incident design only (codas/aou/monthstore.py)
+            days = self.month_store.get("block_days", 30) if isinstance(self.month_store, dict) else None
+            if not whole(days, 7, 365):
+                raise ValueError('month_store is {} or {"block_days": 7-365}.')
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CohortSpec":
@@ -368,12 +381,14 @@ class CohortSpec:
             valid_day=data.get("valid_day"),
             holdout_fraction=float(data.get("holdout_fraction", 0.0)),
             split_salt=int(data.get("split_salt", 0)),
+            discovery_share=str(data.get("discovery_share", "A")),
             negative_controls=[OutcomeSpec(**{"kind": "condition", **c}) for c in data.get("negative_controls", [])],
             positive_controls=[str(c) for c in data.get("positive_controls", [])],
             phenotypes=[PhenotypeSource(**p) for p in data.get("phenotypes", [])],
             panel=data.get("panel"),
             ehr_lookback_days=None if data.get("ehr_lookback_days") is None else int(data["ehr_lookback_days"]),
             day_store=data.get("day_store"),
+            month_store=data.get("month_store"),
         )
         spec.validate()
         if spec.day_store is not None:  # a spec as written: its day store must name minute-level sources it has
@@ -556,6 +571,22 @@ _SPLIT_MIXED = f"MOD(MOD(person_id, {_SPLIT_MOD}) * {_SPLIT_MUL} + @split_salt, 
 _SPLIT_SQL = f"MOD(MOD(MOD({_SPLIT_MIXED} * {_SPLIT_MIXED}, {_SPLIT_MOD}) * {_SPLIT_MUL}, {_SPLIT_MOD}), 1000)"
 
 
+def sealed_condition(spec: "CohortSpec") -> str:
+    """The SQL condition that seals a participant: the low buckets under share A, the others under share B."""
+    return f"{_SPLIT_SQL} {'<' if spec.discovery_share == 'A' else '>='} @holdout_permille"
+
+
+def discovery_condition(spec: "CohortSpec") -> str:
+    """The SQL condition that puts a participant in the share the agents see."""
+    return f"{_SPLIT_SQL} {'>=' if spec.discovery_share == 'A' else '<'} @holdout_permille"
+
+
+def is_sealed(person_id: int, spec: "CohortSpec") -> bool:
+    """Whether ``sealed_condition`` seals this person (for tests and checks)."""
+    low = holdout_bucket(int(person_id), spec.split_salt) < int(round(spec.holdout_fraction * 1000))
+    return low if spec.discovery_share == "A" else not low
+
+
 def holdout_bucket(person_id: int, salt: int = 0) -> int:
     """The split bucket (0-999) the extraction SQL assigns to ``person_id``; below the share x 1000 is sealed."""
     h = (person_id % _SPLIT_MOD * _SPLIT_MUL + salt) % _SPLIT_MOD
@@ -703,7 +734,8 @@ def build_phenotype_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryPara
 
 
 def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc: bool = False,
-                     person_id: bool = False, person_level: bool = False) -> tuple[str, list[QueryParam]]:
+                     person_id: bool = False, person_level: bool = False,
+                     everyone: bool = False) -> tuple[str, list[QueryParam]]:
     """Return the extraction SQL and its parameters. Identifiers are validated, values are bound.
 
     With ``phenotypes=False`` the intraday phenotypes are left out and ``person_id`` is selected so that
@@ -1026,7 +1058,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc:
         # columns so the output carries only the flag; extract_cohort drops it before the agents see rows.
         params += [("holdout_permille", "INT64", int(round(spec.holdout_fraction * 1000))),
                    ("split_salt", "INT64", int(spec.split_salt))]
-        ctes.append(f"split AS (\n  SELECT person_id, {_SPLIT_SQL} < @holdout_permille AS {HOLDOUT_COLUMN}\n"
+        ctes.append(f"split AS (\n  SELECT person_id, {sealed_condition(spec)} AS {HOLDOUT_COLUMN}\n"
                     "  FROM index_events\n)")
         if not person_level:
             select += [f"sp.{HOLDOUT_COLUMN}", f"EXTRACT(YEAR FROM ie.index_date) AS {ERA_COLUMN}"]
@@ -1038,7 +1070,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc:
         "FROM index_events ie\n" + "\n".join(joins) + "\n"
         f"WHERE w0.{primary.prefix}_days >= @min_wear_days"
         # A person-level table holds the discovery share only: the sealed rows never leave BigQuery.
-        + (f"\n  AND NOT sp.{HOLDOUT_COLUMN}" if person_level and spec.holdout_fraction > 0 else "")
+        + (f"\n  AND NOT sp.{HOLDOUT_COLUMN}" if person_level and spec.holdout_fraction > 0 and not everyone else "")
     )
     return sql, params
 
@@ -1174,7 +1206,7 @@ def build_panel_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
     if spec.holdout_fraction > 0:
         params += [("holdout_permille", "INT64", int(round(spec.holdout_fraction * 1000))),
                    ("split_salt", "INT64", int(spec.split_salt))]
-        ctes.append(f"split AS (\n  SELECT person_id, {_SPLIT_SQL} < @holdout_permille AS {HOLDOUT_COLUMN}\n"
+        ctes.append(f"split AS (\n  SELECT person_id, {sealed_condition(spec)} AS {HOLDOUT_COLUMN}\n"
                     "  FROM (SELECT DISTINCT person_id FROM occasions)\n)")
         select.append(f"sp.{HOLDOUT_COLUMN}")
         joins.append("JOIN split sp ON sp.person_id = o.person_id")
@@ -1441,7 +1473,8 @@ def extract_cohort(
     shared = (spec.design == "incident" and bool(spec.phenotypes)
               and os.getenv("CODAS_PHENOTYPE_CACHE", "1") != "0")
     days = spec.day_store is not None and spec.design == "incident"
-    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared, qc=True, person_id=days))
+    months = spec.month_store is not None and spec.design == "incident"
+    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared, qc=True, person_id=days or months))
     if shared:  # the minute-level tables are read once per run, not once per outcome
         frame = frame.merge(_phenotype_table(client, spec, cdr, out), on="person_id", how="left",
                             validate="many_to_one")
@@ -1460,6 +1493,10 @@ def extract_cohort(
         from codas.aou import daystore
 
         daystore.split(daystore.store(client, spec, cdr, out), people, sealed_people, path)
+    if months and people is not None:  # each share's blocks over the whole wear, from the store built once per CDR
+        from codas.aou import monthstore
+
+        monthstore.split(monthstore.store(client, spec, cdr, out), people, sealed_people, path)
     # Aggregate and masked, from the discovery share only.
     qc_path(path).write_text(json.dumps(extraction_qc(frame, spec), indent=1), encoding="utf-8")
     if has_panel(spec):

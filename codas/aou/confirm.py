@@ -95,6 +95,15 @@ _SEED = 17
 # The absolute risk by quarter is read at this horizon, or at the discovery share's 75th percentile of
 # follow-up when that is shorter (beyond it few remain at risk).
 ABSOLUTE_RISK_YEARS = 3
+# A feature followed over time (codas.core.trajectory), in blocks of the month store: the time-varying exposure is
+# the mean of TV_WINDOW blocks ending TV_LAG blocks before each interval; the course before a diagnosis is read
+# in TRAJECTORY_WINDOWS (blocks before the diagnosis block, earliest first) against TRAJECTORY_CONTROLS controls
+# matched on sex and age within TRAJECTORY_AGE_CALIPER years.
+TV_LAG = 6
+TV_WINDOW = 3
+TRAJECTORY_WINDOWS = [(-36, -24), (-24, -12), (-12, 0)]
+TRAJECTORY_CONTROLS = 4
+TRAJECTORY_AGE_CALIPER = 3.0
 
 
 def _digest(record: dict[str, Any]) -> str:
@@ -133,7 +142,8 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                 sensitivity_lag_days: int = DEFAULT_SENSITIVITY_LAG_DAYS,
                 availability: list[str] | tuple[str, ...] = (), covariate_imputations: int = 0,
                 discovery_csv: str | Path | None = None, outcome: dict[str, Any] | None = None,
-                heterogeneity: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+                heterogeneity: list[str] | tuple[str, ...] = (),
+                followed: dict[str, Any] | None = None) -> dict[str, Any]:
     """Freeze the final round's validated candidates as hypotheses and write ``<stem>_prereg.json``.
 
     ``negative_controls`` are control names (the holdout has ``nc_<name>`` and ``nc_<name>_days``),
@@ -271,6 +281,11 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         "absolute_risk_horizon_days": _horizon(frame, survival_time),
         "availability": list(availability), "covariate_imputations": int(covariate_imputations),
         "heterogeneity": list(heterogeneity),
+        # How a feature is followed over time on the holdout (block length and the origin of follow-up in days
+        # from the index come from the cohort); fixed here, before the holdout is read.
+        "followed": ({**followed, "lag_blocks": TV_LAG, "window_blocks": TV_WINDOW,
+                      "windows": [list(w) for w in TRAJECTORY_WINDOWS], "controls": TRAJECTORY_CONTROLS,
+                      "age_caliper": TRAJECTORY_AGE_CALIPER} if followed and survival_time else None),
         "discovery_rounds": len(rounds),
         "discovery_variants_evaluated": sum(int(r.get("evaluated_count") or 0) for r in rounds),
         "discovery_features_proposed": len(proposed),
@@ -447,6 +462,73 @@ def _negative_controls(frame: pd.DataFrame, x: pd.Series, cov: pd.DataFrame | No
     tested = [nc for nc in out if "status" not in nc]
     for nc in tested:  # Bonferroni across the controls that could be tested
         nc["status"] = "associated" if nc["p"] < alpha / len(tested) else "no association"
+    return out
+
+
+def _followed_column(h: dict[str, Any], months: pd.DataFrame) -> str | None:
+    from codas.aou.monthstore import column_of
+
+    return column_of(h["feature"], [c for c in months.columns if c not in ("row", "block", "days")])
+
+
+def _feature_sd(h: dict[str, Any], months: pd.DataFrame, column: str) -> float:
+    """The registered discovery SD of the feature (its unit for per-SD effects), else the blocks' own SD."""
+    sd = (h.get("effect_scale") or {}).get("sd")
+    return float(sd) if isinstance(sd, (int, float)) and sd > 0 else float(pd.to_numeric(months[column]).std())
+
+
+def _time_varying(frame: pd.DataFrame, h: dict[str, Any], months: pd.DataFrame, followed: dict[str, Any],
+                  target: str, time_col: str, cov: pd.DataFrame | None) -> dict[str, Any] | None:
+    """The feature as a time-varying exposure on the holdout (``codas.core.trajectory.intervals``), in a
+    counting-process Cox model with the confounders (complete cases), per registered SD."""
+    from codas.core import trajectory
+
+    column = _followed_column(h, months)
+    if column is None:
+        return None
+    origin = float(followed["origin_days"])
+    people = pd.DataFrame({"row": np.arange(len(frame)), "start": origin,
+                           "end": origin + _num(frame, time_col).to_numpy(dtype=float),
+                           "event": _num(frame, target).fillna(0).to_numpy()})
+    iv = trajectory.intervals(people, months[["row", "block", column]], column, block_days=int(followed["block_days"]),
+                              lag=int(followed["lag_blocks"]), window=int(followed["window_blocks"]))
+    x = iv["exposure"].to_numpy(dtype=float) / _feature_sd(h, months, column)
+    design = x[:, None] if cov is None else np.column_stack([x, cov.to_numpy(dtype=float)[iv["row"].to_numpy()]])
+    fit = cox_ph(iv["stop"], iv["event"], design, entry=iv["entry"])
+    if not np.isfinite(fit.coef[0]):
+        return {"column": column, "status": "could not be estimated"}
+    hr, lo, hi = fit.hazard_ratio(0)
+    used = iv.loc[np.all(np.isfinite(design), axis=1)]
+    return {"column": column, "hr_per_sd": round(hr, 4), "ci95": [round(lo, 4), round(hi, 4)], "p": float(fit.p[0]),
+            "participants": int(used["row"].nunique()), "events": int(used["event"].sum()),
+            "intervals": int(len(used)), "same_direction": bool(np.sign(fit.coef[0]) == h["direction"]),
+            "lag_blocks": int(followed["lag_blocks"]), "window_blocks": int(followed["window_blocks"])}
+
+
+def _trajectory(frame: pd.DataFrame, h: dict[str, Any], months: pd.DataFrame, followed: dict[str, Any],
+                target: str, time_col: str, cov: pd.DataFrame | None) -> dict[str, Any] | None:
+    """The feature's course before each diagnosis on the holdout against controls matched on sex and age
+    (``codas.core.trajectory.matched_trajectory``); a window with 1-20 cases is not estimated."""
+    from codas.core import trajectory
+
+    column = _followed_column(h, months)
+    if column is None:
+        return None
+    people = pd.DataFrame({"row": np.arange(len(frame)), "event": _num(frame, target).fillna(0).to_numpy(),
+                           "end": float(followed["origin_days"]) + _num(frame, time_col).to_numpy(dtype=float)})
+    for c in ("female", "age"):
+        if c in frame.columns:
+            people[c] = _num(frame, c).to_numpy()
+    people = people.dropna(subset=[c for c in ("female", "age") if c in people.columns])
+    out = trajectory.matched_trajectory(people, months[["row", "block", column]], column,
+                                        block_days=int(followed["block_days"]),
+                                        windows=[tuple(w) for w in followed["windows"]],
+                                        sd=_feature_sd(h, months, column), controls=int(followed["controls"]),
+                                        age_caliper=float(followed["age_caliper"]), min_cases=SMALL_CELL_MAX)
+    estimated = [w for w in out["windows"] if "difference_sd" in w]
+    if estimated:  # cases higher for a hazard-raising feature, lower for a protective one
+        out["consistent"] = all(np.sign(w["difference_sd"]) == h["direction"] for w in estimated
+                                if w["ci95"][0] > 0 or w["ci95"][1] < 0)
     return out
 
 
@@ -862,7 +944,7 @@ def _availability(frame: pd.DataFrame, declared: list[str], confounders: list[st
 
 
 def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_key: str | None = None,
-            panel_csv: Path | None = None) -> dict[str, Any]:
+            panel_csv: Path | None = None, months_csv: Path | None = None) -> dict[str, Any]:
     """Test every pre-registered hypothesis once on the holdout; write ``<stem>_confirmation.json``.
 
     With ``panel_csv`` (the sealed repeated-measures panel) each hypothesis also gets its within-person
@@ -890,6 +972,19 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
                 row["within_person"] = _within_person(panel, h, target)
             except Exception as exc:  # noqa: BLE001 - evidence only; reported as not computed
                 row["within_person"] = {"error": _error(exc)}
+    followed = prereg.get("followed")
+    if followed and time_col and months_csv is not None and Path(months_csv).exists():
+        months = pd.read_csv(months_csv)
+        for row, h in zip(rows, prereg["hypotheses"]):
+            if "same_direction" not in row:
+                continue
+            for key, check in (("time_varying", _time_varying), ("trajectory", _trajectory)):
+                try:
+                    found = check(frame, h, months, followed, target, time_col, cov)
+                except Exception as exc:  # noqa: BLE001 - evidence only; reported as not computed
+                    found = {"error": _error(exc)}
+                if found is not None:
+                    row[key] = found
     for row, h in zip(rows, prereg["hypotheses"]):
         card = _scorecard(h, row)
         if card is not None:
@@ -1130,6 +1225,30 @@ def _beyond_markers_lines(rows: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+def _followed_lines(rows: list[dict[str, Any]]) -> list[str]:
+    """Each feature followed over time: as a time-varying exposure, and before each diagnosis."""
+    followed = [r for r in rows if r.get("time_varying") or r.get("trajectory")]
+    if not followed:
+        return []
+    out = ["**Followed over time** (the month store: the exposure as it changes during follow-up, the mean of the "
+           "blocks ending a lag before each interval; and the course before each diagnosis against controls "
+           "matched on sex and age, in SD units, case minus controls):", "",
+           "| feature | time-varying HR per SD (95% CI) | before the diagnosis, by window of blocks | onset |",
+           "|---|---|---|---|"]
+    for r in followed:
+        tv = r.get("time_varying") or {}
+        hr = (f"{tv['hr_per_sd']} ({tv['ci95'][0]}-{tv['ci95'][1]}); lag {tv['lag_blocks']} blocks"
+              if tv.get("hr_per_sd") is not None else tv.get("status") or tv.get("error") or "-")
+        tr = r.get("trajectory") or {}
+        windows = "; ".join(f"{w['blocks'][0]} to {w['blocks'][1]}: " + (f"{w['difference_sd']:+.2f} ({w['ci95'][0]:+.2f} to "
+                                                                          f"{w['ci95'][1]:+.2f})" if "difference_sd" in w
+                                                                          else w.get("status", "-"))
+                            for w in tr.get("windows") or []) or tr.get("error") or "-"
+        out.append(f"| {r['feature']} | {hr} | {windows} | {tr.get('onset', '-')} |")
+    out.append("")
+    return out
+
+
 def confirmation_markdown(result: dict[str, Any]) -> str:
     """The deterministic replication and falsification section appended to the report."""
     ledger = result.get("ledger")
@@ -1222,6 +1341,7 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
             lines.append(f"| {r['feature']} | {h['by']} | {shown} | {h['q_p']:.3g} | {h['i2']:.2f} |")
         lines.append("")
     lines += _beyond_markers_lines(result["hypotheses"])
+    lines += _followed_lines(result["hypotheses"])
     adjusted = [r for r in result["hypotheses"] if r.get("adherence_adjusted")]
     if adjusted:
         lines += ["", "Wear adherence as a negative-control exposure: each effect re-estimated with "

@@ -23,7 +23,7 @@ from google.genai import types
 
 from codas.agents import agent as agent_module
 from codas.agents import tools
-from codas.aou import runner
+from codas.aou import runner, scorecard
 from codas.aou.cohort import CohortSpec, output_columns
 from codas.aou.privacy import MASK, SMALL_CELL_MAX, _is_count_key
 
@@ -576,7 +576,7 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
         # How far the evidence reaches: every tested hypothesis's recipe coverage and rung, from the records.
         card = state["scorecard"]
         assert card["summary"] and {r["feature"] for r in card["hypotheses"]} <= {h["feature"] for h in confirmation["hypotheses"]}
-        assert all(0 <= r["rung"] <= 3 and len(r["cells"]) == 14 for r in card["hypotheses"])
+        assert all(0 <= r["rung"] <= 3 and len(r["cells"]) == len(scorecard.STEPS) for r in card["hypotheses"])
         assert "## What the analysis covered, and how far the evidence reaches" in report
         assert views.outcome_scorecard_table(result, stem) is not None and views.recipe_coverage_table(result, stem) is not None
         # Each registered effect was checked across strata (sex, age, era, sub-study) without stratum counts.

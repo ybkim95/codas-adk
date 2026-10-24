@@ -4,8 +4,8 @@
   biomarker studies share it went through (the effect adjusted, in natural units and by quarter, absolute risk,
   dose-response, a lag, negative controls, wear adherence, the incumbent head to head, added predictive value,
   within-person change, consistency across strata, the sealed-holdout test, an E-value, the gain beyond a strong
-  baseline of every established marker, the share a declared mediator carries, and how specific the feature
-  is across the phenome scan; a time-varying exposure is not run in this version). Each step is ``yes`` (ran and gave a result, whatever the result), ``no``
+  baseline of every established marker, the share a declared mediator carries, how specific the feature is
+  across the phenome scan, the feature as a time-varying exposure, and its course before the diagnosis). Each step is ``yes`` (ran and gave a result, whatever the result), ``no``
   (applicable but missing, or could not be computed) or ``n/a`` (not applicable to this outcome or hypothesis),
   with what it showed; whether the result supports the hypothesis is the rung's to say.
 * The evidence ladder (after Hlatky et al., Circulation 2009): 1, associated on the sealed holdout in the
@@ -44,6 +44,7 @@ STEPS = [
     ("mediation", "through a declared mediator"),
     ("specificity", "specific across the phenome"),
     ("time_varying", "time-varying exposure"),
+    ("trajectory", "course before the diagnosis"),
 ]
 RUNGS = {0: "not associated on the holdout", 1: "associated on the holdout",
          2: "replicated and robust to every falsification test that ran",
@@ -173,7 +174,18 @@ def _cells(row: dict[str, Any], confirmation: dict[str, Any], time_to_event: boo
                                                                             if _finite(breadth) else "")]
     else:
         cells["specificity"] = [NA, "not screened by the phenome scan (a feature built in this run)"]
-    cells["time_varying"] = [NO, "not run in this version (baseline-window exposure only)"]
+    tv, course = row.get("time_varying") or {}, row.get("trajectory") or {}
+    if not time_to_event:
+        cells["time_varying"] = [NA, "a value outcome"]
+        cells["trajectory"] = [NA, "a value outcome"]
+    else:
+        cells["time_varying"] = ([YES, f"HR {tv['hr_per_sd']:.3g} per SD{_ci(tv.get('ci95'))}, lag {tv['lag_blocks']} blocks"]
+                                 if _finite(tv.get("hr_per_sd")) else
+                                 [NO, tv.get("status") or tv.get("error") or "not followed (no month store, or not a "
+                                                                                 "daily source's mean)"])
+        cells["trajectory"] = ([YES, f"onset: {course['onset']}"] if course.get("onset") not in (None, "not estimated")
+                               else [NO, course.get("error") or ("too few cases in every window" if course
+                                                                 else "not followed")])
     return cells
 
 

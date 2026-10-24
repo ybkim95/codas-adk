@@ -100,6 +100,8 @@ TOP_K = 1              # outcomes to run for EACH kind (lab values, diagnoses), 
 MAX_OUTCOMES = 2       # at most this many outcomes in all (this stage: one lab value and one diagnosis)
 TEST_ON_HOLDOUT = False  # True: each selected outcome's registered hypotheses are tested once on the sealed half
 OUTCOMES = []          # optional: catalog names to run instead, e.g. ["<name>", ...]; [] = ranked
+DISCOVERY_SHARE = "A"  # "B" swaps the halves: discover on the half sealed under "A", confirm on the other
+FULL_COHORT_SCAN = False  # True only as the very last step: the scan on every participant opens both halves
 # ---------------------------------------------------------------------------------------------
 import json, re
 
@@ -368,7 +370,8 @@ continue. Run All again to retry failed outcomes: finished ones are reused, not 
 whose agents finished but whose holdout test or saving failed redoes only those steps."""),
 code("""result = job.run_or_attach({"catalog": str(CATALOG), "spec": str(REPO / "scripts/aou/hba1c_fitbit.example.json"),
                             "cdr": CDR, "top_k": TOP_K, "outcomes": OUTCOMES or None,
-                            "max_outcomes": MAX_OUTCOMES or None, "test_holdout": TEST_ON_HOLDOUT}, quiet=True)
+                            "max_outcomes": MAX_OUTCOMES or None, "test_holdout": TEST_ON_HOLDOUT,
+                            "discovery_share": DISCOVERY_SHARE, "full_cohort_scan": FULL_COHORT_SCAN}, quiet=True)
 rehearsal = views.rehearsal_table(result)
 if rehearsal is not None:
     display(Markdown("### Rehearsal: the real models on synthetic data, before any All of Us query"))
@@ -391,7 +394,8 @@ if result.get("data_atlas"):
     for title, frame in views.data_atlas_tables(result).items():
         display(Markdown(f"**{title}**"))
         display(views.fit(frame))
-display(views.feasibility_figure(result["rows"], result["chosen"]))
+if result.get("rows"):
+    display(views.feasibility_figure(result["rows"], result["chosen"]))
 display(Markdown("### Runs"))
 display(views.fit(views.runs_table(result)))
 literature = views.literature_table(result)

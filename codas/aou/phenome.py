@@ -50,7 +50,7 @@ import pandas as pd
 from scipy import stats
 
 from codas.aou import cohort
-from codas.aou.cohort import (_SPLIT_SQL, CohortSpec, QueryParam, _first_wear_cte, _valid_rule, availability_columns,
+from codas.aou.cohort import (CohortSpec, QueryParam, _first_wear_cte, _valid_rule, availability_columns,
                               build_cohort_sql, resolve_cdr, sealed_dir)
 from codas.aou.privacy import MASK, SMALL_CELL_MAX, mask_small_counts
 from codas.core import effects
@@ -75,6 +75,8 @@ ATLAS_MAX_LOOKUPS = int(os.getenv("CODAS_ATLAS_MAX_LOOKUPS", "800"))
 _HALF_SEED = 20251024
 _BASE = ("person_id", "last_seen_day", "age", "female")
 SCAN_FILE = "phenome_scan.json"
+FULL_SCAN_FILE = "phenome_scan_full_cohort.json"
+FULL_PREREG = "phenome_scan_full_cohort_prereg.json"
 
 
 def _bucket(n: int) -> int | str:
@@ -87,20 +89,22 @@ def _shared_phenotypes(spec: CohortSpec) -> bool:
     return bool(spec.phenotypes) and os.getenv("CODAS_PHENOTYPE_CACHE", "1") != "0"
 
 
-def person_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
-    """Every discovery participant's person-level columns, by the extraction's own code."""
-    return build_cohort_sql(spec, cdr, phenotypes=not _shared_phenotypes(spec), person_level=True)
+def person_sql(spec: CohortSpec, cdr: str, everyone: bool = False) -> tuple[str, list[QueryParam]]:
+    """Every discovery participant's person-level columns (every participant's with ``everyone``), by the
+    extraction's own code."""
+    return build_cohort_sql(spec, cdr, phenotypes=not _shared_phenotypes(spec), person_level=True, everyone=everyone)
 
 
-def _people(spec: CohortSpec, t: Any, params: list[QueryParam]) -> list[str]:
-    """The discovery share's index dates (the sealed share is left out here, in BigQuery)."""
+def _people(spec: CohortSpec, t: Any, params: list[QueryParam], everyone: bool = False) -> list[str]:
+    """The discovery share's index dates (the sealed share is left out here, in BigQuery); every participant's
+    with ``everyone`` (the full-cohort scan)."""
     valid = _valid_rule(spec, params)
     params.append(("window_days", "INT64", int(spec.window_days)))
     where = ""
-    if spec.holdout_fraction > 0:
+    if spec.holdout_fraction > 0 and not everyone:
         params += [("holdout_permille", "INT64", int(round(spec.holdout_fraction * 1000))),
                    ("split_salt", "INT64", int(spec.split_salt))]
-        where = f"\n  WHERE {_SPLIT_SQL} >= @holdout_permille"
+        where = f"\n  WHERE {cohort.discovery_condition(spec)}"
     return [_first_wear_cte(spec.wearables[0], t, valid),
             "people AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
             f"  FROM first_wear{where}\n)"]
@@ -120,13 +124,14 @@ def _outcome_map(outcomes: list[Any], t: Any, params: list[QueryParam]) -> list[
             f"  JOIN {t('concept_ancestor')} ca ON ca.ancestor_concept_id = s.concept_id\n  WHERE s.descend\n)"]
 
 
-def condition_matrix_sql(outcomes: list[Any], spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
+def condition_matrix_sql(outcomes: list[Any], spec: CohortSpec, cdr: str,
+                         everyone: bool = False) -> tuple[str, list[QueryParam]]:
     """For every discovery participant and catalog condition they were ever diagnosed with: the first
     diagnosis in days from the index date and the number of distinct diagnosis dates."""
     cdr = resolve_cdr(cdr)
     t = lambda name: f"`{cdr}.{name}`"  # noqa: E731 - table reference helper
     params: list[QueryParam] = []
-    ctes = _people(spec, t, params) + _outcome_map(outcomes, t, params) + [
+    ctes = _people(spec, t, params, everyone) + _outcome_map(outcomes, t, params) + [
         "dx AS (\n"
         "  SELECT co.person_id, om.outcome, MIN(co.condition_start_date) AS dx_date,\n"
         "    COUNT(DISTINCT co.condition_start_date) AS dx_dates\n"
@@ -140,7 +145,8 @@ def condition_matrix_sql(outcomes: list[Any], spec: CohortSpec, cdr: str) -> tup
     return sql, params
 
 
-def lab_matrix_sql(outcomes: list[Any], spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
+def lab_matrix_sql(outcomes: list[Any], spec: CohortSpec, cdr: str,
+                   everyone: bool = False) -> tuple[str, list[QueryParam]]:
     """For every discovery participant and catalog laboratory outcome: the first value from index + lag (and
     before index + lag + horizon, when the spec has one) within the outcome's bounds and units."""
     cdr = resolve_cdr(cdr)
@@ -165,7 +171,7 @@ def lab_matrix_sql(outcomes: list[Any], spec: CohortSpec, cdr: str) -> tuple[str
         if parts:
             rules.append(f"      WHEN {i} THEN " + " AND ".join(parts))
     rule = ("\n    AND CASE om.outcome\n" + "\n".join(rules) + "\n      ELSE TRUE END") if rules else ""
-    ctes = _people(spec, t, params) + _outcome_map(outcomes, t, params) + [
+    ctes = _people(spec, t, params, everyone) + _outcome_map(outcomes, t, params) + [
         "firsts AS (\n"
         "  SELECT m.person_id, om.outcome, m.value_as_number AS value,\n"
         "    ROW_NUMBER() OVER (PARTITION BY m.person_id, om.outcome ORDER BY m.measurement_date, m.measurement_id) AS rn\n"
@@ -191,9 +197,10 @@ def _cached(client: Any, sql: str, params: list[QueryParam], cdr: str, out: Path
     return pd.read_csv(path, float_precision="round_trip")
 
 
-def person_table(spec: CohortSpec, cdr: str, client: Any, out: Path) -> pd.DataFrame:
-    """The discovery share's person table, with the phenotypes computed once per run merged in."""
-    frame = _cached(client, *person_sql(spec, cdr), cdr, out, "people")
+def person_table(spec: CohortSpec, cdr: str, client: Any, out: Path, everyone: bool = False) -> pd.DataFrame:
+    """The discovery share's person table (every participant's with ``everyone``), with the phenotypes computed
+    once per run merged in."""
+    frame = _cached(client, *person_sql(spec, cdr, everyone), cdr, out, "people")
     if _shared_phenotypes(spec):
         frame = frame.merge(cohort._phenotype_table(client, spec, cdr, out), on="person_id", how="left",
                             validate="one_to_one")
@@ -511,24 +518,35 @@ def replication_atlas(result: dict[str, Any], people: pd.DataFrame, features: li
 
 
 def scan(outcomes: list[Any], spec: CohortSpec, cdr: str, client: Any, out: Path, *, min_events: int,
-         min_n: int, log: Any = print) -> dict[str, Any]:
+         min_n: int, log: Any = print, everyone: bool = False) -> dict[str, Any]:
     """Screen every verified catalog outcome against every feature on the discovery share (module doc).
     ``outcomes`` are catalog entries; diagnoses need ``min_events`` events and laboratory values ``min_n``
-    participants in the discovery share to be screened. The result is cached by its inputs."""
+    participants in the discovery share to be screened. The result is cached by its inputs.
+
+    With ``everyone`` it is the full-cohort scan: the same screen on every participant, sealed share included,
+    as a confirmatory phenome-wide study of its own. Its settings, outcomes and features are written to
+    ``FULL_PREREG`` before any test, its result goes to ``FULL_SCAN_FILE``, and every outcome it screens is
+    recorded as opened in the ledgers of both shares (``mark_opened``): after it, no sealed half can confirm
+    anything about those outcomes. Run it last."""
     if spec.design != "incident":
         raise ValueError("The phenome scan needs the incident design, whose index date is a person's own.")
     cdr = resolve_cdr(cdr)
     out = Path(out)
     conditions = [o for o in outcomes if o.kind == "condition"]
     labs = [o for o in outcomes if o.kind == "measurement"]
-    people = person_table(spec, cdr, client, out)
-    dx = (_cached(client, *condition_matrix_sql(conditions, spec, cdr), cdr, out, "diagnoses") if conditions
-          else pd.DataFrame(columns=["person_id", "outcome", "dx_day", "dx_dates"]))
-    values = (_cached(client, *lab_matrix_sql(labs, spec, cdr), cdr, out, "labs") if labs
+    people = person_table(spec, cdr, client, out, everyone)
+    dx = (_cached(client, *condition_matrix_sql(conditions, spec, cdr, everyone), cdr, out, "diagnoses")
+          if conditions else pd.DataFrame(columns=["person_id", "outcome", "dx_day", "dx_dates"]))
+    values = (_cached(client, *lab_matrix_sql(labs, spec, cdr, everyone), cdr, out, "labs") if labs
               else pd.DataFrame(columns=["person_id", "outcome", "value"]))
     features = features_of(people, spec)
     settings = {"q": Q_LEVEL, "half_p": HALF_P, "t1_p": T1_P, "min_events": int(min_events), "min_n": int(min_n),
-                "literature_hits": LITERATURE_HITS}
+                "literature_hits": LITERATURE_HITS, **({"participants": "every"} if everyone else {})}
+    if everyone:  # fixed on disk before any test is computed
+        record = {"settings": settings, "features": features, "outcomes": [o.name for o in outcomes],
+                  "code": _code_digest(), "cdr": cdr}
+        record["sha256"] = hashlib.sha256(json.dumps(record, sort_keys=True, default=str).encode()).hexdigest()
+        (out / FULL_PREREG).write_text(json.dumps(record, indent=1, default=str), encoding="utf-8")
     identity = [[o.name, o.kind, sorted(int(c) for c in o.concept_ids), o.value_min, o.value_max, o.min_occurrences,
                  sorted(o.unit_concept_ids)] for o in outcomes]
     digest = hashlib.sha256(json.dumps([cdr, [_frame_digest(f) for f in (people, dx, values)], identity, settings,
@@ -536,11 +554,13 @@ def scan(outcomes: list[Any], spec: CohortSpec, cdr: str, client: Any, out: Path
     # The raw result (its counts unmasked, for the ranking) stays in the sealed folder; the copy beside the
     # reports, which the notebook reads, has counts of 1-20 masked.
     cached = sealed_dir(out) / "phenome_cache" / f"phenome_scan_{digest}.json"
+    shown = out / (FULL_SCAN_FILE if everyone else SCAN_FILE)
     if cached.exists():
         result = json.loads(cached.read_text(encoding="utf-8"))
-        (out / SCAN_FILE).write_text(json.dumps(mask_small_counts(result), indent=1), encoding="utf-8")
+        shown.write_text(json.dumps(mask_small_counts(result), indent=1), encoding="utf-8")
         return result
-    log(f"phenome scan: {len(features)} features x {len(outcomes)} outcomes on {len(people):,} discovery participants")
+    log(f"phenome scan: {len(features)} features x {len(outcomes)} outcomes on {len(people):,} "
+        + ("participants, sealed share included (full-cohort scan)" if everyone else "discovery participants"))
     half = np.random.default_rng(_HALF_SEED).random(len(people)) < 0.5
     covariates = [c.name for c in spec.covariates if c.name in people.columns]
     adherence = [c for c in availability_columns(spec) if c in people.columns]
@@ -594,7 +614,7 @@ def scan(outcomes: list[Any], spec: CohortSpec, cdr: str, client: Any, out: Path
     text = json.dumps(_json_safe(result), indent=1)
     cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_text(text, encoding="utf-8")
-    (out / SCAN_FILE).write_text(json.dumps(mask_small_counts(json.loads(text)), indent=1), encoding="utf-8")
+    shown.write_text(json.dumps(mask_small_counts(json.loads(text)), indent=1), encoding="utf-8")
     log(f"phenome scan: {len(pairs):,} pairs tested, {sum(p['hit'] for p in pairs)} hits across "
         f"{sum(r['hits'] > 0 for r in rows)} outcomes")
     return json.loads(text)
