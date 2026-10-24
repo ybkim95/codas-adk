@@ -98,7 +98,7 @@ FAST_MODEL = ""        #   enabled in Model Garden
 LITE_MODEL = ""
 TOP_K = 1              # outcomes to run for EACH kind (lab values, diagnoses), best first by the scan
 MAX_OUTCOMES = 2       # at most this many outcomes in all (this stage: one lab value and one diagnosis)
-TEST_ON_HOLDOUT = True   # each selected outcome's registered hypotheses are tested once on the sealed half
+TEST_ON_HOLDOUT = False  # True: each selected outcome's registered hypotheses are tested once on the sealed half
 OUTCOMES = []          # optional: catalog names to run instead, e.g. ["<name>", ...]; [] = ranked
 # ---------------------------------------------------------------------------------------------
 import json, re
@@ -354,12 +354,13 @@ version). If the pipeline cannot finish, register hypotheses, test the sealed ha
 the job stops before any query and says why; weaker results (no new phenotype defined, the planted signal
 missed, the literature unreachable) are shown as warnings.
 
-This stage (`TOP_K = 1`, `MAX_OUTCOMES = 2`, `TEST_ON_HOLDOUT = True`) runs the lab value and the diagnosis the
-phenome scan ranks first, and tests each one's registered hypotheses once on the sealed half. The first run
+This stage (`TOP_K = 1`, `MAX_OUTCOMES = 2`, `TEST_ON_HOLDOUT = False`) runs the lab value and the diagnosis
+the phenome scan ranks first on the discovery half only: the sealed half stays closed, so it is kept for the
+confirmation design chosen after this run (`TEST_ON_HOLDOUT = True` tests each one's registered hypotheses once
+on the sealed half). The first run
 on a CDR builds two tables that later runs reuse: the intraday phenotypes and the day-by-day baseline, each a
 single BigQuery pass over the minute-level tables (roughly 13 TB each, under the cost caps; every job is dry-run
-first). Outcomes already tested on the sealed half are not selected again; set `TEST_ON_HOLDOUT = False` to run
-the agents without opening the sealed half.
+first). Outcomes already tested on the sealed half are not selected again.
 
 Safeguards: a model request that sends nothing for 10 minutes is abandoned, retried, then sent to another
 model; an outcome still running after 3 hours is stopped and marked failed, and the others
