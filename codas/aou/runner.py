@@ -240,7 +240,7 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
               "confirmation", "cohort_table", "analyses", "a_priori_hypotheses", "gap_analysis", "methods_explored",
-              "constraints", "candidate_debates", "lessons", "report_review", "preflight")
+              "constraints", "candidate_debates", "lessons", "report_review", "preflight", "eda", "signal_map")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -692,6 +692,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         state = run_agents(csv, goal, on_tool_call, context, recorder=recorder,
                            on_agent=on_agent,
                            state={"covariate_imputations": COVARIATE_IMPUTATIONS,
+                                  "availability_columns": cohort.availability_columns(spec),
                                   "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
                                   "prior_lessons": list(lessons or []),
                                   "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()

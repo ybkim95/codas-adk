@@ -106,15 +106,18 @@ The example spec uses `design: "incident"`, the design of the landmark All of Us
   a baseline value of the outcome's own measure is allowed as a covariate.
 * **Sealed holdout.** `holdout_fraction` of participants (a deterministic, overflow-free hash of the person id and `split_salt`, `cohort.holdout_bucket`; the
   flag is computed apart from the selected columns and dropped before writing) goes to
-  `<cohort>.holdout.csv`, which no agent or tool reads.
+  `sealed/<cohort>.holdout.csv`. No agent or tool can open it: the tool guardrail refuses anything under
+  `sealed/`, and in All of Us mode the tools ignore any path an agent passes.
 * **Pre-registration and one-shot confirmation** (`codas/aou/confirm.py`). After the agents finish,
   the final round's validated candidates are written to `<cohort>_prereg.json` with their definitions,
   discovery direction, confounders and a SHA-256 hash, before the holdout is opened. Each is then
   tested once on the holdout: Cox hazard ratio per SD with 95% CI and E-value for a time-to-event
-  outcome (`codas/core/survival.py`, Efron ties, matches lifelines), partial Spearman otherwise, with
-  Benjamini-Hochberg correction across the pre-registered set. The results
-  (`<cohort>_confirmation.json`) are appended to the report as a deterministic section; the agents
-  never see them.
+  outcome (`codas/core/survival.py`, Efron ties, matches lifelines), partial Spearman otherwise. "Per SD"
+  is the discovery share's SD: each feature's transform (clipped at the discovery 0.5th-99.5th
+  percentiles, logged when strongly skewed, scaled by the discovery SD; `codas/core/preprocess.py`) is
+  frozen in the pre-registration and applied unchanged to the holdout, and the unclipped estimate is
+  reported beside it. The results (`<cohort>_confirmation.json`) are appended to the report as a
+  deterministic section; the agents never see them.
 * **Falsification on the holdout.** Every candidate is also tested, with the same confounders, for:
   * *negative-control outcomes* (`negative_controls`): conditions the exposures should not cause.
     The example uses impacted cerumen, regular astigmatism and verruca vulgaris (OMOP 374375, 380706,
@@ -130,11 +133,51 @@ The example spec uses `design: "incident"`, the design of the landmark All of Us
   A candidate that replicates and passes every test that could run is reported as *robust*.
   *Positive controls* (`positive_controls`, columns with a known association with the outcome, e.g.
   age and BMI) are tested the same way, to show the holdout can detect a real effect.
-* **Holdout ledger.** Every hypothesis tested on a holdout is appended to
+* **Holdout ledger** (`codas/aou/ledger.py`). Every hypothesis tested on a holdout is appended to
   `.codas_runs/aou/holdout_ledger.jsonl`, keyed by which participants it holds (CDR, `split_salt`,
-  `holdout_fraction`). Replication is judged on the Benjamini-Hochberg q across every hypothesis ever
-  tested on those participants, so re-running, or running other outcomes on the same people, cannot
-  buy extra chances at a false replication. `explore_summary.md` ends with the pooled result.
+  `holdout_fraction`), and identified by its outcome's definition and its feature's definition:
+  * a *repeat* (the same outcome and feature, for example after a code change) is reported but not tested
+    again, so re-running cannot buy another chance at a false replication;
+  * an outcome already tested is *opened*: its holdout results are known, so later registrations about it
+    are reported as non-confirmatory, and the selection does not choose it again;
+  * established associations form a *reference* family, each tested one-sided at 0.05 like a positive
+    control and never counted as a discovery;
+  * every other hypothesis is *novel*: tested one-sided in its registered direction, at a level set by
+    online false-discovery-rate control (LORD++, Javanmard and Montanari 2018) over the ledger's order, so
+    each verdict is final when it is made and never changes as the ledger grows.
+
+  `explore_summary.md` ends with the ledger's totals and the level the next novel test will face.
+
+## Data understanding before hypotheses
+
+Before the agents register anything, `set_target` computes a data dossier (`codas/core/eda.py`). It never
+relates a feature to the outcome, so it is safe to read before registration. The hypotheses agent reads
+its digest and can look up any column with the `data_detail` tool. It holds:
+* each candidate feature: coverage, mean and SD, quantiles, skew and excess kurtosis, shares of zeros and of
+  extreme values (beyond 4 SD; beyond 3 IQR from the quartiles), whether it is near-constant, and a
+  natural unit (its interquartile range, rounded);
+* feature families: features that correlate at |rho| >= 0.7, with a representative, so one construct is
+  not registered under several names;
+* wear dependence: each feature's strongest correlation with a days-worn column;
+* missingness: how the people missing a feature differ in age, sex and wear (standardised mean
+  differences);
+* the adjustment covariates: univariate summaries only, because a covariate can stand in for the outcome;
+* the outcome on its own: its distribution, or events, person-years, incidence per 1,000 person-years
+  and censoring, overall and by age band and sex.
+
+A quantile is shown only when at least 20 people lie beyond it, and any count or share resting on 1-20
+people is withheld. A test permutes the outcome within age band x sex and requires every request the
+agents send before registration to stay byte-identical.
+
+Once the first discovery round closes registration, the signal map follows. For every candidate it gives:
+* its association with the outcome adjusted for the scout's base confounders (T0, e.g. age and sex), then
+  also for every adjustment covariate (T2);
+* the share of the T0 effect the covariates explain (attenuation);
+* whether missing the feature is itself associated with the outcome;
+* q-values across features.
+
+The interpreters, critic, defender and gap finder read it. The dossier and the signal map are in the
+notebook, the PDF ("Data understanding") and `<cohort>_state.json`.
 
 Set `design: "window"` and `holdout_fraction: 0` for the earlier outcome-anchored design.
 

@@ -64,6 +64,7 @@ import pandas as pd
 
 from codas.aou import ledger as ledger_book
 from codas.aou.privacy import mask_identifiers, mask_small_counts
+from codas.core import preprocess
 from codas.core.analyses import rebuild_feature
 from codas.core.imputation import pooled_cox, pooled_partial_spearman_ci
 from codas.core.statistics import safe_spearman
@@ -95,8 +96,10 @@ def _discovery_cox(frame: pd.DataFrame, h: dict[str, Any], target: str, time_col
     if x is None or x.notna().sum() < _MIN_ROWS:
         return {}
     cov = frame[confounders].apply(pd.to_numeric, errors="coerce") if confounders else None
+    transform = h.get("transform")
     try:
-        res = _cox(_num(frame, time_col), _num(frame, target), x, cov, m)
+        res = _cox(_num(frame, time_col), _num(frame, target), preprocess.apply(x, transform), cov, m,
+                   scale=transform is None)
     except Exception:  # noqa: BLE001 - the direction then falls back to the screen's
         return {}
     return res if _finite(res) and res["sign"] != 0 else {}
@@ -123,7 +126,11 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
     disagreement is noted. A-priori hypotheses keep the direction they predicted.
 
     ``outcome`` (kind, concept ids, codes, value bounds) identifies the outcome in the holdout ledger, so a
-    later registration about the same outcome is recognised whatever the run is called."""
+    later registration about the same outcome is recognised whatever the run is called.
+
+    With ``discovery_csv`` each hypothesis also gets its frozen transform (``codas.core.preprocess``: clipped
+    at the discovery 0.5th-99.5th percentiles, logged when strongly skewed, scaled by the discovery SD), so a
+    hazard ratio per SD means the same unit on the holdout as on the discovery share."""
     report = state.get("latest_report") or {}
     every = {c["feature"]: c for c in report.get("candidates") or []}
     candidates = [c for c in every.values() if c.get("verdict") == "validated"]
@@ -141,14 +148,22 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         return {"discovery_rho": round(float(rho), 4) if isinstance(rho, (int, float)) else None,
                 "discovery_q": c.get("q_value")}
 
-    frame = pd.read_csv(discovery_csv) if survival_time and discovery_csv and Path(discovery_csv).exists() else None
+    frame = pd.read_csv(discovery_csv) if discovery_csv and Path(discovery_csv).exists() else None
     target = state.get("target_column")
     adjust = [c for c in state.get("confounder_columns") or []
               if frame is not None and c in frame.columns and c != survival_time]
 
+    def frozen(h: dict[str, Any]) -> dict[str, Any]:
+        """The feature's transform fitted on the discovery rows (empty when it cannot be built there)."""
+        x = _feature(frame, h) if frame is not None else None
+        if x is None or x.notna().sum() < _MIN_ROWS:
+            return {}
+        transform = preprocess.fit(x)
+        return {"transform": transform, "transform_text": preprocess.describe(transform)}
+
     def hazard(h: dict[str, Any]) -> dict[str, Any]:
         """The discovery Cox estimate for ``h`` (empty without a time to event or when it cannot be fitted)."""
-        if frame is None or target not in frame.columns:
+        if frame is None or not survival_time or target not in frame.columns:
             return {}
         res = _discovery_cox(frame, h, target, survival_time, adjust, int(covariate_imputations))
         return {"discovery_hr": res["hr_per_sd"], "discovery_hr_ci95": res["ci95"], "sign": res["sign"]} if res else {}
@@ -159,6 +174,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                "direction": 1 if int(h["direction"]) > 0 else -1, **seen(h["feature"]),
                "family": "a_priori", "knownness": h.get("knownness"), "construct": h.get("construct"),
                "citation": h.get("citation")}
+        row.update(frozen(row))
         row.update({k: v for k, v in hazard(row).items() if k != "sign"})
         hypotheses.append(row)
     registered = {h["feature"] for h in hypotheses}
@@ -166,6 +182,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         name = c["feature"]
         row = {"feature": name, "definition": definition(name), "direction": 1 if c["rho"] > 0 else -1,
                **seen(name), "family": "exploratory"}
+        row.update(frozen(row))
         cox = hazard(row)
         if cox:
             sign = 1 if cox.pop("sign") > 0 else -1
@@ -174,7 +191,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                 row["direction_note"] = ("direction from the discovery Cox model; the binary screen disagreed "
                                          "(follow-up length differs with the feature)")
             row["direction"] = sign
-        elif frame is not None:
+        elif frame is not None and survival_time:
             row["direction_from"] = "discovery screen (the discovery Cox model could not be fitted)"
         hypotheses.append(row)
     rounds = state.get("rounds") or []
@@ -183,7 +200,9 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         "outcome": dict(outcome) if outcome else None,
         "confounders": list(state.get("confounder_columns") or []),
         "excluded": list(state.get("excluded_columns") or []),
-        "hypotheses": hypotheses, "alpha": 0.05, "correction": "benjamini-hochberg",
+        "hypotheses": hypotheses, "alpha": 0.05,
+        "correction": "online false-discovery-rate control (LORD++) for novel hypotheses; established ones as a "
+                      "reference family at alpha; see codas.aou.ledger",
         "negative_controls": list(negative_controls), "positive_controls": list(positive_controls),
         "sensitivity_lag_days": int(sensitivity_lag_days),
         "availability": list(availability), "covariate_imputations": int(covariate_imputations),
@@ -235,9 +254,11 @@ def _num(frame: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="coerce")
 
 
-def _cox(time: pd.Series, event: pd.Series, x: pd.Series, cov: pd.DataFrame | None, m: int = 0) -> dict[str, Any]:
-    """Cox HR per SD of ``x`` adjusted for ``cov`` (missing ``cov`` values imputed ``m`` times)."""
-    z = (x - x.mean()) / x.std(ddof=0)
+def _cox(time: pd.Series, event: pd.Series, x: pd.Series, cov: pd.DataFrame | None, m: int = 0,
+         scale: bool = True) -> dict[str, Any]:
+    """Cox HR per SD of ``x`` adjusted for ``cov`` (missing ``cov`` values imputed ``m`` times). With ``scale``
+    off, ``x`` is already in frozen discovery-SD units and is used as it is."""
+    z = (x - x.mean()) / x.std(ddof=0) if scale else x
     fit = pooled_cox(time, event, z, None if cov is None else cov.to_numpy(float), m=m, seed=_SEED)
     hr, (lo, hi) = fit["hr"], fit["ci95"]
     out = {"test": "cox", "hr_per_sd": round(hr, 4), "ci95": [round(lo, 4), round(hi, 4)], "p": float(fit["p"]),
@@ -270,9 +291,9 @@ def _rank(x: pd.Series, y: pd.Series, cov: pd.DataFrame | None, m: int = 0) -> d
 
 
 def _effect(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str | None,
-            cov: pd.DataFrame | None, m: int = 0) -> dict[str, Any]:
+            cov: pd.DataFrame | None, m: int = 0, scale: bool = True) -> dict[str, Any]:
     if time_col:
-        return _cox(_num(frame, time_col), _num(frame, target), x, cov, m)
+        return _cox(_num(frame, time_col), _num(frame, target), x, cov, m, scale)
     return _rank(x, _num(frame, target), cov, m)
 
 
@@ -309,18 +330,19 @@ def _dose_response(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str
 
 
 def _lag_sensitivity(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str, cov: pd.DataFrame | None,
-                     lag: int, direction: int, m: int = 0) -> dict[str, Any] | None:
+                     lag: int, direction: int, m: int = 0, scale: bool = True) -> dict[str, Any] | None:
     """The Cox effect among those still at risk ``lag`` days into follow-up, with time counted from then."""
     time = _num(frame, time_col)
     keep = time > lag
     if keep.sum() < _MIN_ROWS:
         return None
-    res = _cox(time[keep] - lag, _num(frame, target)[keep], x[keep], cov.loc[keep] if cov is not None else None, m)
+    res = _cox(time[keep] - lag, _num(frame, target)[keep], x[keep], cov.loc[keep] if cov is not None else None, m,
+               scale)
     return {"lag_days": lag, **res, "same_direction": bool(res["sign"] == direction)}
 
 
 def _negative_controls(frame: pd.DataFrame, x: pd.Series, cov: pd.DataFrame | None,
-                       names: list[str], alpha: float) -> list[dict[str, Any]]:
+                       names: list[str], alpha: float, scale: bool = True) -> list[dict[str, Any]]:
     out = []
     for name in names:
         event_col, time_col = f"{NC_PREFIX}{name}", f"{NC_PREFIX}{name}_days"
@@ -332,7 +354,7 @@ def _negative_controls(frame: pd.DataFrame, x: pd.Series, cov: pd.DataFrame | No
             out.append({"control": name, "status": "too few events to test"})
             continue
         try:
-            res = _cox(_num(frame, time_col), events, x, cov)
+            res = _cox(_num(frame, time_col), events, x, cov, scale=scale)
         except Exception as exc:  # noqa: BLE001 - this control is reported as not computed
             out.append({"control": name, "status": "could not be computed", "error": _error(exc)})
             continue
@@ -360,37 +382,46 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
     row: dict[str, Any] = {"feature": h["feature"], "direction": h["direction"], "discovery_rho": h["discovery_rho"],
                            "family": h.get("family", "exploratory")}
     for key in ("knownness", "construct", "citation", "discovery_hr", "discovery_hr_ci95", "direction_from",
-                "direction_note"):
+                "direction_note", "transform_text"):
         if h.get(key) is not None:
             row[key] = h[key]
-    x = _feature(frame, h)
-    if x is None or x.notna().sum() < _MIN_ROWS:
+    raw = _feature(frame, h)
+    if raw is None or raw.notna().sum() < _MIN_ROWS:
         row.update(status="not testable on the holdout", p=float("nan"))
         return row
+    # A Cox model reads the feature in frozen discovery-SD units (clipped and logged as registered); rank
+    # statistics and quantile bins use the raw values, which monotone transforms leave unchanged.
+    transform = h.get("transform") if time_col else None
+    x, scale = (preprocess.apply(raw, transform), False) if transform else (raw, True)
     m = int(prereg.get("covariate_imputations") or 0)
     errors: dict[str, str] = {}
-    res = _guarded(errors, "effect", _effect, frame, x, target, time_col, cov, m)
+    res = _guarded(errors, "effect", _effect, frame, x, target, time_col, cov, m, scale)
     if res is None:  # the main estimate itself could not be computed: tested, not replicated
         row.update(p=float("nan"), same_direction=False, errors=errors)
         return row
     row.update({k: v for k, v in res.items() if k != "sign"}, same_direction=bool(res["sign"] == h["direction"]))
+    if transform and transform.get("lo") is not None:  # do the extreme values drive the estimate?
+        unclipped = _guarded(errors, "unclipped", _effect, frame, preprocess.apply(raw, transform, clip=False),
+                             target, time_col, cov, m, False)
+        if unclipped is not None:
+            row["unclipped"] = {k: unclipped[k] for k in ("hr_per_sd", "ci95", "p") if k in unclipped}
     if res.get("imputations"):
-        cc = _guarded(errors, "complete_case", _effect, frame, x, target, time_col, cov, 0)
+        cc = _guarded(errors, "complete_case", _effect, frame, x, target, time_col, cov, 0, scale)
         if cc is not None:
             row["complete_case"] = {k: cc[k] for k in ("hr_per_sd", "rho", "ci95", "p", "n") if k in cc}
     if with_adherence is not None:
-        adj = _guarded(errors, "adherence_adjusted", _effect, frame, x, target, time_col, with_adherence, m)
+        adj = _guarded(errors, "adherence_adjusted", _effect, frame, x, target, time_col, with_adherence, m, scale)
         if adj is not None:
             same = bool(adj["sign"] == h["direction"])
             row["adherence_adjusted"] = {**{k: v for k, v in adj.items() if k not in ("sign", "e_value")},
                                          "same_direction": same, "holds": same and _excludes_null(adj)}
-    row["dose_response"] = _guarded(errors, "dose_response", _dose_response, frame, x, target, time_col, cov,
+    row["dose_response"] = _guarded(errors, "dose_response", _dose_response, frame, raw, target, time_col, cov,
                                     h["direction"])
     if time_col:
         row["lag_sensitivity"] = _guarded(errors, "lag_sensitivity", _lag_sensitivity, frame, x, target, time_col,
-                                          cov, int(prereg.get("sensitivity_lag_days") or 0), h["direction"], m)
+                                          cov, int(prereg.get("sensitivity_lag_days") or 0), h["direction"], m, scale)
     row["negative_controls"] = _guarded(errors, "negative_controls", _negative_controls, frame, x, cov,
-                                        list(prereg.get("negative_controls") or []), prereg["alpha"]) or []
+                                        list(prereg.get("negative_controls") or []), prereg["alpha"], scale) or []
     if errors:
         row["errors"] = errors
     return row

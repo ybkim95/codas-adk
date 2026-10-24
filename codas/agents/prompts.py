@@ -62,6 +62,15 @@ it encodes the outcome. That is target leakage, and every round that keeps it wi
 for leakage only: a confounded feature is adjusted for, not excluded, and a weak feature is not
 leakage.
 
+Before you choose, read what the data look like. This description never relates a feature to the
+outcome, so it is safe to use before registration:
+{eda_digest?}
+Use it as an analyst would: register one feature per family (its representative, or the member with the
+clearest mechanism), not several names for one construct; a feature that mostly tracks how long the device
+was worn measures adherence, so prefer one that does not or plan to adjust for wear; read a strongly
+skewed feature on a log or rank scale; treat a feature whose missingness differs by age, sex or wear with
+care; and leave near-constant features out.
+
 Then commit, before any statistic exists: call register_hypotheses with your sharpest falsifiable
 hypotheses (a feature, the direction you predict, the construct it measures, the mechanism and the
 citation), each labelled by how established it is in what you retrieved — established, emerging or
@@ -110,6 +119,10 @@ returns; a pattern you did not test is a question, not a result.
 The deterministic method runner has applied further statistical and ML methods to this round's
 candidates; their results so far, one line each:
 {analyses_digest?}
+
+Signal map (every candidate feature's association with the outcome on the discovery share, adjusted for the
+base confounders and then for every adjustment covariate, with how much of it the covariates explain):
+{signal_digest?}
 """
 
 ML_INTERPRETER = """
@@ -173,6 +186,10 @@ candidates; their results so far, one line each:
 The Researcher's expectations: {hypotheses?}
 The statistical reading of this round: {statistical_interpretation?}
 The predictive reading of this round: {ml_interpretation?}
+
+Signal map (every candidate feature's association with the outcome on the discovery share, adjusted for the
+base confounders and then for every adjustment covariate, with how much of it the covariates explain):
+{signal_digest?}
 """
 
 DEFENDER = """
@@ -203,6 +220,10 @@ candidates; their results so far, one line each:
 The statistical reading: {statistical_interpretation?}
 The predictive reading: {ml_interpretation?}
 The critique you answer: {critique?}
+
+Signal map (every candidate feature's association with the outcome on the discovery share, adjusted for the
+base confounders and then for every adjustment covariate, with how much of it the covariates explain):
+{signal_digest?}
 """
 
 GAP_FINDER = """
@@ -218,6 +239,10 @@ two next methods with their arguments (a 'by' covariate for subgroup_stratified,
 mediation), and any constraints for later rounds. Choose methods whose answer could change a conclusion,
 not ones that repeat what is already known. The deterministic runner executes them at the start of the
 next round; you report no statistic yourself.
+
+Signal map (every candidate feature's association with the outcome on the discovery share, adjusted for the
+base confounders and then for every adjustment covariate, with how much of it the covariates explain):
+{signal_digest?}
 
 Available methods:
 """

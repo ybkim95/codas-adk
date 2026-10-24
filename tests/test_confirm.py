@@ -409,3 +409,32 @@ def test_reconciliation_puts_engine_debate_and_holdout_side_by_side(tmp_path):
     assert "validated" in lines["x"] and "replicated" in lines["x"]
     assert "concede" in lines["w"]
     assert "not testable" in lines["age_x"] and "registered a priori" in lines["age_x"]
+
+
+def _scaled_survival(rng, spread, n=8000):
+    """Log hazard rises 0.3 per unit of x; ``spread`` is x's SD on this share."""
+    h = pd.DataFrame({"x": rng.normal(0, spread, n), "age": rng.normal(size=n)})
+    t = rng.exponential(1 / np.exp(0.3 * h.x + 0.3 * h.age))
+    censor = rng.exponential(1.0, n)
+    h["followup_days"] = np.ceil(np.minimum(t, censor) * 365)
+    h["y"] = (t <= censor).astype(int)
+    return h
+
+
+def test_hazard_ratios_per_sd_use_the_discovery_sd_on_the_holdout(tmp_path):
+    """A holdout with twice the spread once doubled the log hazard ratio "per SD": each share was scaled by
+    its own SD. The unit is now the discovery SD, frozen in the pre-registration."""
+    discovery, holdout = _scaled_survival(np.random.default_rng(41), 1.0), _scaled_survival(np.random.default_rng(42), 2.0)
+    discovery.to_csv(tmp_path / "f.csv", index=False)
+    holdout.to_csv(tmp_path / "f.holdout.csv", index=False)
+    prereg = preregister(_state([_cand("x", 0.2, ["x"])], ["age"]), tmp_path, "f", survival_time="followup_days",
+                         discovery_csv=tmp_path / "f.csv")
+    (h,) = prereg["hypotheses"]
+    assert h["transform"]["scale"] == pytest.approx(1.0, abs=0.05) and "discovery SD" in h["transform_text"]
+    (row,) = confirm(prereg, tmp_path / "f.holdout.csv", tmp_path)["hypotheses"]
+    # Unclipped, the holdout effect is exp(0.3) per discovery SD, not exp(0.6) per its own SD. Clipped at the
+    # discovery percentiles (a wider holdout loses more of its tails) it is smaller still, never exp(0.6).
+    assert row["unclipped"]["hr_per_sd"] == pytest.approx(np.exp(0.3), abs=0.06)
+    assert 1 < row["hr_per_sd"] < np.exp(0.45)
+    assert row["discovery_hr"] == pytest.approx(np.exp(0.3), abs=0.06) and row["transform_text"] == h["transform_text"]
+    assert "online false-discovery-rate" in prereg["correction"]

@@ -394,6 +394,40 @@ def _within_text(fit: dict[str, Any] | None) -> str:
     return f"{w['estimate']:.3g} ({w['ci95'][0]:.3g} to {w['ci95'][1]:.3g}), p {w['p']:.2g}"
 
 
+def eda_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The data dossier's per-feature description (read by the agents before registration)."""
+    feats = (_read(_out_dir(result) / f"{stem}_state.json").get("eda") or {}).get("features") or {}
+    if not feats:
+        return None
+    return pd.DataFrame([{"feature": f, "n": d.get("n"), "missing": d.get("missing"), "mean": d.get("mean"),
+                          "SD": d.get("sd"), "skew": d.get("skew"), "beyond 4 SD": d.get("beyond_4sd"),
+                          "natural unit": d.get("natural_unit"), "near-constant": d.get("near_constant")}
+                         for f, d in feats.items()])
+
+
+def families_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    dossier = _read(_out_dir(result) / f"{stem}_state.json").get("eda") or {}
+    rows = [{"representative": g["representative"], "members": ", ".join(g["members"]),
+             "|rho|": f"{g['min_abs_rho']}-{g['max_abs_rho']}"} for g in dossier.get("families") or []]
+    wear = dossier.get("wear_dependence") or {}
+    for f, d in sorted(wear.items(), key=lambda kv: -kv[1]["max_abs_rho"]):
+        if d["max_abs_rho"] >= 0.3:
+            rows.append({"representative": f, "members": f"tracks wear ({d['with']})", "|rho|": d["max_abs_rho"]})
+    return pd.DataFrame(rows) if rows else None
+
+
+def signal_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Every candidate's adjusted association with the outcome on the discovery share (after registration)."""
+    signal = _read(_out_dir(result) / f"{stem}_state.json").get("signal_map") or {}
+    rows = signal.get("features") or []
+    if not rows:
+        return None
+    rows = sorted(rows, key=lambda r: (r.get("q_t2") if r.get("q_t2") is not None else 2))
+    return pd.DataFrame([{"feature": r["feature"], "measure": r["measure"], "T0": r.get("t0"), "T2": r.get("t2"),
+                          "q (T2)": r.get("q_t2"), "attenuation": r.get("attenuation"),
+                          "missing-indicator effect": r.get("missing_effect")} for r in rows])
+
+
 def hypotheses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
     """The hypotheses the agents registered from the literature before any statistic existed."""
     registered = _read(_out_dir(result) / f"{stem}_state.json").get("a_priori_hypotheses") or []

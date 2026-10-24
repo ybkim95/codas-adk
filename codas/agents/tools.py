@@ -28,8 +28,9 @@ from typing import Any
 import pandas as pd
 from google.adk.tools import ToolContext
 
-from codas.aou.privacy import MASK, SMALL_CELL_MAX, aou_mode, literature_search_enabled, mask_small_counts_in_text
-from codas.core import gemini
+from codas.aou.privacy import (MASK, SMALL_CELL_MAX, aou_mode, literature_search_enabled, mask_small_counts,
+                               mask_small_counts_in_text)
+from codas.core import eda, gemini
 from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
 from codas.core.statistics import safe_spearman
@@ -233,6 +234,85 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
 
 # --- stateful tools (shared session memory) ----------------------------------------------------
 
+def _dossier_tail() -> int:
+    """The smallest count the data dossier may show: the small-cell rule's in All of Us mode, none otherwise."""
+    return SMALL_CELL_MAX if aou_mode() else 0
+
+
+def _candidate_columns(frame: pd.DataFrame, state: Any) -> list[str]:
+    """Numeric columns that are candidate features: not the target, follow-up time, an identifier, an
+    excluded column, a confounder or an adjustment-only column."""
+    reserved = {str(state.get(k) or "") for k in ("target_column", "participant_id_column", "time_column",
+                                                   "survival_time_column")}
+    for key in ("excluded_columns", "confounder_columns", "context_columns"):
+        reserved |= set(state.get(key) or [])
+    return [c for c in frame.columns if c not in reserved and pd.api.types.is_numeric_dtype(frame[c])]
+
+
+def _adjustment_columns(state: Any, frame: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """(data-availability columns, adjustment covariates) among the adjustment-only columns."""
+    availability = [c for c in state.get("availability_columns") or [] if c in frame.columns]
+    survival = str(state.get("survival_time_column") or "")
+    covariates = [c for c in state.get("context_columns") or []
+                  if c in frame.columns and c not in availability and c != survival]
+    return availability, covariates
+
+
+def _record_dossier(state: Any, path: Path | None) -> None:
+    """The outcome-blind data dossier (``codas.core.eda``) for the agents that design hypotheses."""
+    try:
+        frame = read_csv_dataset(path)
+        availability, covariates = _adjustment_columns(state, frame)
+        dossier = eda.blind_dossier(
+            frame, target=str(state.get("target_column")), features=_candidate_columns(frame, state),
+            survival_time=str(state.get("survival_time_column") or "") or None,
+            covariates=covariates + [c for c in state.get("confounder_columns") or [] if c in frame.columns],
+            availability=availability, tail=_dossier_tail())
+    except Exception as exc:  # noqa: BLE001 - the dossier informs the design; it must never stop it
+        state["eda_digest"] = f"The data dossier could not be computed ({type(exc).__name__})."
+        return
+    text = eda.digest(dossier)
+    state["eda"] = mask_small_counts(dossier) if aou_mode() else dossier
+    state["eda_digest"] = mask_small_counts_in_text(text) if aou_mode() else text
+
+
+def _record_signal_map(state: Any, path: Path) -> None:
+    """Every candidate's adjusted association with the outcome, once registration has closed."""
+    try:
+        frame = read_csv_dataset(path)
+        _availability, covariates = _adjustment_columns(state, frame)
+        base = [c for c in state.get("base_confounders") or [] if c in frame.columns]
+        signal = eda.signal_map(frame, target=str(state.get("target_column")),
+                                features=_candidate_columns(frame, state),
+                                survival_time=str(state.get("survival_time_column") or "") or None,
+                                base=base, covariates=[c for c in covariates if c not in base])
+    except Exception as exc:  # noqa: BLE001
+        state["signal_digest"] = f"The signal map could not be computed ({type(exc).__name__})."
+        return
+    text = eda.signal_digest(signal)
+    state["signal_map"] = mask_small_counts(signal) if aou_mode() else signal
+    state["signal_digest"] = mask_small_counts_in_text(text) if aou_mode() else text
+
+
+def data_detail(columns_csv: str, tool_context: ToolContext) -> dict[str, Any]:
+    """The data dossier's full entries for the named columns: distribution, quantiles, skew, extreme values,
+    natural unit, family, wear dependence and missingness pattern. It never relates a column to the outcome,
+    so it can be used before hypotheses are registered."""
+    dossier = tool_context.state.get("eda") or {}
+    if not dossier:
+        return {"error": "No data dossier yet: call set_target first."}
+    out: dict[str, Any] = {}
+    for c in _split_csv(columns_csv):
+        entry = (dossier.get("features") or {}).get(c) or (dossier.get("covariates") or {}).get(c)
+        if entry is None:
+            out[c] = {"error": "not a candidate feature or adjustment covariate"}
+            continue
+        out[c] = {**entry, "family": next((g for g in dossier.get("families") or [] if c in g["members"]), None),
+                  "wear_dependence": (dossier.get("wear_dependence") or {}).get(c),
+                  "missingness": (dossier.get("missingness") or {}).get(c)}
+    return out
+
+
 def set_target(
     target_column: str,
     tool_context: ToolContext,
@@ -249,9 +329,11 @@ def set_target(
     tool_context.state["time_column"] = time_column.strip()
     tool_context.state["excluded_columns"] = _split_csv(excluded_columns_csv)
     tool_context.state["confounder_columns"] = _split_csv(confounder_columns_csv)
+    tool_context.state["base_confounders"] = _split_csv(confounder_columns_csv)
     path = _resolve_csv_path(tool_context.state.get("csv_path"), "")
     if path is not None and path.exists():  # names only, for agents that no longer see the profile
         tool_context.state["dataset_columns"] = list(pd.read_csv(path, nrows=0).columns)
+        _record_dossier(tool_context.state, path)
     return {
         "target_column": target_column,
         "participant_id_column": participant_id_column.strip() or None,
@@ -571,6 +653,7 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
     tool_context.state["latest_report"] = report
     if not rounds:  # registration has just closed: what earlier outcomes taught may now be shown
         tool_context.state["cohort_lessons"] = list(tool_context.state.get("prior_lessons") or [])
+        _record_signal_map(tool_context.state, path)
     return summary
 
 

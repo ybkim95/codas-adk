@@ -21,6 +21,7 @@ from codas.agents import agent as agent_module
 from codas.agents import callbacks, tools
 from codas.aou import runner
 from codas.aou.cohort import holdout_path
+from codas.core import eda
 
 from test_aou_e2e import (RECORDS, RUN_DIR, SCRIPTS, ScriptedLlm, _call, _cohort_table, _llm_agents,  # noqa: F401
                           _serialize, _window_spec, aou_env)
@@ -58,10 +59,10 @@ def _pre_registration_requests(table: pd.DataFrame, name: str) -> list[str]:
 
 
 def _permuted_outcome(table: pd.DataFrame, seed: int = 3) -> pd.DataFrame:
+    """The outcome shuffled within the strata the data dossier summarises it by (age band x sex)."""
     rng = np.random.default_rng(seed)
     out = table.copy()
-    strata = pd.qcut(out["age"], 3, labels=False).astype(str) + "_" + out["female"].astype(str)
-    for _, idx in out.groupby(strata).groups.items():
+    for _, idx in out.groupby(eda.strata(out)).groups.items():
         out.loc[idx, "hba1c"] = rng.permutation(out.loc[idx, "hba1c"].to_numpy())
     return out
 
@@ -77,6 +78,7 @@ def test_nothing_the_agents_see_before_registration_depends_on_the_outcome(aou_e
     assert not np.allclose(table["hba1c"], permuted["hba1c"])
     original = _pre_registration_requests(table, "original")
     assert any("propose_feature" in r or "withheld" in r for r in original)  # the leaky tool was exercised
+    assert any("Candidate features:" in r for r in original)  # the data dossier reached the designer
     assert original == _pre_registration_requests(permuted, "permuted")
     # The guard is only worth having if it can fail: without the barrier, the association leaks.
     monkeypatch.setattr(tools, "registration_open", lambda state: False)

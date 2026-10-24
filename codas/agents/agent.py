@@ -64,6 +64,7 @@ from codas.agents.callbacks import (
 from codas.agents.tools import (
     ANALYSIS_TOOLS,
     check_convergence,
+    data_detail,
     declare_confounders,
     exclude_features,
     preview_columns,
@@ -293,7 +294,8 @@ hypotheses_agent = _agent(
     prompts.HYPOTHESES,
     tier="reasoning",
     thinking="HIGH",  # designing falsifiable hypotheses is the step that most rewards deliberation
-    tools=[search_literature, declare_confounders, exclude_features, propose_feature, register_hypotheses],
+    tools=[search_literature, data_detail, declare_confounders, exclude_features, propose_feature,
+           register_hypotheses],
     output_key="hypotheses",
 )
 data_understanding = SequentialAgent(

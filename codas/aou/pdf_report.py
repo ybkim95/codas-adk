@@ -311,6 +311,59 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
         doc.heading("Final report")
         doc.markdown(phases.get("report") or "")
 
+    def data_understanding() -> None:
+        dossier, signal = phases.get("eda") or {}, phases.get("signal_map") or {}
+        if not dossier and not signal:
+            return
+        doc.heading("Data understanding")
+        if dossier:
+            doc.plain("Read by the agents before any hypothesis was registered; it never relates a feature to the "
+                      "outcome. Counts of 1-20 and quantiles with fewer than 20 people beyond them are not shown.",
+                      size=8, style="I")
+            feats = dossier.get("features") or {}
+            flagged = {f: d for f, d in feats.items() if d.get("near_constant") or
+                       (isinstance(d.get("skew"), float) and abs(d["skew"]) > 2) or
+                       (isinstance(d.get("missing"), float) and d["missing"] > 0.2)}
+            doc.heading(f"Candidate features ({len(feats)}; {len(flagged)} need care)", 2)
+            doc.table(["feature", "n", "missing", "mean", "SD", "skew", "beyond 4 SD", "natural unit", "note"],
+                      [[f, d.get("n"), d.get("missing"), d.get("mean"), d.get("sd"), d.get("skew"), d.get("beyond_4sd"),
+                        d.get("natural_unit"), "near-constant" if d.get("near_constant") else d.get("note", "")]
+                       for f, d in feats.items()], widths=[46, 14, 18, 18, 16, 14, 18, 18, 18])
+            if dossier.get("families"):
+                doc.heading("Feature families (members correlate at |rho| >= 0.7)", 2)
+                doc.table(["representative", "members", "|rho| range"],
+                          [[g["representative"], ", ".join(g["members"]), f"{g['min_abs_rho']}-{g['max_abs_rho']}"]
+                           for g in dossier["families"]], widths=[45, 110, 25])
+            wear = dossier.get("wear_dependence") or {}
+            if wear:
+                doc.heading("Wear dependence (strongest |rho| with a days-worn column)", 2)
+                doc.table(["feature", "|rho|", "with"], [[f, d["max_abs_rho"], d["with"]] for f, d in
+                                                         sorted(wear.items(), key=lambda kv: -kv[1]["max_abs_rho"])[:25]],
+                          widths=[80, 20, 80])
+            miss = dossier.get("missingness") or {}
+            if miss:
+                doc.heading("Who is missing each feature (standardised mean difference, missing vs present)", 2)
+                keys = sorted({k for d in miss.values() for k in d if k.startswith("smd_")})
+                doc.table(["feature", "missing", *[k[4:] for k in keys]],
+                          [[f, d.get("missing"), *[d.get(k) for k in keys]] for f, d in miss.items()])
+            outcome = dossier.get("outcome") or {}
+            if outcome:
+                doc.heading("The outcome on its own", 2)
+                rows = [["overall", *_outcome_cells(outcome.get("overall") or {}, outcome.get("kind"))]]
+                rows += [[k, *_outcome_cells(v, outcome.get("kind"))] for k, v in (outcome.get("by_stratum") or {}).items()]
+                header = (["stratum", "participants", "events", "person-years", "per 1,000 PY", "censored"]
+                          if outcome.get("kind") == "time to event" else ["stratum", "n", "mean", "", "", ""])
+                doc.table(header, rows)
+        if signal.get("features"):
+            doc.heading("Signal map (after registration closed)", 2)
+            doc.plain(f"Discovery share. T0 adjusts for {', '.join(signal.get('base') or []) or 'nothing'}; T2 also "
+                      f"for {', '.join(signal.get('covariates') or []) or 'nothing more'}. Attenuation is the share "
+                      "of the T0 effect the covariates explain; q-values correct across features.", size=8, style="I")
+            rows = sorted(signal["features"], key=lambda r: (r.get("q_t2") if r.get("q_t2") is not None else 2))
+            doc.table(["feature", "measure", "T0", "T2", "q (T2)", "attenuation", "missing-indicator effect"],
+                      [[r["feature"], r["measure"], r.get("t0"), r.get("t2"), r.get("q_t2"), r.get("attenuation"),
+                        r.get("missing_effect")] for r in rows[:40]], widths=[50, 30, 18, 18, 18, 22, 24])
+
     def phase_a() -> None:
         doc.heading("Phase A: data understanding and design")
         design = [["target", phases.get("target_column")],
@@ -458,7 +511,9 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                   widths=[80, 100])
 
     # (section, starts on a new page)
-    sections = [(cover, True), (cohort, False), (final_report, True), (phase_a, True), (phases_bc, True),
+    sections = [(cover, True), (cohort, False), (final_report, True),
+                (data_understanding, bool(phases.get("eda") or phases.get("signal_map"))), (phase_a, True),
+                (phases_bc, True),
                 (phase_d, True), (phases_ef, True),
                 (agent_execution, bool((execution or {}).get("agents"))), (appendix, True)]
     errors = []
@@ -483,6 +538,13 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
     path = out_dir / f"{stem}_report.pdf"
     pdf.output(str(path))
     return path
+
+
+def _outcome_cells(summary: dict[str, Any], kind: str | None) -> list[Any]:
+    if kind == "time to event":
+        return [summary.get("participants"), summary.get("events"), summary.get("person_years"),
+                summary.get("per_1000_person_years"), summary.get("censored")]
+    return [summary.get("n"), summary.get("mean"), "", "", ""]
 
 
 def _fmt(value: Any) -> str:
