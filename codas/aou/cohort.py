@@ -291,6 +291,9 @@ class CohortSpec:
     # (codas/aou/monthstore.py), e.g. {} or {"block_days": 30}: features followed over time on the holdout.
     # Used under the incident design only, where the index belongs to the person.
     month_store: dict[str, Any] | None = None
+    # Genetic triangulation on the sealed share (codas/aou/genomics.py), e.g. {"instruments": "gwas_catalog"}:
+    # needs the Controlled Tier's genomic files; without them it is skipped with the reason.
+    genetics: dict[str, Any] | None = None
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
@@ -359,6 +362,8 @@ class CohortSpec:
             named = self.day_store.get("from") if isinstance(self.day_store, dict) else None
             if not isinstance(named, list) or not all(isinstance(n, str) and _IDENT.match(n) for n in named):
                 raise ValueError('day_store must be {"from": [phenotype source prefixes]}.')
+        if self.genetics is not None and not isinstance(self.genetics, dict):
+            raise ValueError('genetics is {"instruments": "gwas_catalog" or a table path, ...}.')
         if self.month_store is not None:  # used under the incident design only (codas/aou/monthstore.py)
             days = self.month_store.get("block_days", 30) if isinstance(self.month_store, dict) else None
             if not whole(days, 7, 365):
@@ -389,6 +394,7 @@ class CohortSpec:
             ehr_lookback_days=None if data.get("ehr_lookback_days") is None else int(data["ehr_lookback_days"]),
             day_store=data.get("day_store"),
             month_store=data.get("month_store"),
+            genetics=data.get("genetics"),
         )
         spec.validate()
         if spec.day_store is not None:  # a spec as written: its day store must name minute-level sources it has
@@ -1474,7 +1480,9 @@ def extract_cohort(
               and os.getenv("CODAS_PHENOTYPE_CACHE", "1") != "0")
     days = spec.day_store is not None and spec.design == "incident"
     months = spec.month_store is not None and spec.design == "incident"
-    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared, qc=True, person_id=days or months))
+    genes = spec.genetics is not None and spec.design == "incident" and spec.holdout_fraction > 0
+    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared, qc=True,
+                                             person_id=days or months or genes))
     if shared:  # the minute-level tables are read once per run, not once per outcome
         frame = frame.merge(_phenotype_table(client, spec, cdr, out), on="person_id", how="left",
                             validate="many_to_one")
@@ -1497,6 +1505,10 @@ def extract_cohort(
         from codas.aou import monthstore
 
         monthstore.split(monthstore.store(client, spec, cdr, out), people, sealed_people, path)
+    if genes and sealed_people is not None:  # genotypes stay in the sealed folder, keyed by the sealed rows
+        from codas.aou import genomics
+
+        genomics.write_sealed(spec.genetics, sealed_people, path, out)
     # Aggregate and masked, from the discovery share only.
     qc_path(path).write_text(json.dumps(extraction_qc(frame, spec), indent=1), encoding="utf-8")
     if has_panel(spec):

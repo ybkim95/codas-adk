@@ -465,6 +465,49 @@ def _negative_controls(frame: pd.DataFrame, x: pd.Series, cov: pd.DataFrame | No
     return out
 
 
+def _genetic(frame: pd.DataFrame, h: dict[str, Any], genes: pd.DataFrame, manifest: dict[str, Any], construct: str,
+             target: str, time_col: str | None) -> dict[str, Any] | None:
+    """Mendelian randomization on the sealed share (``codas.core.mendelian``): the construct's allele score and
+    each of its instruments against the registered feature (per registered SD) and the outcome, adjusted for
+    age, sex and the genetic principal components."""
+    import re
+
+    from codas.aou.genomics import slug
+    from codas.core import mendelian
+
+    score = f"score_{slug(construct)}"
+    if score not in genes.columns:
+        return None
+    raw = _feature(frame, h)
+    sd = (h.get("effect_scale") or {}).get("sd")
+    x = pd.to_numeric(raw, errors="coerce") / (float(sd) if isinstance(sd, (int, float)) and sd > 0
+                                               else float(pd.to_numeric(raw, errors="coerce").std()))
+    pcs = [c for c in genes.columns if re.fullmatch(r"pc\d+", c)]
+    base = [c for c in ("age", "female") if c in frame.columns]
+    cov = np.column_stack([_num(frame, c).to_numpy(dtype=float) for c in base] + [genes[c].to_numpy(dtype=float) for c in pcs])
+    y = _num(frame, target).to_numpy(dtype=float)
+    t = _num(frame, time_col).to_numpy(dtype=float) if time_col else None
+    whole = mendelian.one_sample(x.to_numpy(dtype=float), y, genes[score].to_numpy(dtype=float), cov, t)
+    variants = [f"g_{v['variant']}" for v in (manifest.get("instruments") or {}).get(construct) or []
+                if f"g_{v['variant']}" in genes.columns]
+    each = mendelian.per_variant(x.to_numpy(dtype=float), y, genes[variants].to_numpy(dtype=float), cov, t) \
+        if len(variants) >= 2 else {"variants": len(variants)}
+    out: dict[str, Any] = {"construct": construct, "n": whole["n"], "variants": len(variants),
+                           "f_statistic": round(whole["f_statistic"], 1), "scale": whole["scale"], "p": whole["p"],
+                           "same_direction": bool(np.sign(whole["ratio"]) == h["direction"])}
+    convert = (lambda v: round(float(np.exp(v)), 4)) if time_col else (lambda v: round(float(v), 4))  # noqa: E731
+    out["estimate"] = convert(whole["ratio"])
+    out["ci95"] = [convert(v) for v in whole["ci95"]] if whole.get("ci95") else None
+    for method in ("ivw", "egger", "weighted_median"):
+        if method in each:
+            m = each[method]
+            out[method] = {"estimate": convert(m["estimate"]), "ci95": [convert(v) for v in m["ci95"]]}
+            if method == "egger":
+                out[method]["intercept_p"] = m["intercept_p"]
+    out["measure"] = "hazard ratio per SD" if time_col else "outcome units per SD"
+    return out
+
+
 def _followed_column(h: dict[str, Any], months: pd.DataFrame) -> str | None:
     from codas.aou.monthstore import column_of
 
@@ -944,7 +987,8 @@ def _availability(frame: pd.DataFrame, declared: list[str], confounders: list[st
 
 
 def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_key: str | None = None,
-            panel_csv: Path | None = None, months_csv: Path | None = None) -> dict[str, Any]:
+            panel_csv: Path | None = None, months_csv: Path | None = None,
+            genetics: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test every pre-registered hypothesis once on the holdout; write ``<stem>_confirmation.json``.
 
     With ``panel_csv`` (the sealed repeated-measures panel) each hypothesis also gets its within-person
@@ -985,6 +1029,19 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
                     found = {"error": _error(exc)}
                 if found is not None:
                     row[key] = found
+    table = genetics.get("table") if genetics else None
+    if table is not None and Path(table).exists():
+        genes = pd.read_csv(table)
+        for row, h in zip(rows, prereg["hypotheses"]):
+            construct = (genetics.get("constructs") or {}).get(h["feature"]) or h.get("construct")
+            if "same_direction" not in row or not construct:
+                continue
+            try:
+                found = _genetic(frame, h, genes, genetics.get("manifest") or {}, construct, target, time_col)
+            except Exception as exc:  # noqa: BLE001 - evidence only; reported as not computed
+                found = {"construct": construct, "error": _error(exc)}
+            if found is not None:
+                row["genetic"] = found
     for row, h in zip(rows, prereg["hypotheses"]):
         card = _scorecard(h, row)
         if card is not None:
@@ -1225,6 +1282,31 @@ def _beyond_markers_lines(rows: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+def _genetic_lines(rows: list[dict[str, Any]]) -> list[str]:
+    """Each registered feature's Mendelian randomization on the sealed share."""
+    tested = [r for r in rows if r.get("genetic")]
+    if not tested:
+        return []
+    out = ["**Genetic triangulation** (Mendelian randomization on the sealed share: published instruments of the "
+           "feature's construct, adjusted for age, sex and genetic principal components; F below 10 marks a weak "
+           "instrument, an Egger intercept with small p directional pleiotropy):", "",
+           "| feature | construct | variants | F | allele score (95% CI) | IVW | weighted median | Egger intercept p |",
+           "|---|---|---|---|---|---|---|---|"]
+    for r in tested:
+        g = r["genetic"]
+        if g.get("error"):
+            out.append(f"| {r['feature']} | {g['construct']} | - | - | {g['error']} | - | - | - |")
+            continue
+        cell = lambda d: "-" if not d else f"{d['estimate']} ({d['ci95'][0]}-{d['ci95'][1]})"  # noqa: E731
+        whole = {"estimate": g["estimate"], "ci95": g["ci95"]} if g.get("ci95") else None
+        egger = (g.get("egger") or {}).get("intercept_p")
+        out.append(f"| {r['feature']} | {g['construct']} | {g['variants']} | {g['f_statistic']} | {cell(whole)} | "
+                   f"{cell(g.get('ivw'))} | {cell(g.get('weighted_median'))} | "
+                   f"{'-' if egger is None else format(egger, '.2g')} |")
+    out.append("")
+    return out
+
+
 def _followed_lines(rows: list[dict[str, Any]]) -> list[str]:
     """Each feature followed over time: as a time-varying exposure, and before each diagnosis."""
     followed = [r for r in rows if r.get("time_varying") or r.get("trajectory")]
@@ -1342,6 +1424,7 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
         lines.append("")
     lines += _beyond_markers_lines(result["hypotheses"])
     lines += _followed_lines(result["hypotheses"])
+    lines += _genetic_lines(result["hypotheses"])
     adjusted = [r for r in result["hypotheses"] if r.get("adherence_adjusted")]
     if adjusted:
         lines += ["", "Wear adherence as a negative-control exposure: each effect re-estimated with "

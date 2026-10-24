@@ -5,7 +5,8 @@
   dose-response, a lag, negative controls, wear adherence, the incumbent head to head, added predictive value,
   within-person change, consistency across strata, the sealed-holdout test, an E-value, the gain beyond a strong
   baseline of every established marker, the share a declared mediator carries, how specific the feature is
-  across the phenome scan, the feature as a time-varying exposure, and its course before the diagnosis). Each step is ``yes`` (ran and gave a result, whatever the result), ``no``
+  across the phenome scan, the feature as a time-varying exposure, its course before the diagnosis, and its
+  genetic triangulation by Mendelian randomization). Each step is ``yes`` (ran and gave a result, whatever the result), ``no``
   (applicable but missing, or could not be computed) or ``n/a`` (not applicable to this outcome or hypothesis),
   with what it showed; whether the result supports the hypothesis is the rung's to say.
 * The evidence ladder (after Hlatky et al., Circulation 2009): 1, associated on the sealed holdout in the
@@ -45,6 +46,7 @@ STEPS = [
     ("specificity", "specific across the phenome"),
     ("time_varying", "time-varying exposure"),
     ("trajectory", "course before the diagnosis"),
+    ("genetic", "genetic triangulation"),
 ]
 RUNGS = {0: "not associated on the holdout", 1: "associated on the holdout",
          2: "replicated and robust to every falsification test that ran",
@@ -186,6 +188,14 @@ def _cells(row: dict[str, Any], confirmation: dict[str, Any], time_to_event: boo
         cells["trajectory"] = ([YES, f"onset: {course['onset']}"] if course.get("onset") not in (None, "not estimated")
                                else [NO, course.get("error") or ("too few cases in every window" if course
                                                                  else "not followed")])
+    genetic = row.get("genetic") or {}
+    if genetic.get("estimate") is not None:
+        cells["genetic"] = [YES, f"MR {genetic['estimate']}{_ci(genetic.get('ci95'))}, F {genetic['f_statistic']}, "
+                                 f"{genetic['variants']} variants"]
+    elif genetic.get("error"):
+        cells["genetic"] = [NO, str(genetic["error"])[:60]]
+    else:
+        cells["genetic"] = [NA, "no instruments for its construct, or no genomic data"]
     return cells
 
 

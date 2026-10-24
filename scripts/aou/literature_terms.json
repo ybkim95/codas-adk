@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "notes": "The search terms of the literature evidence: each wearable construct with its usual names in the literature and what measures it (an intraday phenotype by its source kind and name, any column by a shell-style pattern of names; the first construct that names a column wins), and each catalog outcome's names. Fixed here, versioned and reviewed, so a novelty count can never be made smaller by choosing an obscure phrasing. A construct no column measures is not searched; an outcome missing here is searched by its catalog label.",
+  "version": "3",
+  "notes": "The search terms of the literature evidence: each wearable construct with its usual names in the literature and what measures it (an intraday phenotype by its source kind and name, any column by a shell-style pattern of names; the first construct that names a column wins), and each catalog outcome's names. Fixed here, versioned and reviewed, so a novelty count can never be made smaller by choosing an obscure phrasing. A construct no column measures is not searched; an outcome missing here is searched by its catalog label. gwas_traits name GWAS Catalog traits whose genome-wide significant variants instrument a construct for genetic triangulation (codas/aou/genomics.py); a name the catalog does not know is reported at run time and skipped.",
   "constructs": {
     "heart rate during sleep": {
       "synonyms": [
@@ -27,7 +27,10 @@
           "resting_hr",
           "sedentary_hr"
         ]
-      }
+      },
+      "gwas_traits": [
+        "resting heart rate"
+      ]
     },
     "daytime heart rate": {
       "synonyms": [
@@ -48,7 +51,10 @@
         "minute_heart_rate": [
           "night_masd"
         ]
-      }
+      },
+      "gwas_traits": [
+        "heart rate variability measurement"
+      ]
     },
     "circadian heart rate rhythm": {
       "synonyms": [
@@ -144,7 +150,10 @@
         "sleep_stages": [
           "midpoint_hour"
         ]
-      }
+      },
+      "gwas_traits": [
+        "chronotype measurement"
+      ]
     },
     "sleep fragmentation": {
       "synonyms": [
@@ -208,6 +217,9 @@
       "columns": [
         "*_minute_asleep_mean",
         "*_minute_in_bed_mean"
+      ],
+      "gwas_traits": [
+        "sleep duration"
       ]
     },
     "day-to-day variability of physical activity": {
@@ -230,6 +242,9 @@
       ],
       "columns": [
         "*_steps_mean"
+      ],
+      "gwas_traits": [
+        "physical activity measurement"
       ]
     },
     "moderate-to-vigorous physical activity": {
@@ -241,6 +256,9 @@
       "columns": [
         "*_very_active_minutes_mean",
         "*_fairly_active_minutes_mean"
+      ],
+      "gwas_traits": [
+        "physical activity measurement"
       ]
     },
     "light physical activity": {

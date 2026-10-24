@@ -398,7 +398,7 @@ def _code_version() -> str:
 # The code that decides what an outcome's results are. Changes elsewhere (the notebook, the background
 # job, report rendering, views) leave finished outcomes reusable; a change here reruns them.
 ANALYSIS_CODE = ("codas/core", "codas/agents", "codas/aou/cohort.py", "codas/aou/phenotypes.py",
-                 "codas/aou/daystore.py", "codas/aou/monthstore.py", "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/ledger.py",
+                 "codas/aou/daystore.py", "codas/aou/monthstore.py", "codas/aou/genomics.py", "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/ledger.py",
                  "codas/aou/privacy.py", "codas/aou/table1.py")
 
 
@@ -813,6 +813,23 @@ def _extraction_qc(csv: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
+def _genetics_inputs(spec: CohortSpec, csv: Path, prereg: dict[str, Any]) -> dict[str, Any] | None:
+    """The sealed genetic table, its instrument manifest, and each registered feature's construct (from the
+    literature catalog), when the extraction wrote them."""
+    from codas.aou import genomics
+    from codas.core import literature
+
+    table = genomics.genetics_path(csv)
+    manifest_path = table.with_name(Path(csv).stem + ".instruments.json")
+    if spec.genetics is None or not table.exists() or not manifest_path.exists():
+        return None
+    terms = literature.load_terms(LITERATURE_TERMS) if LITERATURE_TERMS.exists() else {}
+    features = [h["feature"] for h in prereg.get("hypotheses") or []]
+    constructs = literature.constructs_of(features, terms, {p.prefix: p.kind for p in spec.phenotypes})
+    return {"table": table, "manifest": json.loads(manifest_path.read_text(encoding="utf-8")),
+            "constructs": constructs}
+
+
 def outcome_identity(spec: CohortSpec) -> dict[str, Any]:
     """What the outcome is, independent of what the run is called: the holdout ledger's outcome key."""
     o = spec.outcome
@@ -933,7 +950,8 @@ def _run_tables(spec: CohortSpec, csv: Path, cdr: str | None, *, label: str | No
         sealed_months = monthstore.holdout_months_path(csv)
         result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr),
                          panel_csv=sealed_panel if sealed_panel.exists() else None,
-                         months_csv=sealed_months if sealed_months.exists() else None)
+                         months_csv=sealed_months if sealed_months.exists() else None,
+                         genetics=_genetics_inputs(spec, csv, prereg))
         # The per-candidate debate next to the holdout result, so a candidate the debate conceded but the
         # holdout replicated (or the reverse) is visible rather than buried in two sections.
         verdicts = {d["feature"]: d.get("verdict") for d in state.get("candidate_debates") or [] if d.get("feature")}

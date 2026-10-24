@@ -350,5 +350,10 @@
   },
   "month_store": {
     "block_days": 30
+  },
+  "genetics": {
+    "instruments": "gwas_catalog",
+    "window_kb": 500,
+    "components": 16
   }
 }

@@ -334,6 +334,24 @@ pre-registration before the holdout is opened:
   years), `prodromal` (only nearest the diagnosis: a change the disease may cause), `none` or `mixed`. A window
   with 1-20 cases is not estimated.
 
+**Genetic triangulation** (`codas/aou/genomics.py`, `codas/core/instruments.py`, `codas/core/mendelian.py`; the
+spec's `genetics`, on in the example; it needs the Controlled Tier's genomic files and is skipped with the reason
+without them). At extraction, the array genotype files and the ancestry predictions are looked for by name under
+the CDR's storage folder (`CDR_STORAGE_PATH`); each catalog construct's instruments come from the GWAS Catalog by
+the traits `scripts/aou/literature_terms.json` names for it (`gwas_traits`; genome-wide significant variants with a
+per-allele effect, only the trait name leaves the Workbench), or from a table of instruments the spec names. They
+are aligned to the genotype file's counted allele (strand-ambiguous and mismatched variants left out, with the
+reason) and pruned to one per 500 kb. Only those variants are read, by byte range from the PLINK file, for the
+sealed share's participants; their dosages, the allele score of each construct and the genetic principal
+components go to a table in the sealed folder keyed by the sealed table's rows. On the holdout, a registered
+feature whose construct has instruments gets a one-sample Mendelian randomization: the allele score's association
+with the feature (its F statistic; below 10 is a weak instrument) and with the outcome, adjusted for age, sex and
+the principal components, their ratio per registered SD with a delta-method interval, and the per-variant IVW,
+MR-Egger (its intercept tests directional pleiotropy) and weighted-median estimates. In one sample a weak
+instrument biases the ratio toward the confounded estimate, which is why F is shown beside it. The scorecard
+gains a "genetic triangulation" step. A workspace whose CDR is the Registered Tier has no genomic files: the step
+reads "no genomic data" until the workspace uses the Controlled Tier.
+
 **Two-way confirmation** (`codas/aou/crossfit.py`; the notebook's `DISCOVERY_SHARE`). The split seals half the
 participants. With `"A"` (the default) the agents see share A and what they register is tested on share B; with
 `"B"` the roles swap: the half sealed under `"A"` discovers and the other confirms. Each direction has its own run
