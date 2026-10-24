@@ -154,10 +154,13 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
     candidates = [c for c in every.values() if c.get("verdict") == "validated"]
     candidates.sort(key=lambda c: -abs(float(c.get("rho") or 0)))
     proposed = {p.get("name"): p for p in state.get("proposed_features") or []}
+    defined = {d["column"]: d for d in state.get("defined_phenotypes") or []}
 
     def definition(name: str) -> dict[str, Any]:
         if name in proposed:
             return {"op": proposed[name]["op"], "a": proposed[name]["a"], "b": proposed[name]["b"]}
+        if name in defined:  # a phenotype defined on the day-by-day baseline (codas.core.phenotype_dsl)
+            return {"phenotype": defined[name]["definition"]}
         return {"components": list((every.get(name) or {}).get("components") or [])}
 
     def seen(name: str) -> dict[str, Any]:
@@ -253,6 +256,8 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         "discovery_rounds": len(rounds),
         "discovery_variants_evaluated": sum(int(r.get("evaluated_count") or 0) for r in rounds),
         "discovery_features_proposed": len(proposed),
+        # every phenotype defined on the day-by-day baseline: the holdout computes them by these definitions
+        "defined_phenotypes": [d["definition"] for d in defined.values()],
         "registered_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     }
     record["sha256"] = _digest(record)

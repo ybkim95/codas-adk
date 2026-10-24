@@ -30,7 +30,7 @@ from google.adk.tools import ToolContext
 
 from codas.aou.privacy import (MASK, SMALL_CELL_MAX, aou_mode, literature_search_enabled, mask_small_counts,
                                mask_small_counts_in_text)
-from codas.core import eda, gemini, hypotheses as design, literature
+from codas.core import eda, gemini, hypotheses as design, literature, phenotype_dsl as dsl
 from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
 from codas.core.statistics import safe_spearman
@@ -846,6 +846,81 @@ def _rank_with(frame: Any, feature: str, other: str, candidates: set[str]) -> fl
         return None
     rho = pair[feature].corr(pair[other], method="spearman")
     return float(rho) if math.isfinite(rho) else None
+
+
+_PHENOTYPE_BUDGET = int(os.getenv("CODAS_PHENOTYPE_BUDGET", "8"))  # phenotypes an outcome's agents may define
+_DAYS: dict[str, pd.DataFrame] = {}  # the day table, read once per process (keyed by path and modification time)
+
+
+def _day_table(state: Any) -> pd.DataFrame | None:
+    """The discovery share's day-by-day baseline (``state['days_path']``), or None without one."""
+    path = Path(str(state.get("days_path") or ""))
+    if not str(state.get("days_path") or "") or not path.exists():
+        return None
+    key = f"{path}:{path.stat().st_mtime_ns}"
+    if key not in _DAYS:
+        _DAYS.clear()
+        _DAYS[key] = pd.read_csv(path, float_precision="round_trip")
+    return _DAYS[key]
+
+
+def define_phenotype(definition_json: str, rationale: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Define a new phenotype from each participant's day-by-day baseline, the way an analyst would: how the
+    days vary, drift, differ at weekends, or respond to the day before. ``definition_json`` is a JSON object
+    {"name": a short lowercase name, "signal": a day-level column (the task lists them) or {"op": "ratio" |
+    "difference" | "product" | "sum", "a": column, "b": column}, "where": optional conditions on the days used,
+    [{"column": column, or "prev:column" for the previous day's value, "op": "<", "<=", ">", ">=", "==" or
+    "!=", "value": number}], "summary": "mean" | "sd" | "cv" | "slope_per_30d" | "mean_abs_change" |
+    "weekend_minus_weekday" | "fraction" | "coupling", "fraction": {"op", "value"} for a fraction of days,
+    "couple": {"with": column, "lag": 0 or 1} for a coupling (the within-person slope of the signal on that
+    column the same day or the day before: how strongly the person responds to it), "min_days": days a person
+    needs (default 14)}. ``rationale`` names the construct it measures and why it might matter. The phenotype
+    becomes a column of the cohort table, named by its definition, so it can be registered as a hypothesis and
+    is screened in later rounds; on the sealed holdout it is computed by the same definition. Until
+    registration closes you see its coverage and distribution only."""
+    state = tool_context.state
+    days = _day_table(state)
+    if days is None:
+        return {"error": "This run has no day-by-day baseline (the cohort spec has no day_store), so a phenotype "
+                         "cannot be defined; use propose_feature to combine existing columns."}
+    try:
+        definition = json.loads(definition_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": f"definition_json is not valid JSON: {exc}"}
+    signals = dsl.signal_columns(days)
+    problems = dsl.validate(definition, set(signals))
+    if problems:
+        return {"error": "The definition cannot be computed.", "problems": problems, "day_signals": signals}
+    defined = list(state.get("defined_phenotypes") or [])
+    column = dsl.column_name(definition)
+    earlier = next((d for d in defined if d["column"] == column), None)
+    if earlier is not None:
+        return {"column": column, "description": earlier["description"], "note": "already defined"}
+    if len(defined) >= _PHENOTYPE_BUDGET:
+        return {"error": f"At most {_PHENOTYPE_BUDGET} phenotypes per outcome; register or drop the ones defined."}
+    path = _resolve_csv_path(state.get("csv_path"), "")
+    if path is None:
+        return {"error": "No dataset in memory yet: the target must be set first."}
+    dsl.add_columns([definition], days, path)
+    table = read_csv_dataset(path)
+    record = {"name": definition["name"], "column": column, "digest": dsl.digest(definition),
+              "definition": {"name": definition["name"], **dsl.canonical(definition)},
+              "description": dsl.describe(definition), "rationale": str(rationale or "")[:300]}
+    state["defined_phenotypes"] = defined + [record]
+    summary = eda.describe(table[column], _dossier_tail())
+    dossier = state.get("eda")
+    if dossier:  # the data summary knows the new column too
+        dossier.setdefault("features", {})[column] = summary
+        state["eda"] = mask_small_counts(dossier) if aou_mode() else dossier
+    out: dict[str, Any] = {"column": column, "description": record["description"], "distribution": summary}
+    target = str(state.get("target_column") or "")
+    if registration_open(state) or target not in table.columns:
+        out["note"] = ("Defined; its association with the outcome is withheld until registration closes. Register "
+                       "a hypothesis on it by this column name, or let the next rounds screen it.")
+    else:
+        rho, p, n = safe_spearman(table[column], pd.to_numeric(table[target], errors="coerce"))
+        out["exploratory_association"] = {"spearman_rho": rho, "p": p, "n": n}
+    return _json_safe(out)
 
 
 def record_data_memo(memo_json: str, tool_context: ToolContext) -> dict[str, Any]:

@@ -134,7 +134,8 @@ class ScriptedLlm(BaseLlm):
                 if "survives_lag" in instruction:  # a time to event: the scorable predictions include the lag
                     for item in items:
                         if isinstance(item.get("magnitude"), dict) and item["magnitude"].get("measure") == "rho":
-                            item["magnitude"] = {**item["magnitude"], "measure": "hr_per_sd", "low": 0.6, "high": 0.97}
+                            low, high = (1.03, 1.6) if item["magnitude"]["low"] > 0 else (0.6, 0.97)  # same side
+                            item["magnitude"] = {**item["magnitude"], "measure": "hr_per_sd", "low": low, "high": high}
                 part = _call("register_hypotheses", hypotheses_json=json.dumps(items))
             if part.function_call.name == "set_target":  # target named in the goal ("The target column is x")
                 goal = " ".join(p.text or "" for c in llm_request.contents or [] for p in c.parts or [])
@@ -479,8 +480,21 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
     monkeypatch.setattr(gemini, "generate_grounded_reply", lambda *a, **k: gemini.GroundedResponse(
         text=None, model="none", configured=False, sources=[], queries=[]))
     asked = europe_pmc({"step count": (120, 4, [STEPS_PAPER])})
-    monkeypatch.setitem(SCRIPTS, "hypotheses_agent", [_call("register_hypotheses", hypotheses_json=json.dumps(
-        [_steps_hypothesis("[PMID:30000001]", "unexplored")]))])
+    from codas.core import phenotype_dsl as dsl
+
+    # A phenotype defined on the day-by-day baseline, then registered beside the step-count hypothesis.
+    weekend = {"name": "weekend_steps", "signal": "act_steps", "summary": "weekend_minus_weekday", "min_days": 7}
+    defined = {**_steps_hypothesis("[PMID:30000001]", "unexplored"), "feature": dsl.column_name(weekend),
+               "direction": "positive", "construct": "weekend activity", "incumbent": "none",
+               "magnitude": {"measure": "rho", "low": 0.02, "high": 0.3, "source": "analogy"},
+               "alternatives": ["wear"], "predictions": ["negative_controls_null"]}
+    monkeypatch.setitem(SCRIPTS, "hypotheses_agent", [
+        _call("define_phenotype", definition_json=json.dumps(weekend), rationale="weekend activity concentration"),
+        _call("register_hypotheses", hypotheses_json=json.dumps(
+            [_steps_hypothesis("[PMID:30000001]", "unexplored"), defined]))])
+    monkeypatch.setitem(SCRIPTS, "hypothesis_reviewer", [_call("record_hypothesis_review", reviews_json=json.dumps(
+        [{"feature": f, "specificity": 4, "falsifiability": 4, "plausibility": 4, "novelty": 2, "testability": 4,
+          "artefact_risk": 3, "comment": "scripted"} for f in ("act_steps_mean", dsl.column_name(weekend))]))])
 
     con = duckdb.connect()
     build_synthetic_cdr(con)
@@ -533,6 +547,14 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
                                "adherence_robust"}
         assert first["incumbent_adjusted"]["incumbent"] == "bmi_cov"
         assert "Registered predictions on the holdout" in report
+        # The defined phenotype: a column of the discovery table, pre-registered by its definition, and computed
+        # by that definition on the sealed share's days before the holdout test.
+        column = dsl.column_name(weekend)
+        assert column in discovery.columns and prereg["defined_phenotypes"][0]["summary"] == "weekend_minus_weekday"
+        assert column in sealed.columns and sealed[column].notna().any()
+        tested = next(h for h in confirmation["hypotheses"] if h["feature"] == column)
+        assert tested["family"] == "a_priori" and "same_direction" in tested
+        assert state["defined_phenotypes"][0]["column"] == column
         # Effect sizes in units a reader can weigh, on the scales frozen at registration.
         assert first["effect_sizes"] and first.get("magnitude") and "Effect sizes on the holdout" in report
         assert prereg["hypotheses"][0]["effect_scale"]["cutpoints"] and "frozen_model" in prereg["hypotheses"][0]
@@ -540,14 +562,16 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
         assert state["data_memo_audit"]["checked"] == {"cited": 1, "wrong value": 1}
         assert "skew 999.5" not in state["data_memo"] and "activity-volume feature" in state["data_memo"]
         quality = state["hypothesis_quality"]
-        assert quality["design"]["registered"] == 1 and quality["review"]["novelty"] == 2
-        assert quality["holdout"]["a_priori_tested"] == 1 and "## Hypothesis quality" in report
+        assert quality["design"]["registered"] == 2 and quality["review"]["novelty"] == 2
+        assert quality["design"]["on_a_constructed_feature"] == 0.5          # the defined phenotype
+        assert quality["holdout"]["a_priori_tested"] == 2 and "## Hypothesis quality" in report
         from codas.aou import notebook_views as views
 
         for table in (views.data_memo_table, views.hypothesis_review_table, views.hypothesis_quality_table,
                       views.scorecard_table, views.hypotheses_table, views.effect_sizes_table):
             assert table(result, stem) is not None, table.__name__
-        assert views.hypotheses_table(result, stem)["incumbent"].tolist() == ["bmi_cov"]
+        assert views.hypotheses_table(result, stem)["incumbent"].tolist() == ["bmi_cov", "-"]
+        assert views.defined_phenotypes_table(result, stem)["column"].tolist() == [column]
         assert confirmation["ledger"]["registrations"] >= 1
         kinds[stem] = prereg["survival_time"]
     # One measurement (value outcome) and one condition (time to event, tested with Cox).

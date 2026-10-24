@@ -240,6 +240,35 @@ papers, novel by the counted evidence; distinct constructs; mechanism steps and 
 hypothesis; the memo's confirmed claims and the problems it noticed; the review's means; and, after the
 holdout, replication and the registered predictions met, by kind.
 
+## New phenotypes from the day-by-day baseline
+
+A per-person mean or SD says how much someone moves or sleeps; how their days vary, drift, differ at
+weekends, or respond to the day before is a different construct, and new markers come from such constructs
+(sleep regularity, weekend-warrior activity, next-day heart rate after a short night). With a `day_store`
+section in the spec (`{"from": ["hr10h", "sleepseg", "stepsday"]}` in the example) CoDaS builds each
+participant's baseline window day by day (`codas/aou/daystore.py`): one row per valid day, with every daily
+source's columns, the day's resting heart rate (mean of its 30 lowest minutes), mean heart rate and minutes
+worn, the main-sleep night's onset, midpoint, minutes asleep and wake bouts, and the day's active and brisk
+(100 or more steps a minute) minutes, peak-30 cadence and first and last active hour.
+* It is one BigQuery pass per CDR and definition (with the example's minute sources about the size of the
+  phenotype pass, roughly 13 TB; dry-run first and under the cost caps), kept in `.codas_runs/aou/sealed/`
+  because it holds `person_id` and everyone.
+* Per outcome, each share's days are written keyed by the row of its cohort table, with days counted from
+  the index date and no identifiers or dates: the discovery share beside the cohort table, the sealed share
+  in the sealed folder.
+* `define_phenotype` (hypotheses agent, statistical interpreter) defines a phenotype in a small language
+  (`codas/core/phenotype_dsl.py`): a day-level signal or a ratio, difference, product or sum of two; an
+  optional filter on the days used, including the previous day's values (`prev:column`); and a summary:
+  mean, SD, coefficient of variation, trend per 30 days, mean absolute day-to-day change, weekend minus
+  weekday, share of days meeting a threshold, or the within-person slope on another signal the same day or
+  the day before (a reactivity); at least `min_days` days (default 14). The phenotype becomes a column of
+  the cohort table named by its definition (`dsl_<name>_<hash>`), so a name can never change meaning; it can
+  be registered as a hypothesis and is screened in later rounds. Before registration closes the tool shows
+  its coverage and distribution only. At most `CODAS_PHENOTYPE_BUDGET` (8) per outcome.
+* The pre-registration records every definition; before the holdout test the runner computes them on the
+  sealed share's days by those definitions.
+Without a `day_store` section nothing changes.
+
 ## Where the discovery is decided, and effects a reader can weigh
 
 **The screen ranks as the holdout tests** (`codas/core/discovery.py`, opt-in, on in the AoU runner). The

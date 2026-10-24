@@ -426,6 +426,11 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                       [[c["statement"], ", ".join(c.get("fields") or []),
                         c["status"] + (f": {c['detail']}" if c.get("detail") else ""), c.get("implication")]
                        for c in audit["claims"]], widths=[60, 40, 35, 45])
+        defined = phases.get("defined_phenotypes") or []
+        if defined:
+            doc.heading("Phenotypes defined on the day-by-day baseline", 2)
+            doc.table(["column", "computes", "rationale"],
+                      [[d["column"], d.get("description"), d.get("rationale")] for d in defined], widths=[45, 80, 55])
         doc.heading("Hypotheses and literature anchoring", 2)
         doc.markdown(phases.get("hypotheses") or "")
         registered = phases.get("a_priori_hypotheses") or []

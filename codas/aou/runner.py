@@ -26,7 +26,10 @@ os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "3")
 # The rounds, the per-candidate debate and the report review take 1-2 h per outcome on a cohort of this size.
 os.environ.setdefault("CODAS_OUTCOME_TIMEOUT_MIN", "180")
 
+import pandas as pd  # noqa: E402
+
 from codas.aou import cohort  # noqa: E402
+from codas.aou import daystore  # noqa: E402
 from codas.aou import feasibility as feas
 from codas.aou import ledger as ledger_book
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
@@ -253,7 +256,7 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "constraints", "candidate_debates", "lessons", "report_review", "preflight", "eda", "signal_map",
               "quality_rules", "extraction_qc", "literature_evidence", "literature_status", "literature_store",
               "construct_of", "citations", "data_memo", "data_memo_audit", "hypothesis_attempts",
-              "hypothesis_review", "hypothesis_quality")
+              "hypothesis_review", "hypothesis_quality", "defined_phenotypes")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -393,7 +396,7 @@ def _code_version() -> str:
 # The code that decides what an outcome's results are. Changes elsewhere (the notebook, the background
 # job, report rendering, views) leave finished outcomes reusable; a change here reruns them.
 ANALYSIS_CODE = ("codas/core", "codas/agents", "codas/aou/cohort.py", "codas/aou/phenotypes.py",
-                 "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/ledger.py",
+                 "codas/aou/daystore.py", "codas/aou/feasibility.py", "codas/aou/confirm.py", "codas/aou/ledger.py",
                  "codas/aou/privacy.py", "codas/aou/table1.py")
 
 
@@ -728,8 +731,19 @@ def _with_quality(state: dict[str, Any]) -> None:
         state.get("hypothesis_attempts") or [], state.get("a_priori_hypotheses") or [],
         review=state.get("hypothesis_review"), memo=state.get("data_memo_audit"),
         confirmation=state.get("confirmation"),
-        proposed={p.get("name") for p in state.get("proposed_features") or []})
+        proposed={p.get("name") for p in state.get("proposed_features") or []}
+        | {d["column"] for d in state.get("defined_phenotypes") or []})
     state["report"] = f"{state.get('report') or ''}\n\n{design.quality_markdown(quality)}"
+
+
+def _day_state(csv: Path) -> dict[str, Any]:
+    """Where the discovery share's day-by-day baseline is, and its day-level signals for the agents (none
+    without a day store)."""
+    path = daystore.days_path(csv)
+    if not path.exists():
+        return {}
+    signals = [c for c in pd.read_csv(path, nrows=5).columns if c not in ("row", "day", "weekday")]
+    return {"days_path": str(path), "day_signals": ", ".join(signals)}
 
 
 def testable_predictions(spec: CohortSpec) -> list[str]:
@@ -821,6 +835,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                                   # for the report; the goal states the rules without the sealed controls'
                                   "quality_rules": cohort.quality_rules(spec, negative_controls=True),
                                   "testable_predictions": testable_predictions(spec),
+                                  **_day_state(csv),
                                   "extraction_qc": _extraction_qc(csv), **evidence,
                                   "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()
                                                      else "")})
@@ -840,7 +855,13 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                              availability=cohort.availability_columns(spec),
                              covariate_imputations=CONFIRM_IMPUTATIONS, discovery_csv=csv,
                              outcome=outcome_identity(spec))
-        # The pre-registration is on disk before the holdout is read.
+        # The pre-registration is on disk before the holdout is read. Phenotypes defined on the discovery
+        # share's days are computed on the sealed share's days by their registered definitions.
+        sealed_days = daystore.holdout_days_path(csv)
+        if prereg.get("defined_phenotypes") and sealed_days.exists():
+            from codas.core import phenotype_dsl
+
+            phenotype_dsl.add_columns(prereg["defined_phenotypes"], pd.read_csv(sealed_days), sealed)
         sealed_panel = holdout_path(cohort.panel_path(csv))
         result = confirm(prereg, sealed, out, ledger_key=holdout_key(spec, cdr),
                          panel_csv=sealed_panel if sealed_panel.exists() else None)

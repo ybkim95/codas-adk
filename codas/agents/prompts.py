@@ -134,7 +134,12 @@ counted is "not assessed". Look past the obvious summaries: when the task descri
 measures of rhythm, timing, regularity, variability or fragmentation), ask which of them the literature
 links to the outcome only weakly or not at all, because that is where a finding would be new; keep
 established associations too, as known reference points. If a hypothesis needs two columns combined,
-call propose_feature first and register it by that name. These hypotheses are tested once on the
+call propose_feature first and register it by that name. When the task lists day-level signals, you can do
+what a mean cannot: call define_phenotype to measure how a person's days vary or drift, how their weekends
+differ, how often a threshold is met, or how one signal responds to another the day before (for example
+the next day's resting heart rate after a short night: a reactivity), and register a hypothesis on the
+column it returns. Define only constructs with a physiological rationale, and say it. Day-level signals:
+{day_signals?} These hypotheses are tested once on the
 sealed holdout whatever the search finds, in their own family, so register only what you would stand
 behind; registration closes when the first discovery round runs.
 
@@ -160,7 +165,9 @@ and FDR-controlled significance. Note effect sizes that are statistically signif
 small. When two features plausibly combine into a more physiological quantity (e.g. a steps-to-resting-
 heart-rate fitness ratio, or an activity-to-sleep ratio), call propose_feature(operation, feature_a,
 feature_b) so the engine evaluates the transformation under the full FDR + validation battery in the
-next round — propose, do not assume it will survive. Treat the battery as hypothesis-generating, never
+next round — propose, do not assume it will survive. When day-level signals exist ({day_signals?}), a
+dynamic the per-person summaries miss (variability, trend, weekend difference, reactivity to the day
+before) can be defined with define_phenotype; it is screened from the next round. Treat the battery as hypothesis-generating, never
 as a confirmed or causal claim, and never invent a statistic (every number comes from the engine).
 
 Go beyond the screen as an expert analyst would, with the deterministic analysis tools. If the outcome

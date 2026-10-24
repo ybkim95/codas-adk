@@ -463,6 +463,15 @@ def hypotheses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
                           "citation": h.get("citation")} for h in registered])
 
 
+def defined_phenotypes_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The phenotypes the agents defined on the day-by-day baseline: column, what it computes, and why."""
+    defined = _read(_out_dir(result) / f"{stem}_state.json").get("defined_phenotypes") or []
+    if not defined:
+        return None
+    return pd.DataFrame([{"column": d["column"], "computes": d.get("description"), "rationale": d.get("rationale")}
+                         for d in defined])
+
+
 def data_memo_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
     """The data analyst's memo, claim by claim, with what the check against the data summary found (only
     confirmed claims reached the hypothesis designer)."""

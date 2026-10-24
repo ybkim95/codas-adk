@@ -340,5 +340,12 @@
   "panel": {
     "period_days": 90,
     "min_days": 30
+  },
+  "day_store": {
+    "from": [
+      "hr10h",
+      "sleepseg",
+      "stepsday"
+    ]
   }
 }

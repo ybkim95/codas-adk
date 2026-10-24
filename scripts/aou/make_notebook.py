@@ -398,6 +398,8 @@ code("""for run in result["runs"]:
                           views.data_memo_table(result, stem)),
                          ("Literature evidence, counted before the agents started (the class comes from counts)",
                           views.literature_evidence_table(result, stem)),
+                         ("Phenotypes the agents defined on the day-by-day baseline",
+                          views.defined_phenotypes_table(result, stem)),
                          ("Hypotheses registered before any statistic, each as designed",
                           views.hypotheses_table(result, stem)),
                          ("Submissions refused at registration, and why", views.refusals_table(result, stem)),

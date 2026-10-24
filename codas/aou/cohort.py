@@ -281,6 +281,9 @@ class CohortSpec:
     panel: dict[str, Any] | None = None
     # Keep only people with an EHR visit in this many days before the index date (None: no such rule).
     ehr_lookback_days: int | None = None
+    # The day-by-day baseline new phenotypes are defined on (codas/aou/daystore.py), e.g.
+    # {"from": ["hrmin", "sleepseg"]}: the daily sources always, and the minute-level sources named here.
+    day_store: dict[str, Any] | None = None
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
@@ -343,6 +346,10 @@ class CohortSpec:
                 raise ValueError("panel needs period_days >= 7 and 1 <= min_days <= period_days.")
         if self.ehr_lookback_days is not None and not whole(self.ehr_lookback_days, 1, 100_000):
             raise ValueError("ehr_lookback_days must be a whole number of days, at least 1 (or null).")
+        if self.day_store is not None:  # its sources are checked when a spec file is read (codas.aou.daystore)
+            named = self.day_store.get("from") if isinstance(self.day_store, dict) else None
+            if not isinstance(named, list) or not all(isinstance(n, str) and _IDENT.match(n) for n in named):
+                raise ValueError('day_store must be {"from": [phenotype source prefixes]}.')
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CohortSpec":
@@ -366,8 +373,13 @@ class CohortSpec:
             phenotypes=[PhenotypeSource(**p) for p in data.get("phenotypes", [])],
             panel=data.get("panel"),
             ehr_lookback_days=None if data.get("ehr_lookback_days") is None else int(data["ehr_lookback_days"]),
+            day_store=data.get("day_store"),
         )
         spec.validate()
+        if spec.day_store is not None:  # a spec as written: its day store must name minute-level sources it has
+            from codas.aou import daystore
+
+            daystore.validate(spec)
         return spec
 
     @classmethod
@@ -678,7 +690,7 @@ def build_phenotype_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryPara
 
 
 def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
-                     qc: bool = False) -> tuple[str, list[QueryParam]]:
+                     qc: bool = False, person_id: bool = False) -> tuple[str, list[QueryParam]]:
     """Return the extraction SQL and its parameters. Identifiers are validated, values are bound.
 
     With ``phenotypes=False`` the intraday phenotypes are left out and ``person_id`` is selected so that
@@ -906,7 +918,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
     select = [f"ie.outcome_value AS {spec.outcome.name}"]
     if unit:  # the value's unit, summarised for the report and then dropped
         select += [f"ie.outcome_unit AS {UNIT_COLUMN}", f"uc.concept_name AS {UNIT_NAME_COLUMN}"]
-    if not phenotypes:  # the caller merges the phenotypes computed once (phenotype_table) by person
+    if not phenotypes or person_id:  # the caller merges by person (phenotype_table, the day store), then drops it
         select.insert(0, "ie.person_id")
     if is_survival(spec):
         select.append(f"ie.{FOLLOWUP_COLUMN}")
@@ -1395,17 +1407,26 @@ def extract_cohort(
 
     shared = (spec.design == "incident" and bool(spec.phenotypes)
               and os.getenv("CODAS_PHENOTYPE_CACHE", "1") != "0")
-    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared, qc=True))
+    days = spec.day_store is not None and spec.design == "incident"
+    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared, qc=True, person_id=days))
     if shared:  # the minute-level tables are read once per run, not once per outcome
         frame = frame.merge(_phenotype_table(client, spec, cdr, out), on="person_id", how="left",
-                            validate="many_to_one").drop(columns="person_id")
+                            validate="many_to_one")
+    people = frame.pop("person_id") if "person_id" in frame.columns else None  # never written to a cohort table
     path = out / f"{spec.name}.csv"
+    sealed_people = None
     if spec.holdout_fraction > 0:
         sealed = frame[HOLDOUT_COLUMN].astype(bool)
         holdout_path(path).parent.mkdir(parents=True, exist_ok=True)
         frame.loc[sealed, holdout_columns(spec)].to_csv(holdout_path(path), index=False)
+        if people is not None:
+            sealed_people, people = people[sealed], people[~sealed]
         frame = frame.loc[~sealed]
     frame[output_columns(spec)].to_csv(path, index=False)
+    if days and people is not None:  # each share's days, keyed by its rows, from the day store built once per CDR
+        from codas.aou import daystore
+
+        daystore.split(daystore.store(client, spec, cdr, out), people, sealed_people, path)
     # Aggregate and masked, from the discovery share only.
     qc_path(path).write_text(json.dumps(extraction_qc(frame, spec), indent=1), encoding="utf-8")
     if has_panel(spec):

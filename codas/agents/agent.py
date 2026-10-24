@@ -69,6 +69,7 @@ from codas.agents.tools import (
     check_convergence,
     data_detail,
     declare_confounders,
+    define_phenotype,
     exclude_features,
     preview_columns,
     profile_dataset,
@@ -308,7 +309,7 @@ hypotheses_agent = _agent(
     tier="reasoning",
     thinking="HIGH",  # designing falsifiable hypotheses is the step that most rewards deliberation
     tools=[search_literature, search_papers, data_detail, declare_confounders, exclude_features, propose_feature,
-           register_hypotheses],
+           define_phenotype, register_hypotheses],
     output_key="hypotheses",
 )
 hypothesis_reviewer = _agent(
@@ -337,7 +338,8 @@ statistical_interpreter = _agent(
     "statistical_interpreter",
     "Interprets association evidence and proposes physiological feature transformations to evaluate.",
     prompts.STATISTICAL_INTERPRETER,
-    tools=[propose_feature, run_survival_screen, run_subgroup_analysis, run_dose_response, run_mixed_model, run_method],
+    tools=[propose_feature, define_phenotype, run_survival_screen, run_subgroup_analysis, run_dose_response,
+           run_mixed_model, run_method],
     output_key="statistical_interpretation",
 )
 ml_interpreter = _agent(

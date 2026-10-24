@@ -32,6 +32,9 @@ _PRE_REGISTRATION = [
     _call("propose_feature", operation="ratio", feature_a="act_steps_mean", feature_b="act_days"),
     _call("declare_confounders", confounder_columns_csv="age", reason="ages both"),
     _call("exclude_features", columns_csv="act_calories_out_mean", reason="derived from the outcome here"),
+    _call("define_phenotype", definition_json=json.dumps({"name": "steps_spread", "signal": "steps_day",
+                                                          "summary": "sd", "min_days": 10}),
+          rationale="day-to-day variability of activity"),
     _call("register_hypotheses", hypotheses_json=json.dumps([_steps_hypothesis()])),
 ]
 
@@ -51,8 +54,14 @@ def _pre_registration_requests(table: pd.DataFrame, name: str) -> list[str]:
     RECORDS.clear()
     csv = RUN_DIR / f"{name}.csv"
     table.to_csv(csv, index=False)
+    # A day-by-day baseline for the same rows (it holds no outcome), so define_phenotype computes for real.
+    rng = np.random.default_rng(7)
+    days = pd.DataFrame([{"row": r, "day": d, "weekday": (d % 7) + 1, "steps_day": float(rng.normal(7000, 2000))}
+                         for r in range(len(table)) for d in range(-20, 0)])
+    days.to_csv(RUN_DIR / f"{name}.days.csv.gz", index=False, compression="gzip")
     with pytest.raises(_Stop):
-        runner.run_agents(csv, runner.goal_for(_window_spec(), "HbA1c"))
+        runner.run_agents(csv, runner.goal_for(_window_spec(), "HbA1c"),
+                          state={"days_path": str(RUN_DIR / f"{name}.days.csv.gz")})
     return [f"{agent}\n{_serialize(req)}".replace(name, "<dataset>") for agent, req in RECORDS]
 
 
@@ -76,6 +85,7 @@ def test_nothing_the_agents_see_before_registration_depends_on_the_outcome(aou_e
     assert not np.allclose(table["hba1c"], permuted["hba1c"])
     original = _pre_registration_requests(table, "original")
     assert any("propose_feature" in r or "withheld" in r for r in original)  # the leaky tool was exercised
+    assert any("dsl_steps_spread_" in r for r in original)                   # and a phenotype was defined
     assert any("Candidate features:" in r for r in original)  # the data dossier reached the designer
     assert original == _pre_registration_requests(permuted, "permuted")
     # The guard is only worth having if it can fail: without the barrier, the association leaks.

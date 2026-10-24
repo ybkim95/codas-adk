@@ -492,8 +492,10 @@ def test_phenotypes_are_read_once_per_run_and_match_the_inline_extraction(synthe
     run = duckdb_query(synthetic)
     sql_seen: list[str] = []
     monkeypatch.setattr(cohort, "_query", lambda c, sql, p: (sql_seen.append(sql), run(c, sql, p))[1])
+    from dataclasses import replace
+
     outcomes = {o.name: o for o in feas.load_catalog(CATALOG)}
-    base = _incident_spec()
+    base = replace(_incident_spec(), day_store=None)  # the day store reads these tables too, once per CDR
     specs = [feas.spec_for(outcomes["hba1c"], base), feas.spec_for(outcomes["t2d"], base)]
     intraday = ("steps_intraday", "sleep_level", "heart_rate_minute_level")
     root = ROOT / ".codas_runs" / "aou_phenotype_cache_test"
