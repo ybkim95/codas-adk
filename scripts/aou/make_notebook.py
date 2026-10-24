@@ -379,6 +379,10 @@ if result.get("scan"):
     hits = views.phenome_hits_table(result)
     if hits is not None:
         display(views.fit(hits))
+    atlas = views.replication_atlas_table(result)
+    if atlas is not None:
+        display(Markdown("### Replication atlas: established associations re-tested on the discovery share"))
+        display(views.fit(atlas))
 display(views.feasibility_figure(result["rows"], result["chosen"]))
 display(Markdown("### Runs"))
 display(views.fit(views.runs_table(result)))

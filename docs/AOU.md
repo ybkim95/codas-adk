@@ -298,7 +298,17 @@ filled with discovery medians, never with the outcome, which would inflate discr
   a quarter with 1-20 events shows no cumulative incidence, which would reveal the count;
 * the gain in discrimination (C for a time to event or a binary outcome, R^2 for a value) from the frozen
   models, beyond the incumbent and head to head against it. Bootstrap intervals (200 draws) are computed
-  for effects whose interval excludes the null; the gain is an effect size, not a gate.
+  for effects whose interval excludes the null; the gain is an effect size, not a gate;
+* the gain beyond a **strong baseline**: the confounders plus every established marker of the registration
+  (each hypothesis's incumbent and each feature of an association the literature has established), leaving
+  out the feature itself and markers that rank the discovery rows almost as it does (|Spearman| >= 0.95);
+* the **detection rate** of each model at 5% and 10% false positives: the share of cases a rule that flags
+  that share of non-cases finds (Wald & Morris), cases being events by the absolute-risk horizon against
+  those followed event-free past it. It needs no disease-specific risk threshold, so it stays generic.
+  A rate whose cases found or missed number 1-20 is withheld, with any gain beside it;
+* each **declared mediator** (a column the hypothesis names as on its causal path): the effect with the
+  mediator added and the share of the effect it carries. Mediators are measured at baseline, so their order
+  relative to the feature is not established; the report says so.
 
 Every effect gets a size class: negligible, small, moderate or large, at |rho| and standardised
 coefficients of 0.1 / 0.2 / 0.3, hazard ratios per SD of 1.05 / 1.2 / 1.5 (either way), and C or R^2 gains
@@ -318,12 +328,14 @@ Each outcome's report ends with a scorecard computed from the run's records (`co
 * **Recipe coverage.** For each tested hypothesis, which steps of the analysis that published biomarker studies
   share it went through: adjusted, per natural unit and by quarter, absolute risk, dose-response, a lag, negative
   controls, wear adherence, the incumbent head to head, added predictive value, within-person change,
-  consistency across strata, the sealed-holdout test and an E-value. A step is yes (ran, whatever it showed), no
+  consistency across strata, the sealed-holdout test, an E-value, the gain beyond the strong baseline, the share
+  a declared mediator carries, and how specific the feature is across the phenome scan. A step is yes (ran, whatever it showed), no
   (applicable but missing or not computable: the time-varying exposure is always no in this version) or n/a.
 * **The evidence ladder** (after Hlatky et al., Circulation 2009): 1, associated on the sealed holdout in the
   registered direction; 2, replicated under the ledger's error control and robust to every falsification test
-  that ran; 3, adding predictive value over the covariates (a gain whose interval excludes zero, not negligible
-  in size). Clinical utility and external replication are named as the next steps; one cohort's holdout cannot
+  that ran; 3, adding predictive value (a gain whose interval excludes zero, not negligible in size) beyond the
+  strong baseline of the covariates and every established marker, or beyond the covariates when no marker is
+  established. Clinical utility and external replication are named as the next steps; one cohort's holdout cannot
   show them.
 * **The scorecard**: features profiled and how many are reliable over the window, the memo's confirmed claims
   and noticed problems, the design's measures (complete submissions, new by evidence, constructed phenotypes,
@@ -470,6 +482,19 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
      by default).
    * For each outcome's three strongest hits the literature is counted (Europe PMC, as for the agents'
      evidence matrix): whether the hit's construct is established for that outcome.
+   * **Specificity**: each feature's breadth, the share of screened outcomes it is a hit for. A feature that is
+     a hit for more than 25% of them behaves like a general marker of poor health (Julkunen et al., 2023);
+     one that is a hit for at most 10% is specific. Selection prefers outcomes whose hits are new, then
+     outcomes whose hits are specific, then outcomes with more hits.
+   * **Replication atlas**: every construct of the literature catalog among the features is paired with every
+     screened outcome (the largest first, at most `CODAS_ATLAS_MAX_LOOKUPS`, 800, lookups per run; answers are
+     cached), and the literature is counted for the pair. Each pair the literature has established is re-tested:
+     its construct's representative feature (the one with the most participants, chosen without the outcome),
+     its estimate after all covariates on the discovery share, Benjamini-Hochberg q across the atlas, and the
+     effects the most cited papers state, quoted word for word from their abstracts (their units and contrasts
+     are the paper's). The pairs come from the literature, not from this screen, so what fails to replicate is
+     reported as well; the discovery share was not used to make these claims, so it tests them
+     independently.
    * The full grid, the rule and the strongest hits go to `phenome_scan.json` and `explore_summary.md`
      with counts of 1-20 masked (the unmasked copy the ranking uses stays in the sealed folder); the
      notebook shows a map of the hits and their table. Searching the discovery share spends no

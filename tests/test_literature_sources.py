@@ -161,3 +161,15 @@ def test_the_research_basis_cites_more_than_fifty_papers_by_doi():
     folder = Path(literature.__file__).resolve().parents[2] / "docs" / "research"
     items = literature.references_in("\n".join(p.read_text() for p in sorted(folder.glob("*.md"))))
     assert len(items) >= 50 and (folder / "README.md").exists()
+
+
+def test_effect_statements_are_quoted_as_written():
+    from codas.core import literature
+
+    abstract = ("Background. Cohort of adults. Higher sleep regularity was associated with lower mortality "
+                "(HR 0.70, 95% CI 0.62-0.79). The odds ratio for diabetes was 1.31 (1.10 to 1.56); "
+                "results held. No interval here, HR 1.2.")
+    found = literature.effect_statements(abstract, ["sleep regularity"])
+    assert found[0] == "Higher sleep regularity was associated with lower mortality (HR 0.70, 95% CI 0.62-0.79)."
+    assert all(s in abstract for s in found) and not any("No interval" in s for s in found)
+    assert literature.effect_statements("", ["x"]) == []

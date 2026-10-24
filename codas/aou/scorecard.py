@@ -3,14 +3,16 @@
 * Recipe coverage: for each hypothesis tested on the sealed holdout, which steps of the analysis that published
   biomarker studies share it went through (the effect adjusted, in natural units and by quarter, absolute risk,
   dose-response, a lag, negative controls, wear adherence, the incumbent head to head, added predictive value,
-  within-person change, consistency across strata, the sealed-holdout test, an E-value; a time-varying exposure
-  is not run in this version). Each step is ``yes`` (ran and gave a result, whatever the result), ``no``
+  within-person change, consistency across strata, the sealed-holdout test, an E-value, the gain beyond a strong
+  baseline of every established marker, the share a declared mediator carries, and how specific the feature
+  is across the phenome scan; a time-varying exposure is not run in this version). Each step is ``yes`` (ran and gave a result, whatever the result), ``no``
   (applicable but missing, or could not be computed) or ``n/a`` (not applicable to this outcome or hypothesis),
   with what it showed; whether the result supports the hypothesis is the rung's to say.
 * The evidence ladder (after Hlatky et al., Circulation 2009): 1, associated on the sealed holdout in the
   registered direction (nominal one-sided p < 0.05); 2, replicated under the ledger's error control with every
-  falsification test that ran passed; 3, adding predictive value to the covariates (a gain whose 95% interval
-  excludes zero, of a size that is not negligible). Clinical utility, outcomes and external validation lie
+  falsification test that ran passed; 3, adding predictive value (a gain whose 95% interval excludes zero, of a
+  size that is not negligible) beyond the strong baseline of the covariates and every established marker, or
+  beyond the covariates when no marker is established. Clinical utility, outcomes and external validation lie
   beyond what one cohort's holdout can show and are named as the next steps.
 * The scorecard: how well the data were understood, how the hypotheses were designed, and what the holdout
   showed, one measure per line.
@@ -38,13 +40,17 @@ STEPS = [
     ("heterogeneity", "consistent across strata"),
     ("replication", "sealed-holdout test"),
     ("e_value", "E-value"),
+    ("strong_baseline", "beyond the established markers"),
+    ("mediation", "through a declared mediator"),
+    ("specificity", "specific across the phenome"),
     ("time_varying", "time-varying exposure"),
 ]
 RUNGS = {0: "not associated on the holdout", 1: "associated on the holdout",
-         2: "replicated and robust to every falsification test that ran", 3: "adds predictive value"}
+         2: "replicated and robust to every falsification test that ran",
+         3: "adds predictive value beyond the established markers"}
 NEXT = {0: "a new hypothesis, or more participants",
         1: "replication under the ledger's error control, and the falsification tests",
-        2: "added predictive value over the covariates",
+        2: "added predictive value beyond the covariates and the established markers",
         3: "clinical utility (reclassification at decision thresholds) and replication in an external cohort"}
 
 
@@ -59,9 +65,12 @@ def _ci(values: Any) -> str:
 
 
 def _cells(row: dict[str, Any], confirmation: dict[str, Any], time_to_event: bool,
-           incumbent_registered: Any = None) -> dict[str, list[str]]:
+           incumbent_registered: Any = None, mediators_registered: Any = None,
+           specificity: dict[str, Any] | None = None) -> dict[str, list[str]]:
     """Each step of the recipe for one tested hypothesis: [status, what it showed]. ``incumbent_registered`` is
-    the marker the hypothesis was registered to beat (none for a discovery candidate)."""
+    the marker the hypothesis was registered to beat (none for a discovery candidate), ``mediators_registered``
+    the mediators it declared, ``specificity`` the phenome scan's profile of its feature (none when the scan
+    did not screen it)."""
     sizes = row.get("effect_sizes") or {}
     cells: dict[str, list[str]] = {}
     confounders = confirmation.get("confounders") or []
@@ -143,6 +152,27 @@ def _cells(row: dict[str, Any], confirmation: dict[str, Any], time_to_event: boo
         cells["e_value"] = [YES, f"{row['e_value']:.3g}" + (f" (CI bound {bound:.3g})" if _finite(bound) else "")]
     else:
         cells["e_value"] = [NO, "not computed"]
+    if _finite(gain.get("gain_beyond_strong")):
+        cells["strong_baseline"] = [YES, f"{gain.get('metric')} gain beyond {', '.join(gain.get('baseline') or [])} "
+                                         f"{gain['gain_beyond_strong']:+.3g}{_ci(gain.get('gain_beyond_strong_ci95'))}"]
+    elif _finite(gain.get("gain")):
+        cells["strong_baseline"] = [NA, "no established marker beyond the confounders"]
+    else:
+        cells["strong_baseline"] = [NO, "no frozen model"]
+    mediation = row.get("mediation") or []
+    if mediation:
+        cells["mediation"] = [YES, "; ".join(f"{m['mediator']} carries " + (f"{m['explained']:.0%}" if _finite(m.get("explained"))
+                                                                            else "an unknown share")
+                                             for m in mediation)]
+    else:
+        cells["mediation"] = ([NO, "declared but not estimable on the holdout"] if mediators_registered
+                              else [NA, "no mediator declared"])
+    if specificity:
+        breadth = specificity.get("breadth")
+        cells["specificity"] = [YES, f"{specificity.get('specificity')}" + (f" (hit for {breadth:.0%} of outcomes)"
+                                                                            if _finite(breadth) else "")]
+    else:
+        cells["specificity"] = [NA, "not screened by the phenome scan (a feature built in this run)"]
     cells["time_varying"] = [NO, "not run in this version (baseline-window exposure only)"]
     return cells
 
@@ -154,24 +184,30 @@ def rung(row: dict[str, Any]) -> int:
     if not ((row.get("replicated") or row.get("reproduced")) and row.get("robust")):
         return 1
     gain = (row.get("effect_sizes") or {}).get("prediction") or {}
-    lo = (gain.get("gain_ci95") or [None])[0]
-    if _finite(lo) and lo > 0 and gain.get("magnitude") not in (None, "negligible"):
+    key, size = (("gain_beyond_strong", "magnitude_beyond_strong") if gain.get("gain_beyond_strong") is not None
+                 else ("gain", "magnitude"))
+    lo = (gain.get(f"{key}_ci95") or [None])[0]
+    if _finite(lo) and lo > 0 and gain.get(size) not in (None, "negligible"):
         return 3
     return 2
 
 
 def coverage(confirmation: dict[str, Any] | None, time_to_event: bool,
-             registered: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+             registered: list[dict[str, Any]] | None = None,
+             specificity: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """One record per hypothesis the holdout tested: its recipe cells and its rung. ``registered`` are the
-    hypotheses as designed (their incumbents)."""
+    hypotheses as designed (their incumbents and mediators); ``specificity`` the phenome scan's profile of
+    each feature it screened."""
     incumbents = {h.get("feature"): h.get("incumbent") for h in registered or []}
+    mediators = {h.get("feature"): h.get("mediators") for h in registered or []}
     out = []
     for row in (confirmation or {}).get("hypotheses") or []:
         if "same_direction" not in row:
             continue
         level = rung(row)
         out.append({"feature": row["feature"], "family": row.get("family", "exploratory"),
-                    "cells": _cells(row, confirmation, time_to_event, incumbents.get(row["feature"])),
+                    "cells": _cells(row, confirmation, time_to_event, incumbents.get(row["feature"]),
+                                    mediators.get(row["feature"]), (specificity or {}).get(row["feature"])),
                     "rung": level, "rung_label": RUNGS[level], "next": NEXT[level]})
     return out
 
@@ -183,7 +219,7 @@ def _share(part: int, whole: int) -> str:
 def scorecard(state: dict[str, Any], time_to_event: bool) -> dict[str, Any]:
     """The outcome's scorecard and the recipe coverage of every tested hypothesis."""
     confirmation = state.get("confirmation") or {}
-    records = coverage(confirmation, time_to_event, state.get("a_priori_hypotheses"))
+    records = coverage(confirmation, time_to_event, state.get("a_priori_hypotheses"), state.get("phenome_specificity"))
     lines: list[dict[str, str]] = []
 
     def add(section: str, measure: str, value: Any) -> None:
@@ -257,7 +293,7 @@ def markdown(card: dict[str, Any]) -> str:
     if records:
         lines += ["Recipe coverage (yes: ran and gave a result; no: applicable but missing; n/a: not applicable) and "
                   "the rung of the evidence ladder each hypothesis reached (1 associated on the holdout, 2 replicated "
-                  "and robust, 3 adds predictive value):", "",
+                  "and robust, 3 adds predictive value beyond the established markers):", "",
                   "| feature | rung | " + " | ".join(label for _, label in STEPS) + " |",
                   "|---|---|" + "---|" * len(STEPS)]
         for r in records:

@@ -149,3 +149,57 @@ def test_frozen_models_for_a_value_outcome_use_r_squared():
     frozen = effects.fit_frozen(frames[0], target="y", time=None, covariates=["age"], feature="x")
     out = effects.evaluate_frozen(frozen, frames[1], target="y", time=None, draws=30)
     assert out["metric"] == "R2" and 0.05 < out["gain"] < 0.12 and out["gain_ci95"][0] > 0
+
+
+def test_detection_rate_by_hand():
+    case = np.array([1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    score = np.array([9, 8, 2, 1, 7, 6, 5, 4, 3, 2.5, 1.5, 1.2, 0.5, 0.1])
+    # The 90th percentile of the ten non-cases' scores is 6.1: two of the four cases score above it.
+    assert effects.detection_rate(case, score, 0.10) == 0.5
+    assert math.isnan(effects.detection_rate(np.zeros(5), np.arange(5), 0.1))
+
+
+def test_the_strong_baseline_and_detection_rates_on_the_holdout():
+    """With the incumbent among the established markers, a feature that only repeats it adds nothing beyond the
+    strong baseline, while a feature with its own effect still does; detection rates come at the horizon."""
+    discovery, holdout = _survival_shares(3), _survival_shares(4)
+    frozen = effects.fit_frozen(discovery, target="y", time="days", covariates=["age"], feature="x", baseline=["inc"])
+    assert {"strong", "strong_feature"} <= set(frozen["models"]) and frozen["baseline"] == ["inc"]
+    out = effects.evaluate_frozen(frozen, holdout, target="y", time="days", draws=30, horizon=365, min_count=20)
+    assert out["baseline"] == ["inc"] and out["gain_beyond_strong_ci95"][0] > 0
+    rates = out["detection"]["rates"]
+    assert out["detection"]["false_positive_rates"] == [0.05, 0.10]
+    assert rates["strong_feature"][1] > rates["strong"][1] and out["detection_gain_beyond_strong"] > 0
+    assert rates["feature"][1] >= rates["feature"][0]           # more cases found at more false positives
+    dup = effects.evaluate_frozen(effects.fit_frozen(discovery, target="y", time="days", covariates=["age"],
+                                                     feature="dup", baseline=["inc"]),
+                                  holdout, target="y", time="days", draws=30, horizon=365)
+    assert abs(dup["gain_beyond_strong"]) < 0.005
+    # No marker beyond the covariates: no strong baseline; no horizon: no detection rates.
+    plain = effects.fit_frozen(discovery, target="y", time="days", covariates=["age"], feature="x", baseline=["age"])
+    assert "strong" not in plain["models"]
+    assert "detection" not in effects.evaluate_frozen(plain, holdout, target="y", time="days", draws=0)
+
+
+def test_a_detection_rate_that_would_reveal_a_small_count_is_withheld():
+    discovery, holdout = _survival_shares(3), _survival_shares(4)
+    frozen = effects.fit_frozen(discovery, target="y", time="days", covariates=["age"], feature="x", baseline=["inc"])
+    few = holdout.copy()
+    few.loc[few.index[150:], "y"] = 0                        # a few dozen cases: some rate finds or misses 1-20
+    out = effects.evaluate_frozen(frozen, few, target="y", time="days", draws=10, horizon=365, min_count=20)
+    cases = int(((few.y > 0) & (few.days <= 365)).sum())
+    assert 20 < cases < 100
+    for values in out["detection"]["rates"].values():
+        for v in values:
+            assert v is None or not (0 < round(v * cases) <= 20 or 0 < cases - round(v * cases) <= 20)
+    assert any(v is None for values in out["detection"]["rates"].values() for v in values)
+    shown = out["detection"]["rates"]
+    for gain, (a, b) in (("detection_gain", ("feature", "base")), ("detection_gain_beyond_strong",
+                                                                    ("strong_feature", "strong"))):
+        if gain in out:
+            assert shown[a][-1] is not None and shown[b][-1] is not None
+    # With 20 or fewer cases no rate is given at all.
+    fewer = holdout.copy()
+    fewer.loc[fewer.index[15:], "y"] = 0
+    assert "detection" not in effects.evaluate_frozen(frozen, fewer, target="y", time="days", draws=0, horizon=365,
+                                                      min_count=20)

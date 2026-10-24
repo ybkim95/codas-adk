@@ -10,9 +10,11 @@ so "significant but negligible" is said, not left to the reader.
 
 Quarter cut-points and the SD are frozen on the discovery share and applied unchanged to the holdout.
 ``fit_frozen`` fits the prediction models on discovery (covariates alone, with the feature, with an
-incumbent, with both); ``evaluate_frozen`` scores them on the holdout: the gain in discrimination (C for a
-time to event or a binary outcome, R^2 for a value) with a bootstrap interval, and head to head against the
-incumbent. Missing covariate values are filled with discovery medians, which never look at the outcome:
+incumbent, with both, and a strong baseline of the covariates with every established marker, alone and with
+the feature); ``evaluate_frozen`` scores them on the holdout: the gain in discrimination (C for a time to
+event or a binary outcome, R^2 for a value) with a bootstrap interval, head to head against the incumbent,
+beyond the strong baseline, and the detection rate at a fixed false-positive rate (the share of cases a rule
+flagging 5% or 10% of non-cases finds; Wald & Morris), which needs no disease-specific risk threshold. Missing covariate values are filled with discovery medians, which never look at the outcome:
 imputing with the outcome would inflate a prediction model's discrimination.
 
 Nothing here names a dataset, an outcome or a feature.
@@ -35,6 +37,7 @@ from codas.core.survival import cox_ph, e_value
 CLASSES = {"rho": (0.1, 0.2, 0.3), "std_beta": (0.1, 0.2, 0.3), "hr_per_sd": (1.05, 1.2, 1.5),
            "delta_c": (0.005, 0.01, 0.02), "delta_r2": (0.005, 0.01, 0.02)}
 BOOTSTRAP = 200
+DETECTION_FPR = (0.05, 0.10)  # false-positive rates the detection rate is read at
 _SEED = 20251024
 
 
@@ -98,6 +101,17 @@ def auc(y: Any, score: Any) -> float:
         return math.nan
     ranks = pd.Series(s).rank(method="average").to_numpy()
     return float((ranks[y].sum() - pos * (pos + 1) / 2) / (pos * neg))
+
+
+def detection_rate(case: Any, score: Any, fpr: float) -> float:
+    """The share of cases scoring above the (1 - ``fpr``) quantile of the non-cases' scores: how many cases a
+    rule that flags ``fpr`` of the non-cases finds."""
+    c, s = np.asarray(case, dtype=float), np.asarray(score, dtype=float)
+    ok = np.isfinite(c) & np.isfinite(s)
+    c, s = c[ok] > 0, s[ok]
+    if not c.any() or c.all():
+        return math.nan
+    return float((s[c] > np.quantile(s[~c], 1 - fpr)).mean())
 
 
 def r_squared(y: Any, prediction: Any) -> float:
@@ -282,11 +296,12 @@ def _design(frame: pd.DataFrame, columns: list[str], frozen: dict[str, Any]) -> 
 
 
 def fit_frozen(frame: pd.DataFrame, *, target: str, time: str | None, covariates: list[str], feature: str,
-               incumbent: str | None = None) -> dict[str, Any] | None:
+               incumbent: str | None = None, baseline: list[str] | None = None) -> dict[str, Any] | None:
     """Prediction models fitted on the discovery share and frozen for the holdout: covariates alone, with the
-    feature, and with an incumbent alone and with the feature (Cox for a time to event, else least squares,
-    which for a binary outcome is a linear risk score)."""
-    columns = list(dict.fromkeys([*covariates, feature, *([incumbent] if incumbent else [])]))
+    feature, with an incumbent alone and with the feature, and, when ``baseline`` names markers beyond the
+    covariates, the strong baseline (covariates and those markers) alone and with the feature (Cox for a time
+    to event, else least squares, which for a binary outcome is a linear risk score)."""
+    columns = list(dict.fromkeys([*covariates, feature, *([incumbent] if incumbent else []), *(baseline or [])]))
     columns = [c for c in columns if c in frame.columns and c not in (target, time)]
     if feature not in columns:
         return None
@@ -302,6 +317,10 @@ def fit_frozen(frame: pd.DataFrame, *, target: str, time: str | None, covariates
     specs = {"base": base, "feature": base + [feature]}
     if incumbent and incumbent in columns:
         specs.update(incumbent=base + [incumbent], both=base + [incumbent, feature])
+    strong = [c for c in columns if (c in covariates or c in (baseline or [])) and c != feature]
+    if set(strong) - set(base):
+        specs.update(strong=strong, strong_feature=strong + [feature])
+        frozen["baseline"] = [c for c in strong if c not in base]
     y = pd.to_numeric(frame[target], errors="coerce").to_numpy(dtype=float)
     t = pd.to_numeric(frame[time], errors="coerce").to_numpy(dtype=float) if time else None
     for name, cols in specs.items():
@@ -331,11 +350,27 @@ def _score(frozen: dict[str, Any], name: str, frame: pd.DataFrame) -> np.ndarray
     return coef[0] + design @ coef[1:]
 
 
+def _cases(y: np.ndarray, t: np.ndarray | None, horizon: float | None, binary: bool) -> np.ndarray | None:
+    """1 for a case, 0 for a non-case, nan otherwise: with a time to event, an event by ``horizon`` against
+    no event by then among those followed that long; a binary outcome as it is; None for a value."""
+    if t is not None:
+        if not horizon:
+            return None
+        out = np.full(len(y), np.nan)
+        out[(y > 0) & (t <= horizon)] = 1.0
+        out[t > horizon] = 0.0
+        return out
+    return y if binary else None
+
+
 def evaluate_frozen(frozen: dict[str, Any], frame: pd.DataFrame, *, target: str, time: str | None,
-                    draws: int = BOOTSTRAP) -> dict[str, Any]:
+                    draws: int = BOOTSTRAP, horizon: float | None = None, min_count: int = 0) -> dict[str, Any]:
     """The frozen models scored on the holdout: C (time to event, binary) or R^2 (value) of each, the gain from
-    the feature with a bootstrap 95% interval, and with an incumbent the gain beyond it and the feature head
-    to head against it."""
+    the feature with a bootstrap 95% interval, with an incumbent the gain beyond it and the feature head to
+    head against it, and with a strong baseline the gain beyond it. For a binary outcome, or a time to event
+    with a ``horizon``, the detection rate of each model at 5% and 10% false positives and the gain at 10%
+    with its interval; a rate is withheld when the cases it finds or misses number 1 to ``min_count``, and
+    the rates when there are ``min_count`` cases or non-cases or fewer."""
     y = pd.to_numeric(frame[target], errors="coerce").to_numpy(dtype=float)
     t = pd.to_numeric(frame[time], errors="coerce").to_numpy(dtype=float) if time else None
     binary = not time and set(np.unique(y[np.isfinite(y)])) <= {0.0, 1.0}
@@ -352,17 +387,51 @@ def evaluate_frozen(frozen: dict[str, Any], frame: pd.DataFrame, *, target: str,
     pairs = {"gain": ("feature", "base")}
     if "both" in scores:
         pairs.update(gain_beyond_incumbent=("both", "incumbent"), head_to_head=("feature", "incumbent"))
+    if "strong_feature" in scores:
+        pairs.update(gain_beyond_strong=("strong_feature", "strong"))
+        out["baseline"] = list(frozen.get("baseline") or [])
+    case = _cases(y, t, horizon, binary)
+    rates = {}
+    if case is not None:
+        n_case, n_other = int(np.nansum(case == 1)), int(np.nansum(case == 0))
+        if n_case > min_count and n_other > min_count:
+            rates = {k: (("feature", "base") if k == "detection_gain" else ("strong_feature", "strong"))
+                     for k in ("detection_gain", "detection_gain_beyond_strong")
+                     if k == "detection_gain" or "strong_feature" in scores}
+            shown = {}
+            for name, s in scores.items():
+                values = []
+                for fpr in DETECTION_FPR:
+                    dr = detection_rate(case, s, fpr)
+                    found = round(dr * n_case) if np.isfinite(dr) else 0
+                    small = 0 < found <= min_count or 0 < n_case - found <= min_count
+                    values.append(None if not np.isfinite(dr) or small else round(dr, 3))
+                shown[name] = values
+            # A gain beside a withheld rate would give that rate away.
+            rates = {k: (a, b) for k, (a, b) in rates.items() if shown[a][-1] is not None and shown[b][-1] is not None}
+            out["detection"] = {"false_positive_rates": list(DETECTION_FPR), "rates": shown,
+                                "cases": "event by the horizon" if t is not None else "the outcome"}
     rng = np.random.default_rng(_SEED)
-    boot = {k: [] for k in pairs}
+    boot = {k: [] for k in [*pairs, *rates]}
     for _ in range(draws):
         idx = rng.integers(0, len(frame), len(frame))
         for k, (a, b) in pairs.items():
             boot[k].append(metric(idx, scores[a]) - metric(idx, scores[b]))
-    for k, (a, b) in pairs.items():
+        for k, (a, b) in rates.items():
+            boot[k].append(detection_rate(case[idx], scores[a][idx], DETECTION_FPR[-1])
+                           - detection_rate(case[idx], scores[b][idx], DETECTION_FPR[-1]))
+    for k, (a, b) in [*pairs.items(), *rates.items()]:
         values = np.asarray([v for v in boot[k] if np.isfinite(v)])
-        out[k] = round(out[a] - out[b], 4)
+        if k in pairs:
+            out[k] = round(out[a] - out[b], 4)
+        else:
+            out[k] = round(detection_rate(case, scores[a], DETECTION_FPR[-1])
+                           - detection_rate(case, scores[b], DETECTION_FPR[-1]), 4)
         out[f"{k}_ci95"] = ([round(float(np.quantile(values, 0.025)), 4), round(float(np.quantile(values, 0.975)), 4)]
                             if len(values) else None)  # no draws: the point estimate only
     out["magnitude"] = magnitude("delta_c" if metric_name == "C" else "delta_r2", out["gain"])
+    if "gain_beyond_strong" in out:
+        out["magnitude_beyond_strong"] = magnitude("delta_c" if metric_name == "C" else "delta_r2",
+                                                   out["gain_beyond_strong"])
     out["draws"] = draws
     return out

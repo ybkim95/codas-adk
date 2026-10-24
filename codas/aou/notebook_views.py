@@ -234,7 +234,27 @@ def phenome_hits_table(result: dict[str, Any], limit: int = 25) -> pd.DataFrame 
                           "effect (age, sex)": show(p, "estimate"), "q": f"{p['q']:.1e}",
                           "halves z": f"{p['half_z'][0]:+.1f} / {p['half_z'][1]:+.1f}",
                           "effect (all covariates)": show(p, "t1_estimate"), "magnitude": p.get("magnitude"),
-                          "literature": p.get("novelty") or "not looked up"} for p in hits]) if hits else None
+                          "literature": p.get("novelty") or "not looked up",
+                          "specificity": (f"{p['specificity']} ({p['breadth']:.0%} of outcomes)"
+                                          if p.get("specificity") and p.get("breadth") is not None
+                                          else p.get("specificity") or "-")} for p in hits]) if hits else None
+
+
+def replication_atlas_table(result: dict[str, Any], limit: int = 30) -> pd.DataFrame | None:
+    """Associations the literature has established, re-tested on the discovery share: the estimate after all
+    covariates, q across the atlas, and the effect the most cited paper states (quoted from its abstract)."""
+    scan = _scan(result)
+    rows = sorted(((scan or {}).get("atlas") or {}).get("pairs") or [], key=lambda r: (r.get("q", 1.0), r["label"]))
+    if not rows:
+        return None
+    show = lambda r: ("-" if r.get("t1_estimate") is None else f"HR {r['t1_estimate']:.2f}/SD"  # noqa: E731
+                      if r.get("measure") == "hr_per_sd" else f"rho {r['t1_estimate']:+.2f}")
+    return pd.DataFrame([{"outcome": r["label"], "construct": r["construct"], "feature": r["feature"],
+                          "papers (reviews)": f"{r.get('papers')} ({r.get('reviews')})", "estimate here": show(r),
+                          "q": f"{r['q']:.1e}",
+                          "published, as stated": "; ".join(f"\"{x['statement']}\" [{x['key']}]"
+                                                            for x in (r.get("published") or [])[:1]) or "-"}
+                         for r in rows[:limit]])
 
 
 def phenome_figure(result: dict[str, Any], limit: int = 25):

@@ -62,6 +62,16 @@ HALF_P = 0.05    # one-sided, in the hit's direction, in each half
 T1_P = 0.05      # two-sided, with the hit's sign, after the covariates and wear adherence
 LITERATURE_HITS = int(os.getenv("CODAS_SCAN_LITERATURE_HITS", "3"))  # strongest hits per outcome looked up
 SHOWN_HITS = 30   # hits listed in the summary
+# How specific a hit is: the share of screened outcomes its feature is a hit for. A feature that is a hit for
+# more than BROAD_SHARE of them behaves like a general marker of poor health (Julkunen et al., 2023); one that
+# is a hit for at most SPECIFIC_SHARE singles out few outcomes. Below SPECIFICITY_MIN_OUTCOMES screened outcomes
+# the share is not assessed.
+BROAD_SHARE = 0.25
+SPECIFIC_SHARE = 0.10
+SPECIFICITY_MIN_OUTCOMES = 10
+# The replication atlas: every (construct, outcome) pair of the screen, its literature counted; at most this many
+# lookups per run (the largest outcomes first; answers are cached across runs).
+ATLAS_MAX_LOOKUPS = int(os.getenv("CODAS_ATLAS_MAX_LOOKUPS", "800"))
 _HALF_SEED = 20251024
 _BASE = ("person_id", "last_seen_day", "age", "female")
 SCAN_FILE = "phenome_scan.json"
@@ -353,6 +363,33 @@ def is_hit(pair: dict[str, Any]) -> bool:
                 and t1 * sign > 0 and (pair.get("t1_p") or 1.0) < T1_P)
 
 
+def specificity(pairs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per feature: the outcomes it was screened against, those it is a hit for, their share (breadth), the
+    median |z| after all covariates over every screened outcome, and its class (``specific``, ``shared``,
+    ``broad`` or ``not assessed``; module constants)."""
+    by_feature: dict[str, list[dict[str, Any]]] = {}
+    for pair in pairs:
+        by_feature.setdefault(pair["feature"], []).append(pair)
+    out = {}
+    for feature, rows in by_feature.items():
+        z = [abs(p["t1_z"]) for p in rows if isinstance(p.get("t1_z"), float) and np.isfinite(p["t1_z"])]
+        hits = len({p["outcome"] for p in rows if p.get("hit")})
+        breadth = hits / len(rows) if rows else None
+        kind = ("not assessed" if len(rows) < SPECIFICITY_MIN_OUTCOMES else "broad" if breadth > BROAD_SHARE
+                else "specific" if breadth <= SPECIFIC_SHARE else "shared")
+        out[feature] = {"outcomes": len(rows), "hits": hits, "breadth": breadth,
+                        "median_abs_t1_z": float(np.median(z)) if z else None, "specificity": kind}
+    return out
+
+
+def outcome_profile(result: dict[str, Any], outcome: str) -> dict[str, dict[str, Any]]:
+    """Each screened feature's specificity class and breadth (``specificity``), and whether it is a hit for
+    ``outcome``: what the scorecard reports for a registered feature the scan screened."""
+    hit = {p["feature"] for p in result.get("pairs") or [] if p["outcome"] == outcome and p.get("hit")}
+    return {f: {"specificity": v["specificity"], "breadth": v["breadth"], "hit_here": f in hit}
+            for f, v in (result.get("specificity") or {}).items()}
+
+
 def features_of(frame: pd.DataFrame, spec: CohortSpec) -> list[str]:
     """The person table's wearable features: not identifiers, demographics, covariates or wear-adherence
     counts, and not constant."""
@@ -410,6 +447,67 @@ def _literature(result: dict[str, Any], frame_features: list[str], spec: CohortS
                 log(f"literature not reachable for the scan ({evidence.get('error')}); novelty not assessed")
                 return status
     return status
+
+
+def replication_atlas(result: dict[str, Any], people: pd.DataFrame, features: list[str], spec: CohortSpec,
+                      out: Path, log: Any = print) -> dict[str, Any]:
+    """Published associations re-tested on the discovery share. Every construct the catalog names among the
+    features is paired with every screened outcome and the literature is counted for the pair; a pair the
+    literature has established is reported with its representative feature's estimate after all covariates
+    (the construct's feature with the most participants, chosen without the outcome), Benjamini-Hochberg q
+    across the atlas, and the effects the most cited papers state, quoted from their abstracts. The pairs come
+    from the literature, not from this screen, so what replicates and what does not are both reported. The
+    discovery share was never used to make these claims, so it tests them independently."""
+    from codas.aou import runner
+    from codas.core import literature
+
+    if not runner.literature_search_enabled() or not runner.LITERATURE_TERMS.exists():
+        return {"status": "off", "pairs": []}
+    terms = literature.load_terms(runner.LITERATURE_TERMS)
+    construct_of = literature.constructs_of(features, terms, {p.prefix: p.kind for p in spec.phenotypes})
+    members: dict[str, list[str]] = {}
+    for feature, construct in construct_of.items():
+        members.setdefault(construct, []).append(feature)
+    present = {f: int(people[f].notna().sum()) for f in construct_of}
+    representative = {c: sorted(fs, key=lambda f: (-present[f], f))[0] for c, fs in members.items()}
+    by_pair = {(p["outcome"], p["feature"]): p for p in result["pairs"]}
+    labels = {r["name"]: r["label"] for r in result["outcomes"]}
+    tested = sorted((r for r in result["outcomes"] if r.get("tested")), key=lambda r: (-int(r["n"]), r["name"]))
+    cache = literature.Cache(str(out / "literature_cache.jsonl"))
+    rows, lookups, status = [], 0, "available"
+    for outcome in tested:
+        outcome_terms = (terms.get("outcomes") or {}).get(outcome["name"]) or [labels[outcome["name"]]]
+        for construct in members:
+            if lookups >= ATLAS_MAX_LOOKUPS:
+                status = f"available; stopped at {ATLAS_MAX_LOOKUPS} lookups (CODAS_ATLAS_MAX_LOOKUPS)"
+                break
+            lookups += 1
+            synonyms = ((terms.get("constructs") or {}).get(construct) or {}).get("synonyms") or []
+            evidence = literature.evidence(construct, synonyms, outcome_terms, cache=cache)
+            if evidence["novelty"] == literature.NOT_ASSESSED:
+                log(f"literature not reachable for the replication atlas ({evidence.get('error')})")
+                return {"status": f"unavailable: {evidence.get('error')}", "pairs": []}
+            if evidence["novelty"] != "established":
+                continue
+            pair = by_pair.get((outcome["name"], representative[construct])) or {}
+            try:
+                quoted = literature.published_effects(evidence["query"], [construct, *synonyms, *outcome_terms],
+                                                      cache=cache)
+            except literature.Unreachable:
+                quoted = []
+            rows.append({"outcome": outcome["name"], "label": outcome["label"], "construct": construct,
+                         "feature": representative[construct], "papers": evidence.get("papers"),
+                         "reviews": evidence.get("reviews"), "measure": pair.get("measure"),
+                         "t1_estimate": pair.get("t1_estimate"), "t1_z": pair.get("t1_z"), "t1_p": pair.get("t1_p"),
+                         "magnitude": pair.get("magnitude"), "hit": bool(pair.get("hit")), "published": quoted,
+                         "top_cited": [t.get("key") for t in evidence.get("top_cited") or []]})
+        else:
+            continue
+        break
+    for row, q in zip(rows, benjamini_hochberg([r["t1_p"] if r["t1_p"] is not None else 1.0 for r in rows])):
+        row["q"] = float(q)
+    return {"status": status, "lookups": lookups, "pairs": rows,
+            "associated": sum(r["q"] < Q_LEVEL for r in rows)}
 
 
 def scan(outcomes: list[Any], spec: CohortSpec, cdr: str, client: Any, out: Path, *, min_events: int,
@@ -477,10 +575,20 @@ def scan(outcomes: list[Any], spec: CohortSpec, cdr: str, client: Any, out: Path
     result = {"settings": settings, "features": len(features), "participants": len(people), "outcomes": rows,
               "pairs": pairs, "rule": rule_text(settings), "tested_pairs": len(pairs)}
     result["literature"] = _literature(result, features, spec, out, log)
+    profile = specificity(pairs)
+    for pair in pairs:
+        if pair["hit"]:
+            f = profile[pair["feature"]]
+            median = f["median_abs_t1_z"]
+            pair.update(breadth=f["breadth"], specificity=f["specificity"],
+                        relative_strength=abs(pair["t1_z"]) / median if median else None)
+    result["specificity"] = profile
+    result["atlas"] = replication_atlas(result, people, features, spec, out, log)
     for row in rows:
         hits = [p for p in pairs if p["outcome"] == row["name"] and p["hit"]]
         hits.sort(key=lambda p: -abs(p["t1_z"]))
         row.update(hits=len(hits), novel_hits=sum(p.get("novelty") in ("emerging", "unexplored") for p in hits),
+                   specific_hits=sum(p.get("specificity") == "specific" for p in hits),
                    best=({k: hits[0].get(k) for k in ("feature", "measure", "estimate", "q", "t1_estimate", "t1_z",
                                                       "novelty")} if hits else None))
     text = json.dumps(_json_safe(result), indent=1)
@@ -514,7 +622,9 @@ def rule_text(settings: dict[str, Any]) -> str:
             "after the covariates and wear adherence. Diagnoses need at least "
             f"{settings['min_events']} events and lab values {settings['min_n']} participants in the discovery "
             "share. Outcomes are ranked by hits whose construct the literature has not established (Europe PMC "
-            f"counts for the {settings['literature_hits']} strongest), then by hits, then by the strongest "
+            f"counts for the {settings['literature_hits']} strongest), then by hits whose feature singles out few "
+            f"outcomes (a hit for at most {SPECIFIC_SHARE:.0%} of those screened, rather than a general marker of "
+            f"poor health that is a hit for more than {BROAD_SHARE:.0%}), then by hits, then by the strongest "
             "adjusted statistic; outcomes already tested on this holdout are skipped, and only outcomes with a "
             "hit are selected.")
 
@@ -524,8 +634,8 @@ def rule_text(settings: dict[str, Any]) -> str:
 def select(result: dict[str, Any], opened: set[str], *, top_k: int, per_kind: bool = True) -> list[dict[str, Any]]:
     """The outcomes to run, best first: screened, with at least one hit, not already tested on this holdout."""
     pool = [r for r in result["outcomes"] if r.get("tested") and r.get("hits") and r["name"] not in opened]
-    ranked = sorted(pool, key=lambda r: (-r["novel_hits"], -r["hits"], -abs((r.get("best") or {}).get("t1_z") or 0),
-                                         r["name"]))
+    ranked = sorted(pool, key=lambda r: (-r["novel_hits"], -r.get("specific_hits", 0), -r["hits"],
+                                         -abs((r.get("best") or {}).get("t1_z") or 0), r["name"]))
     if not per_kind:
         return ranked[:top_k]
     kinds = list(dict.fromkeys(r["kind"] for r in ranked))
@@ -557,8 +667,8 @@ def scan_table(result: dict[str, Any], skipped: dict[str, str | None] | None = N
     picked = {r["name"] for r in chosen or []}
     lines = [f"{result['tested_pairs']:,} feature-outcome pairs on the discovery share "
              f"({result['features']} features). {result['rule']}", "",
-             "| outcome | kind | discovery participants | events | hits | not established | strongest hit | selected |",
-             "|---|---|---|---|---|---|---|---|"]
+             "| outcome | kind | discovery participants | events | hits | not established | specific | strongest hit | "
+             "selected |", "|---|---|---|---|---|---|---|---|---|"]
     order = sorted(result["outcomes"], key=lambda r: (r["name"] not in picked, -(r.get("hits") or 0), r["name"]))
     failed = [(name, reason) for name, reason in (skipped or {}).items() if reason]
     hidden = 0
@@ -572,12 +682,12 @@ def scan_table(result: dict[str, Any], skipped: dict[str, str | None] | None = N
                     else (r.get("reason") or ""))
         events = "-" if r.get("events") is None else _bucket(r["events"])
         lines.append(f"| {r['label']} | {r['kind']} | {_bucket(r['n'])} | {events} | {r.get('hits', 0)} | "
-                     f"{r.get('novel_hits', 0)} | {strongest} | {selected} |")
+                     f"{r.get('novel_hits', 0)} | {r.get('specific_hits', 0)} | {strongest} | {selected} |")
     if limit is not None and failed:
         hidden += len(failed)
         failed = []
     for name, reason in failed:
-        lines.append(f"| {name} | skipped | - | - | - | - | - | {reason} |")
+        lines.append(f"| {name} | skipped | - | - | - | - | - | - | {reason} |")
     if hidden:
         lines += ["", f"{hidden} more outcomes (fewer hits, or skipped by the concept check) are listed in "
                       "explore_summary.md."]
@@ -590,11 +700,43 @@ def hits_table(result: dict[str, Any], limit: int = SHOWN_HITS) -> str:
     if not hits:
         return "No feature-outcome pair met every condition of a hit."
     labels = {r["name"]: r["label"] for r in result["outcomes"]}
-    lines = ["| outcome | feature | T0 | q | halves (z) | adjusted T1 | literature |", "|---|---|---|---|---|---|---|"]
+    lines = ["| outcome | feature | T0 | q | halves (z) | adjusted T1 | literature | specificity |",
+             "|---|---|---|---|---|---|---|---|"]
     for p in hits:
         literature = (f"{p['novelty']} ({p.get('papers')} papers)" if p.get("papers") is not None
                       else p.get("novelty") or "not looked up")
         lines.append(f"| {labels.get(p['outcome'], p['outcome'])} | {p['feature']} | {_effect(p['measure'], p['estimate'])} "
                      f"| {p['q']:.1e} | {p['half_z'][0]:+.1f} / {p['half_z'][1]:+.1f} | "
-                     f"{_effect(p['measure'], p['t1_estimate'])} | {literature} |")
+                     f"{_effect(p['measure'], p['t1_estimate'])} | {literature} | {_specificity_text(p)} |")
     return "\n".join(lines)
+
+
+def atlas_table(result: dict[str, Any], limit: int | None = None) -> str:
+    """The replication atlas as a Markdown table: each association the literature has established, its
+    estimate on the discovery share and q across the atlas, and what the most cited papers state."""
+    atlas = result.get("atlas") or {}
+    rows = sorted(atlas.get("pairs") or [], key=lambda r: (r.get("q", 1.0), r["label"], r["construct"]))
+    if not rows:
+        return f"Replication atlas: no established association to re-test ({atlas.get('status', 'not run')})."
+    shown = rows if limit is None else rows[:limit]
+    lines = [f"Replication atlas: {len(rows)} associations the literature has established (Europe PMC counts), "
+             f"re-tested on the discovery share after all covariates; {atlas.get('associated', 0)} with q < "
+             f"{Q_LEVEL} across the atlas. A published effect is quoted from its paper's abstract; its units and "
+             "contrast are the paper's.", "",
+             "| outcome | construct (feature) | papers (reviews) | estimate here | q | published, as stated |",
+             "|---|---|---|---|---|---|"]
+    for r in shown:
+        quote = "; ".join(f"\"{x['statement']}\" [{x['key']}]" for x in (r.get("published") or [])[:1]) or "-"
+        lines.append(f"| {r['label']} | {r['construct']} ({r['feature']}) | {r.get('papers')} ({r.get('reviews')}) | "
+                     f"{_effect(r.get('measure'), r.get('t1_estimate'))} | {r['q']:.1e} | {quote} |")
+    if limit is not None and len(rows) > limit:
+        lines += ["", f"{len(rows) - limit} more in phenome_scan.json."]
+    return "\n".join(lines)
+
+
+def _specificity_text(pair: dict[str, Any]) -> str:
+    """``specific (hit for 4% of outcomes)``: the class and the feature's breadth."""
+    kind, breadth = pair.get("specificity"), pair.get("breadth")
+    if not kind:
+        return "-"
+    return kind if kind == "not assessed" or breadth is None else f"{kind} (hit for {breadth:.0%} of outcomes)"

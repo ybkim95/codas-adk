@@ -565,7 +565,7 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
 
             doc.heading("Recipe coverage and the evidence ladder", 2)
             doc.plain("Rung 1: associated on the sealed holdout; 2: replicated and robust to every falsification test "
-                      "that ran; 3: adds predictive value over the covariates.", size=8, style="I")
+                      "that ran; 3: adds predictive value beyond the covariates and the established markers.", size=8, style="I")
             rows = []
             for r in records:
                 done = [label for key, label in STEPS if r["cells"][key][0] == "yes"]

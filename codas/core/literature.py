@@ -269,7 +269,7 @@ def _year(value: Any) -> int | None:
         return None
 
 
-def _europe_pmc_paper(r: dict[str, Any]) -> Paper:
+def _europe_pmc_paper(r: dict[str, Any], abstract_chars: int | None = 600) -> Paper:
     types = (r.get("pubTypeList") or {}).get("pubType") if isinstance(r.get("pubTypeList"), dict) else None
     if isinstance(types, str):
         types = [types]
@@ -282,19 +282,21 @@ def _europe_pmc_paper(r: dict[str, Any]) -> Paper:
                  pmid=str(r["pmid"]) if r.get("pmid") else None, doi=r.get("doi") or None, journal=journal,
                  year=_year(r.get("pubYear")), pub_types=tuple(types or ()),
                  cited_by=int(cited) if cited.isdigit() else None,
-                 abstract=re.sub(r"<[^>]+>", "", abstract)[:600] if abstract else None)
+                 abstract=re.sub(r"<[^>]+>", "", abstract)[:abstract_chars] if abstract else None)
 
 
 def europe_pmc(query: str, *, page_size: int = 10, sort: str | None = None, abstracts: bool = False,
-               cache: Cache | None = None, opener: Any = None) -> tuple[int, list[Paper]]:
-    """(hit count, papers) for a Europe PMC query in its own syntax (TITLE:, ABSTRACT:, PUB_TYPE:, DOI:)."""
+               cache: Cache | None = None, opener: Any = None, abstract_chars: int | None = 600
+               ) -> tuple[int, list[Paper]]:
+    """(hit count, papers) for a Europe PMC query in its own syntax (TITLE:, ABSTRACT:, PUB_TYPE:, DOI:);
+    abstracts cut at ``abstract_chars`` (None keeps them whole)."""
     params = {"query": query, "format": "json", "pageSize": str(page_size),
               "resultType": "core" if abstracts else "lite"}
     if sort:
         params["sort"] = sort
     data = _get_json(f"{_EUROPE_PMC}?{urllib.parse.urlencode(params)}", cache, opener)
     results = (data.get("resultList") or {}).get("result") or []
-    return int(data.get("hitCount") or 0), [_europe_pmc_paper(r) for r in results]
+    return int(data.get("hitCount") or 0), [_europe_pmc_paper(r, abstract_chars) for r in results]
 
 
 def _crossref_paper(item: dict[str, Any]) -> Paper:
@@ -359,6 +361,32 @@ def evidence(construct: str, synonyms: list[str], outcome_terms: list[str], *, c
                else "emerging" if total else "unexplored")
     return {**out, "papers": total, "reviews": reviews, "earliest_year": first[0].year if first else None,
             "top_cited": [p.as_dict() for p in top if p.key], "novelty": novelty}
+
+
+# A sentence that states an effect with its interval: a ratio or coefficient named, and a 95% interval or a
+# range of two decimals.
+_EFFECT_WORDS = re.compile(r"\b(?:a?HRs?|hazard ratios?|a?ORs?|odds ratios?|RRs?|relative risks?|risk ratios?|IRRs?|"
+                           r"beta|coefficients?|correlation)\b|\u03b2", re.IGNORECASE)
+_INTERVAL = re.compile(r"95\s*%\s*(?:CI|confidence interval)|\d\.\d+\s*(?:-|\u2013|to)\s*\d\.\d+", re.IGNORECASE)
+
+
+def effect_statements(abstract: str, terms: list[str], limit: int = 2) -> list[str]:
+    """Sentences of ``abstract`` that state an effect with its interval, those naming one of ``terms`` first,
+    quoted as written (at most ``limit``)."""
+    sentences = [x.strip() for x in re.split(r"(?<=[.;])\s+(?=[A-Z(])", abstract or "") if x.strip()]
+    found = [x for x in sentences if len(x) <= 500 and _EFFECT_WORDS.search(x) and _INTERVAL.search(x)]
+    named = [x for x in found if any(t.lower() in x.lower() for t in terms if t)]
+    return list(dict.fromkeys(named + found))[:limit]
+
+
+def published_effects(query: str, terms: list[str], *, papers: int = 3, cache: Cache | None = None,
+                      opener: Any = None) -> list[dict[str, Any]]:
+    """What the most cited papers matching ``query`` state as effects, quoted from their abstracts: each with
+    the paper's key, title, journal and year. Only the query leaves the machine."""
+    _, top = europe_pmc(query, page_size=papers, sort="CITED desc", abstracts=True, cache=cache, opener=opener,
+                        abstract_chars=None)
+    return [{"key": p.key, "title": p.title, "journal": p.journal, "year": p.year, "statement": sentence}
+            for p in top if p.key for sentence in effect_statements(p.abstract or "", terms)]
 
 
 def tokens(text: str) -> list[str]:

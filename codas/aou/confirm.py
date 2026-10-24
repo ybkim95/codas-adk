@@ -194,17 +194,28 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                 "effect_scale": {"sd": float(np.std(raw, ddof=1)), "unit": natural_unit(q3 - q1),
                                  "cutpoints": [q1, q2, q3]}}
 
+    # The established markers every hypothesis's strong baseline holds beside the confounders: each registered
+    # incumbent and each feature of an association the literature has established, when it is a column.
+    designed = (state.get("a_priori_hypotheses") or [])[:max_hypotheses]
+    markers = [c for c in dict.fromkeys([h.get("incumbent") for h in designed if h.get("incumbent")]
+                                        + [h["feature"] for h in designed if h.get("knownness") == "established"])
+               if frame is not None and c in frame.columns and c not in (target, survival_time) and c not in adjust]
+
     def prediction(h: dict[str, Any]) -> dict[str, Any]:
         """Prediction models fitted on the discovery rows and frozen (``codas.core.effects.fit_frozen``): the
-        confounders alone, with the feature, and with the hypothesis's incumbent alone and with the feature."""
+        confounders alone, with the feature, with the hypothesis's incumbent alone and with the feature, and
+        the strong baseline (the confounders and the established markers other than the feature and its
+        near-duplicates) alone and with the feature."""
         x = _feature(frame, h) if frame is not None and target in frame.columns else None
         if x is None or x.notna().sum() < _MIN_ROWS:
             return {}
         values = preprocess.apply(x, h["transform"]) if survival_time and h.get("transform") else x
         incumbent = h.get("incumbent") if h.get("incumbent") in frame.columns else None
+        baseline = [c for c in markers if c != h["feature"] and not _near_duplicate(x, frame[c])]
         try:
             model = effects.fit_frozen(frame.assign(**{h["feature"]: values}), target=target, time=survival_time,
-                                       covariates=adjust, feature=h["feature"], incumbent=incumbent)
+                                       covariates=adjust, feature=h["feature"], incumbent=incumbent,
+                                       baseline=baseline)
         except Exception:  # noqa: BLE001 - the holdout then reports no discrimination gain for it
             return {}
         return {"frozen_model": model} if model else {}
@@ -270,6 +281,19 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
     record["sha256"] = _digest(record)
     (out_dir / f"{stem}_prereg.json").write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
     return record
+
+
+_DUPLICATE_RHO = 0.95  # a marker this correlated with the feature measures the same thing
+
+
+def _near_duplicate(x: pd.Series, other: Any) -> bool:
+    """Whether ``other`` ranks the discovery rows almost as ``x`` does (|Spearman| at least _DUPLICATE_RHO)."""
+    a, b = pd.to_numeric(x, errors="coerce"), pd.to_numeric(pd.Series(other, index=x.index), errors="coerce")
+    ok = a.notna() & b.notna()
+    if ok.sum() < _MIN_ROWS:
+        return False
+    rho = safe_spearman(a[ok].to_numpy(dtype=float), b[ok].to_numpy(dtype=float))[0]
+    return bool(np.isfinite(rho) and abs(rho) >= _DUPLICATE_RHO)
 
 
 def _feature(frame: pd.DataFrame, hypothesis: dict[str, Any]) -> pd.Series | None:
@@ -488,6 +512,18 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
                                          "incumbent": incumbent, "same_direction": bool(adj["sign"] == h["direction"]),
                                          "attenuation": _attenuation(without, adj), "already_adjusted": already,
                                          "effect_without_excludes_null": _excludes_null(without)}
+    mediators = [c for c in h.get("mediators") or []
+                 if c in frame.columns and c != h["feature"] and (cov is None or c not in cov.columns)]
+    for mediator in mediators:
+        # How much of the effect a declared mediator carries: the effect with it added, against the main
+        # estimate. The mediator is measured at baseline, so the order of the two is not established.
+        added = _num(frame, mediator).rename(mediator).to_frame()
+        adj = _guarded(errors, f"mediator {mediator}", _effect, frame, x, target, time_col,
+                       added if cov is None else pd.concat([cov, added], axis=1), m, scale)
+        if adj is not None:
+            row.setdefault("mediation", []).append(
+                {"mediator": mediator, **{k: adj[k] for k in ("test", "hr_per_sd", "rho", "ci95", "p") if k in adj},
+                 "explained": _attenuation(res, adj), "same_direction": bool(adj["sign"] == h["direction"])})
     row["magnitude"] = (effects.magnitude("hr_per_sd", res.get("hr_per_sd")) if time_col
                         else effects.magnitude("rho", res.get("rho")))
     sizes = _guarded(errors, "effect_sizes", _effect_sizes, frame, h, prereg, target, time_col, cov, raw, res, errors)
@@ -605,8 +641,10 @@ def _effect_sizes(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, Any]
     model = h.get("frozen_model")
     if model:
         values = preprocess.apply(raw, transform) if transform else raw
+        horizon = (prereg.get("absolute_risk_horizon_days") or ABSOLUTE_RISK_YEARS * 365) if time_col else None
         gain = _guarded(errors, "prediction_gain", effects.evaluate_frozen, model,
-                        frame.assign(**{h["feature"]: values}), target=target, time=time_col, draws=draws)
+                        frame.assign(**{h["feature"]: values}), target=target, time=time_col, draws=draws,
+                        horizon=horizon, min_count=SMALL_CELL_MAX)
         if gain:
             out["prediction"] = gain
     return out
@@ -1048,7 +1086,48 @@ def _effect_row(r: dict[str, Any]) -> str:
         if p.get("gain_beyond_incumbent") is not None:
             named = (r.get("incumbent_adjusted") or {}).get("incumbent") or "the incumbent"
             gain += f"; beyond {named} {p['gain_beyond_incumbent']:+.3f}"
+        if p.get("gain_beyond_strong") is not None:
+            gain += (f"; beyond the established markers {p['gain_beyond_strong']:+.3f}"
+                     + (f" ({_ci(p['gain_beyond_strong_ci95'], '.3f')})" if p.get("gain_beyond_strong_ci95") else ""))
     return f"| {r['feature']} | {_size_text(r) or '-'} | {unit or '-'} | {quarters or '-'} | {risk or '-'} | {gain or '-'} |"
+
+
+def _rate(value: Any) -> str:
+    return "withheld" if value is None else f"{100 * value:.0f}%"
+
+
+def _beyond_markers_lines(rows: list[dict[str, Any]]) -> list[str]:
+    """The prediction models against the strong baseline, the detection rates, and the declared mediators."""
+    out: list[str] = []
+    strong = [(r, (r.get("effect_sizes") or {}).get("prediction") or {}) for r in rows]
+    strong = [(r, p) for r, p in strong if p.get("detection") or p.get("gain_beyond_strong") is not None]
+    if strong:
+        out += ["**Beyond the established markers** (frozen discovery models scored on the holdout; the strong "
+                "baseline holds the confounders and every registered incumbent or established marker; detection: "
+                "the share of cases found when flagging 10% of non-cases, no disease-specific threshold needed):",
+                "", "| feature | strong baseline adds | gain beyond it (95% CI) | detection: covariates / + feature | "
+                "detection: strong baseline / + feature |", "|---|---|---|---|---|"]
+        for r, p in strong:
+            rates = (p.get("detection") or {}).get("rates") or {}
+            pair = lambda a, b: (f"{_rate((rates.get(a) or [None, None])[-1])} / {_rate((rates.get(b) or [None, None])[-1])}"  # noqa: E731
+                                 if a in rates else "-")
+            beyond = (f"{p['gain_beyond_strong']:+.3f} ({_ci(p.get('gain_beyond_strong_ci95'), '.3f')})"
+                      if p.get("gain_beyond_strong") is not None else "-")
+            out.append(f"| {r['feature']} | {', '.join(p.get('baseline') or []) or '-'} | {beyond} | "
+                       f"{pair('base', 'feature')} | {pair('strong', 'strong_feature')} |")
+        out.append("")
+    mediated = [r for r in rows if r.get("mediation")]
+    if mediated:
+        out += ["**Declared mediators** (the effect with each mediator added; the share of the effect it carries. "
+                "Mediators are measured at baseline, so their order relative to the feature is not established):",
+                "", "| feature | mediator | effect with it | 95% CI | share carried |", "|---|---|---|---|---|"]
+        for r in mediated:
+            for m in r["mediation"]:
+                effect, ci, _ev = _effect_text(m)
+                share = "-" if m.get("explained") is None else f"{100 * m['explained']:.0f}%"
+                out.append(f"| {r['feature']} | {m['mediator']} | {effect} | {ci} | {share} |")
+        out.append("")
+    return out
 
 
 def confirmation_markdown(result: dict[str, Any]) -> str:
@@ -1142,6 +1221,7 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
                                                       if "ci95" in s else s.get("status", "-")) for s in h["strata"])
             lines.append(f"| {r['feature']} | {h['by']} | {shown} | {h['q_p']:.3g} | {h['i2']:.2f} |")
         lines.append("")
+    lines += _beyond_markers_lines(result["hypotheses"])
     adjusted = [r for r in result["hypotheses"] if r.get("adherence_adjusted")]
     if adjusted:
         lines += ["", "Wear adherence as a negative-control exposure: each effect re-estimated with "

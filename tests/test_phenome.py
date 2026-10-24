@@ -83,6 +83,28 @@ def test_a_hit_needs_every_condition():
         assert not phenome.is_hit({**pair, **change}), change
 
 
+def test_specificity_separates_general_markers_from_specific_hits():
+    """A feature that is a hit for many outcomes is a broad marker; one that singles out few is specific; with few
+    outcomes screened it is not assessed. Among outcomes with the same new hits, one whose hits are specific
+    ranks first."""
+    def pairs(feature, outcomes, hit_for):
+        return [{"feature": feature, "outcome": f"o{i}", "t1_z": 4.0 if i < hit_for else 0.5, "hit": i < hit_for}
+                for i in range(outcomes)]
+
+    profile = phenome.specificity(pairs("broad", 40, 12) + pairs("specific", 40, 2) + pairs("shared", 40, 6)
+                                  + pairs("few", 5, 1))
+    assert {f: v["specificity"] for f, v in profile.items()} == {
+        "broad": "broad", "specific": "specific", "shared": "shared", "few": "not assessed"}
+    assert profile["broad"]["breadth"] == 0.3 and profile["specific"]["median_abs_t1_z"] == 0.5
+    rows = [{"name": "a", "kind": "condition", "tested": True, "hits": 3, "novel_hits": 0, "specific_hits": 0,
+             "best": {"t1_z": 9.0}},
+            {"name": "b", "kind": "condition", "tested": True, "hits": 1, "novel_hits": 0, "specific_hits": 1,
+             "best": {"t1_z": 4.0}},
+            {"name": "c", "kind": "condition", "tested": True, "hits": 1, "novel_hits": 1, "specific_hits": 0,
+             "best": {"t1_z": 3.0}}]
+    assert [r["name"] for r in phenome.select({"outcomes": rows}, set(), top_k=3)] == ["c", "b", "a"]
+
+
 @pytest.fixture
 def synthetic(monkeypatch, tmp_path):
     pytest.importorskip("duckdb")
@@ -164,7 +186,10 @@ def test_the_scan_finds_planted_pairs_and_selects_by_signal(synthetic, europe_pm
     after adjustment; the literature (recorded answers: step count established, anything else unexplored) ranks
     the outcomes; already tested outcomes are skipped; displayed counts of 1-20 are masked."""
     monkeypatch.setenv("CODAS_AOU_LITERATURE_SEARCH", "1")
-    asked = europe_pmc({"step count": (120, 4, [])})
+    paper = {"pmid": "123", "title": "Daily steps and incident disease", "citedByCount": "50", "pubYear": "2020",
+             "abstractText": "Background. We followed adults. Each additional 1000 daily steps was associated with "
+                             "lower risk (HR 0.88, 95% CI 0.84-0.92). Conclusions follow."}
+    asked = europe_pmc({"step count": (120, 4, [paper])})
     cdr, base, out = synthetic["cdr"], synthetic["base"], synthetic["out"]
     result = phenome.scan(synthetic["verified"], base, cdr, None, out, min_events=5, min_n=15, log=lambda *_: None)
     hits = {(p["outcome"], p["feature"]): p for p in result["pairs"] if p["hit"]}
@@ -186,6 +211,25 @@ def test_the_scan_finds_planted_pairs_and_selects_by_signal(synthetic, europe_pm
     assert "<=20" in table and "already tested on this holdout" in table and "concept" in table
     assert "| 17 |" not in table and "| 20 |" not in table
     assert "act_steps_mean" in phenome.hits_table(result)
+    # The replication atlas: the literature (not this screen) names the pairs; each established one is re-tested
+    # with q across the atlas and the effect its most cited paper states, quoted from the abstract.
+    atlas = result["atlas"]
+    assert atlas["status"] == "available" and atlas["pairs"]
+    pairs = {(r["outcome"], r["construct"]): r for r in atlas["pairs"]}
+    steps_hba1c = next(r for (o, c), r in pairs.items() if o == "hba1c" and "step" in c)
+    assert steps_hba1c["q"] < 0.05 and steps_hba1c["t1_estimate"] < 0 and steps_hba1c["papers"] == 120
+    assert steps_hba1c["published"][0]["statement"].startswith("Each additional 1000 daily steps")
+    assert steps_hba1c["published"][0]["key"] == "PMID:123"
+    # Only constructs the recorded literature establishes ("step count" in their terms) are listed, each with one
+    # representative feature chosen without the outcome.
+    established = {"daily step count", "day-to-day variability of physical activity"}
+    assert {c for _, c in pairs} <= established
+    assert len({r["feature"] for r in atlas["pairs"]}) == len({c for _, c in pairs})
+    assert "Replication atlas" in phenome.atlas_table(result) and "HR 0.88" in phenome.atlas_table(result)
+    # Every hit carries its feature's breadth; the profile covers every feature.
+    assert set(result["specificity"]) == {p["feature"] for p in result["pairs"]}
+    assert all(p["specificity"] in ("specific", "shared", "broad", "not assessed") and 0 < p["breadth"] <= 1
+               for p in hits.values())
     short = phenome.scan_table(result, synthetic["problems"], phenome.select(result, set(), top_k=1), set(), limit=2)
     assert short.count("\n| ") == 3 and "more outcomes" in short  # the header, two outcomes; the rest counted
     # The second call is served from the cache: no query runs.

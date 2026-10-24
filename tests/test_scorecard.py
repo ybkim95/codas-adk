@@ -101,7 +101,7 @@ def test_the_scorecard_reads_the_records_and_renders():
     assert values["memo claims the data summary confirms"] == "3 of 4 (75%)"
     assert values["citations among the papers retrieved in this run"] == "1 of 2 (50%)"
     assert values["hypotheses at each rung (0-3)"] == "0: 0, 1: 1, 2: 0, 3: 1"
-    assert values["highest rung reached"].startswith("3 (adds predictive value): x_mean")
+    assert values["highest rung reached"].startswith("3 (adds predictive value beyond the established markers): x_mean")
     text = scorecard.markdown(card)
     assert "## What the analysis covered" in text and "| x_mean | 3 |" in text and "| z_sd | 1 |" in text
     assert scorecard.markdown({"summary": []}) == ""

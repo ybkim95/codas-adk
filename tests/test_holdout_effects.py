@@ -35,7 +35,8 @@ def test_a_time_to_event_effect_is_read_per_natural_unit_by_quarter_and_in_absol
     (h,) = prereg["hypotheses"]
     # Frozen before the holdout is read: the discovery SD, quarters and natural unit, and the prediction models.
     assert h["effect_scale"]["unit"] == 30.0 and len(h["effect_scale"]["cutpoints"]) == 3   # IQR of 20 * 1.35
-    assert set(h["frozen_model"]["models"]) == {"base", "feature", "incumbent", "both"}
+    # The registered incumbent is an established marker, so the strong baseline holds it too.
+    assert set(h["frozen_model"]["models"]) == {"base", "feature", "incumbent", "both", "strong", "strong_feature"}
     assert 0 < prereg["absolute_risk_horizon_days"] <= 3 * 365
     result = confirm(prereg, tmp_path / "s.holdout.csv", tmp_path)
     (row,) = result["hypotheses"]
@@ -75,3 +76,47 @@ def test_a_significant_but_negligible_effect_is_called_so(tmp_path):
     assert 0.04 < e["per_sd"] < 0.08 and e["partial_delta_r2"] < 0.01 and e["prediction"]["metric"] == "R2"
     assert "negligible, though significant" in reconciliation_markdown(result, {})
     assert "Significant but negligible in size" in confirmation_markdown(result)
+
+
+def test_the_strong_baseline_leaves_out_near_duplicates_and_mediators_carry_their_share(tmp_path):
+    """The strong baseline holds every established marker except the feature's near-duplicates; a mediator
+    through which the whole effect runs carries most of it on the holdout; both reach the markdown and the
+    scorecard."""
+    from codas.aou import scorecard
+
+    def share(seed, n=6000):
+        rng = np.random.default_rng(seed)
+        f = pd.DataFrame({"x": rng.normal(size=n), "inc": rng.normal(size=n), "age": rng.normal(size=n)})
+        f["x_again"] = f.x + 0.05 * rng.normal(size=n)                  # the same measurement, near-duplicate
+        f["med"] = 0.9 * f.x + 0.45 * rng.normal(size=n)                # the effect of x runs through med
+        t = rng.exponential(1 / (0.15 * np.exp(0.5 * f.med + 0.4 * f.inc + 0.3 * f.age)))
+        censor = rng.uniform(2, 6, n)
+        f["followup_days"], f["y"] = np.ceil(np.minimum(t, censor) * 365), (t <= censor).astype(int)
+        return f
+
+    share(5).to_csv(tmp_path / "m.csv", index=False)
+    share(6).to_csv(tmp_path / "m.holdout.csv", index=False)
+    new = {**_registered("x"), "mediators": ["med"], "predictions": []}
+    known = [{**_registered(c), "knownness": "established", "predictions": []} for c in ("inc", "x_again")]
+    state = {"target_column": "y", "confounder_columns": ["age"], "excluded_columns": [],
+             "latest_report": {"candidates": []}, "a_priori_hypotheses": [new, *known]}
+    prereg = preregister(state, tmp_path, "m", survival_time="followup_days", discovery_csv=tmp_path / "m.csv")
+    frozen = {h["feature"]: h["frozen_model"] for h in prereg["hypotheses"]}
+    assert frozen["x"]["baseline"] == ["inc"]                           # x_again measures x again: left out
+    assert frozen["inc"]["baseline"] == ["x_again"] and frozen["x_again"]["baseline"] == ["inc"]
+    result = confirm(prereg, tmp_path / "m.holdout.csv", tmp_path)
+    row = next(r for r in result["hypotheses"] if r["feature"] == "x")
+    (m,) = row["mediation"]
+    assert m["mediator"] == "med" and m["explained"] > 0.6
+    p = row["effect_sizes"]["prediction"]
+    assert p["baseline"] == ["inc"] and p["gain_beyond_strong"] > 0 and p["detection"]["rates"]["strong_feature"][1]
+    md = confirmation_markdown(result)
+    assert "Beyond the established markers" in md and "Declared mediators" in md and "| x | med |" in md
+    records = scorecard.coverage(result, True, state["a_priori_hypotheses"], {"x": {"specificity": "specific",
+                                                                                    "breadth": 0.04}})
+    cells = next(r for r in records if r["feature"] == "x")["cells"]
+    assert cells["strong_baseline"][0] == "yes" and "beyond inc" in cells["strong_baseline"][1]
+    assert cells["mediation"][0] == "yes" and "med carries" in cells["mediation"][1]
+    assert cells["specificity"] == ["yes", "specific (hit for 4% of outcomes)"]
+    other = next(r for r in records if r["feature"] == "inc")["cells"]
+    assert other["mediation"][0] == "n/a" and other["specificity"][0] == "n/a"
