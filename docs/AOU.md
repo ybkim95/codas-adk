@@ -352,6 +352,16 @@ instrument biases the ratio toward the confounded estimate, which is why F is sh
 gains a "genetic triangulation" step. A workspace whose CDR is the Registered Tier has no genomic files: the step
 reads "no genomic data" until the workspace uses the Controlled Tier.
 
+**Moving to another workspace** (`codas/aou/carryover.py`). A Registered Tier workspace cannot add the Controlled
+Tier (its network perimeter differs), so the Controlled Tier needs a new workspace, whose run folder starts empty:
+an outcome already tested on the sealed half would look fresh there. After every exploration the old workspace
+writes `codas_reports/aou/carry_over.json` (the holdout ledger: feature names, p-values, verdicts and hashes, no
+participant data or counts; and a SHA-256 fingerprint of who each side of the split holds). Download it, upload
+it to `codas_reports/` in the new workspace, and Run All: the exploration adopts it once, under the new holdout
+key, so every inherited outcome counts as opened, and says whether the new sealed half holds exactly the same
+people. The notebook also finds the Controlled Tier's storage folder among the workspace's resources for the
+genetic files.
+
 **Two-way confirmation** (`codas/aou/crossfit.py`; the notebook's `DISCOVERY_SHARE`). The split seals half the
 participants. With `"A"` (the default) the agents see share A and what they register is tested on share B; with
 `"B"` the roles swap: the half sealed under `"A"` discovers and the other confirms. Each direction has its own run

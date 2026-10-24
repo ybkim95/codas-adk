@@ -132,6 +132,27 @@ def find_cdr():
     return found[0] if found else ""
 
 CDR = CDR or find_cdr()
+
+def find_storage():  # the Controlled Tier's storage folder (genomic files) among the workspace's resources
+    try:
+        resources = json.loads(sh("wb", "resource", "list", "--format=json") or "[]")
+    except json.JSONDecodeError:
+        return ""
+    found = []
+    def walk(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, str) and "controlled" in value and (value.startswith("gs://") or key == "bucketName"):
+                    found.append(value if value.startswith("gs://") else f"gs://{value}")
+                walk(value)
+        elif isinstance(obj, list):
+            for value in obj:
+                walk(value)
+    walk(resources)
+    return sorted(set(found))[0] if found else ""
+
+if not os.getenv("CDR_STORAGE_PATH") and find_storage():
+    os.environ["CDR_STORAGE_PATH"] = find_storage()  # genetic triangulation looks here (Controlled Tier only)
 assert CDR, ("Could not find the CDR. Open the workspace's Resources tab, click the R2025Q4R6 dataset, and set "
              "CDR = '<Project ID>.<Dataset ID>' at the top of this cell.")
 

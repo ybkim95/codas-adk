@@ -33,7 +33,7 @@ from codas.aou import cohort  # noqa: E402
 from codas.aou import daystore  # noqa: E402
 from codas.aou import feasibility as feas
 from codas.aou import ledger as ledger_book
-from codas.aou import crossfit, data_atlas, monthstore, phenome
+from codas.aou import carryover, crossfit, data_atlas, monthstore, phenome
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
 from codas.aou.phenotypes import describe as describe_phenotypes
@@ -1078,6 +1078,8 @@ def explore(
     else:
         rows = feas.feasibility(verified, base, cdr, client)
     keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
+    if keys:  # a ledger carried over from another workspace counts here before anything is selected
+        carryover.adopt(out, keys[0], base, cdr, client, reports_dir(out).parent, log=log)
     by_name = {o.name: o for o in verified}
     opened = _opened_outcomes(out, keys, by_name, base, test_holdout)
     if outcome_names:
@@ -1148,6 +1150,8 @@ def explore(
     billed = cohort.QUERY_LOG[first_job:]
     if billed:
         log(f"BigQuery in this run: {cohort.billed_text(sum(b['bytes_billed'] for b in billed))}")
+    if keys:  # what the sealed half has been used for, ready to carry to another workspace
+        carryover.export(out, base, cdr, client, reports_dir(out))
     both = crossfit.write(out)  # once both directions have tested an outcome
     if both is not None:
         text = both.read_text(encoding="utf-8")

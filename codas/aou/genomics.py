@@ -133,10 +133,12 @@ def locate(root: str | None = None, list_dir: Callable[[str], tuple[list[str], l
         if level < depth:
             frontier += [(f, level + 1) for f in folders
                          if level == 0 or any(k in f.rstrip("/").rsplit("/", 1)[-1].lower() for k in _KEYWORDS)]
+    newest = lambda path: max([int(v) for v in re.findall(r"/v(\d+)/", path)] or [0])  # noqa: E731
+    beds = sorted(beds, key=lambda b: (-newest(b), b))           # the newest release first
+    ancestry_files = sorted(ancestry_files, key=lambda b: (-newest(b), b))
     arrays = [b for b in beds if "array" in b.lower()]
     return {"root": root, "status": "found" if (arrays or beds) and ancestry_files else "incomplete",
-            "array_beds": sorted(arrays), "other_beds": sorted(set(beds) - set(arrays)),
-            "ancestry": sorted(ancestry_files)}
+            "array_beds": arrays, "other_beds": [b for b in beds if b not in arrays], "ancestry": ancestry_files}
 
 
 def _local_lister(prefix: str) -> tuple[list[str], list[str]]:
