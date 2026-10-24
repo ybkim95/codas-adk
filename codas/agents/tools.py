@@ -1464,6 +1464,11 @@ def check_convergence(tool_context: ToolContext) -> dict[str, Any]:
         return {"converged": False, "reason": "No discovery round has run yet.", "rounds_completed": 0}
 
     current = rounds[-1]
+    limit = int(tool_context.state.get("round_limit") or 0)
+    if limit and len(rounds) >= limit:  # a run that asked for a fixed number of rounds (e.g. a rehearsal)
+        tool_context.actions.escalate = True
+        return {"converged": True, "reason": f"This run's limit of {limit} discovery round(s) is reached.",
+                "rounds_completed": len(rounds)}
     # A revised design (features excluded as leakage after this round ran) has not been tested yet, so
     # the loop must not stop on the old design's numbers; the LoopAgent's iteration bound still applies.
     if int(tool_context.state.get("design_revision") or 0) > int(current.get("design_revision") or 0):

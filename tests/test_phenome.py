@@ -186,11 +186,22 @@ def test_the_scan_finds_planted_pairs_and_selects_by_signal(synthetic, europe_pm
     assert "<=20" in table and "already tested on this holdout" in table and "concept" in table
     assert "| 17 |" not in table and "| 20 |" not in table
     assert "act_steps_mean" in phenome.hits_table(result)
+    short = phenome.scan_table(result, synthetic["problems"], phenome.select(result, set(), top_k=1), set(), limit=2)
+    assert short.count("\n| ") == 3 and "more outcomes" in short  # the header, two outcomes; the rest counted
     # The second call is served from the cache: no query runs.
     calls = len(synthetic["calls"])
     again = phenome.scan(synthetic["verified"], base, cdr, None, out, min_events=5, min_n=15, log=lambda *_: None)
     assert again == result and len(synthetic["calls"]) == calls
-    assert json.loads((out / phenome.SCAN_FILE).read_text()) == result
+    # The copy beside the reports has counts of 1-20 masked; the raw one stays in the sealed folder.
+    from codas.aou.cohort import sealed_dir
+    from codas.aou.privacy import mask_small_counts
+
+    shown = json.loads((out / phenome.SCAN_FILE).read_text())
+    assert shown == mask_small_counts(result) and shown != result
+    assert not [v for o in shown["outcomes"] + shown["pairs"] for k, v in o.items()
+                if k in ("n", "events") and isinstance(v, int) and 1 <= v <= 20]
+    assert list((sealed_dir(out) / "phenome_cache").glob("phenome_scan_*.json"))
+    assert not list(out.glob("phenome_scan_*.json"))
 
 
 def test_explore_selects_outcomes_by_the_scan(synthetic, monkeypatch):

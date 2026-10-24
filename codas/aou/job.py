@@ -545,6 +545,11 @@ def main(argv: list[str]) -> int:
         from codas.aou.cohort import CohortSpec
 
         client = bigquery.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
+        if os.getenv("CODAS_REHEARSAL", "1") != "0":  # the real models on synthetic data, before any query
+            from codas.aou import rehearsal
+
+            heartbeat.now.update(outcome="rehearsal (synthetic data)", agent=None, tool=None)
+            rehearsal.run_once(out, log=on_log, on_tool_call=on_tool, on_agent=on_agent)
         result = runner.explore(
             args["catalog"], CohortSpec.from_json(args["spec"]), args.get("cdr"), client=client,
             top_k=int(args.get("top_k", 3)), outcome_names=args.get("outcomes") or None,

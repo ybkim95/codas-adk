@@ -52,7 +52,7 @@ from scipy import stats
 from codas.aou import cohort
 from codas.aou.cohort import (_SPLIT_SQL, CohortSpec, QueryParam, _first_wear_cte, _valid_rule, availability_columns,
                               build_cohort_sql, resolve_cdr, sealed_dir)
-from codas.aou.privacy import MASK, SMALL_CELL_MAX
+from codas.aou.privacy import MASK, SMALL_CELL_MAX, mask_small_counts
 from codas.core import effects
 from codas.core.statistics import benjamini_hochberg
 from codas.core.survival import breslow_fit, score_tests
@@ -435,10 +435,12 @@ def scan(outcomes: list[Any], spec: CohortSpec, cdr: str, client: Any, out: Path
                  sorted(o.unit_concept_ids)] for o in outcomes]
     digest = hashlib.sha256(json.dumps([cdr, [_frame_digest(f) for f in (people, dx, values)], identity, settings,
                                         features, _code_digest()], default=str).encode()).hexdigest()[:16]
-    cached = out / f"phenome_scan_{digest}.json"
+    # The raw result (its counts unmasked, for the ranking) stays in the sealed folder; the copy beside the
+    # reports, which the notebook reads, has counts of 1-20 masked.
+    cached = sealed_dir(out) / "phenome_cache" / f"phenome_scan_{digest}.json"
     if cached.exists():
         result = json.loads(cached.read_text(encoding="utf-8"))
-        (out / SCAN_FILE).write_text(json.dumps(result, indent=1), encoding="utf-8")
+        (out / SCAN_FILE).write_text(json.dumps(mask_small_counts(result), indent=1), encoding="utf-8")
         return result
     log(f"phenome scan: {len(features)} features x {len(outcomes)} outcomes on {len(people):,} discovery participants")
     half = np.random.default_rng(_HALF_SEED).random(len(people)) < 0.5
@@ -482,8 +484,9 @@ def scan(outcomes: list[Any], spec: CohortSpec, cdr: str, client: Any, out: Path
                    best=({k: hits[0].get(k) for k in ("feature", "measure", "estimate", "q", "t1_estimate", "t1_z",
                                                       "novelty")} if hits else None))
     text = json.dumps(_json_safe(result), indent=1)
+    cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_text(text, encoding="utf-8")
-    (out / SCAN_FILE).write_text(text, encoding="utf-8")
+    (out / SCAN_FILE).write_text(json.dumps(mask_small_counts(json.loads(text)), indent=1), encoding="utf-8")
     log(f"phenome scan: {len(pairs):,} pairs tested, {sum(p['hit'] for p in pairs)} hits across "
         f"{sum(r['hits'] > 0 for r in rows)} outcomes")
     return json.loads(text)
@@ -547,14 +550,20 @@ def _effect(measure: str | None, value: Any) -> str:
 
 
 def scan_table(result: dict[str, Any], skipped: dict[str, str | None] | None = None,
-               chosen: list[dict[str, Any]] | None = None, opened: set[str] | None = None) -> str:
-    """The screen as a Markdown table, counts of 1-20 masked; safe to display."""
+               chosen: list[dict[str, Any]] | None = None, opened: set[str] | None = None,
+               limit: int | None = None) -> str:
+    """The screen as a Markdown table, counts of 1-20 masked; safe to display. With ``limit`` only the selected
+    outcomes and the others with the most hits, up to that many rows, and a count of the rest."""
     picked = {r["name"] for r in chosen or []}
     lines = [f"{result['tested_pairs']:,} feature-outcome pairs on the discovery share "
              f"({result['features']} features). {result['rule']}", "",
              "| outcome | kind | discovery participants | events | hits | not established | strongest hit | selected |",
              "|---|---|---|---|---|---|---|---|"]
     order = sorted(result["outcomes"], key=lambda r: (r["name"] not in picked, -(r.get("hits") or 0), r["name"]))
+    failed = [(name, reason) for name, reason in (skipped or {}).items() if reason]
+    hidden = 0
+    if limit is not None and len(order) > limit:
+        hidden, order = len(order) - limit, order[:limit]
     for r in order:
         best = r.get("best") or {}
         strongest = (f"{best['feature']} ({_effect(best.get('measure'), best.get('estimate'))}, q {best['q']:.1e})"
@@ -564,9 +573,14 @@ def scan_table(result: dict[str, Any], skipped: dict[str, str | None] | None = N
         events = "-" if r.get("events") is None else _bucket(r["events"])
         lines.append(f"| {r['label']} | {r['kind']} | {_bucket(r['n'])} | {events} | {r.get('hits', 0)} | "
                      f"{r.get('novel_hits', 0)} | {strongest} | {selected} |")
-    for name, reason in (skipped or {}).items():
-        if reason:
-            lines.append(f"| {name} | skipped | - | - | - | - | - | {reason} |")
+    if limit is not None and failed:
+        hidden += len(failed)
+        failed = []
+    for name, reason in failed:
+        lines.append(f"| {name} | skipped | - | - | - | - | - | {reason} |")
+    if hidden:
+        lines += ["", f"{hidden} more outcomes (fewer hits, or skipped by the concept check) are listed in "
+                      "explore_summary.md."]
     return "\n".join(lines)
 
 

@@ -96,10 +96,9 @@ CDR = os.getenv("CODAS_AOU_CDR") or os.getenv("WORKSPACE_CDR") or ""   # "<cdr-p
 REASONING_MODEL = ""   # leave empty to auto-pick the newest that answers; or a Gemini id, or a Claude id
 FAST_MODEL = ""        #   enabled in Model Garden
 LITE_MODEL = ""
-TOP_K = 3              # outcomes to run for EACH kind (lab measurements, diagnoses) after the screen
-MAX_OUTCOMES = 1       # at most this many outcomes in all (this stage measures one outcome end to end)
-TEST_ON_HOLDOUT = False  # this stage measures the agents and literature access; the sealed holdout stays
-                         #   unopened, so the outcome stays fresh for a confirmatory run
+TOP_K = 1              # outcomes to run for EACH kind (lab values, diagnoses), best first by the scan
+MAX_OUTCOMES = 2       # at most this many outcomes in all (this stage: one lab value and one diagnosis)
+TEST_ON_HOLDOUT = True   # each selected outcome's registered hypotheses are tested once on the sealed half
 OUTCOMES = []          # optional: catalog names to run instead, e.g. ["<name>", ...]; [] = ranked
 # ---------------------------------------------------------------------------------------------
 import json, re
@@ -348,9 +347,18 @@ library warning raised in a loop, is written a few times and then counted). If t
 connection, run the cell again (or Run All): it re-attaches to the running job instead of starting a
 second one.
 
-With `TEST_ON_HOLDOUT = False` (this stage's setting) the agents work on the discovery half as usual, but
-nothing is registered or tested on the sealed half: it stays unopened, so the outcome stays available for a
-later confirmatory run. Outcomes already tested on the sealed half are not selected again.
+Before anything touches All of Us data the job runs a **rehearsal**: the real models run the whole pipeline
+once, for one round, on synthetic data with a planted signal (about half an hour, once per code and model
+version). If the pipeline cannot finish, register hypotheses, test the sealed half or write the report there,
+the job stops before any query and says why; weaker results (no new phenotype defined, the planted signal
+missed, the literature unreachable) are shown as warnings.
+
+This stage (`TOP_K = 1`, `MAX_OUTCOMES = 2`, `TEST_ON_HOLDOUT = True`) runs the lab value and the diagnosis the
+phenome scan ranks first, and tests each one's registered hypotheses once on the sealed half. The first run
+on a CDR builds two tables that later runs reuse: the intraday phenotypes and the day-by-day baseline, each a
+single BigQuery pass over the minute-level tables (roughly 13 TB each, under the cost caps; every job is dry-run
+first). Outcomes already tested on the sealed half are not selected again; set `TEST_ON_HOLDOUT = False` to run
+the agents without opening the sealed half.
 
 Safeguards: a model request that sends nothing for 10 minutes is abandoned, retried, then sent to another
 model; an outcome still running after 3 hours is stopped and marked failed, and the others
@@ -359,6 +367,10 @@ whose agents finished but whose holdout test or saving failed redoes only those 
 code("""result = job.run_or_attach({"catalog": str(CATALOG), "spec": str(REPO / "scripts/aou/hba1c_fitbit.example.json"),
                             "cdr": CDR, "top_k": TOP_K, "outcomes": OUTCOMES or None,
                             "max_outcomes": MAX_OUTCOMES or None, "test_holdout": TEST_ON_HOLDOUT}, quiet=True)
+rehearsal = views.rehearsal_table(result)
+if rehearsal is not None:
+    display(Markdown("### Rehearsal: the real models on synthetic data, before any All of Us query"))
+    display(views.fit(rehearsal))
 if result.get("scan"):
     display(Markdown(f"### Phenome scan: {result['scan']['hits']} hits among {result['scan']['pairs']:,} pairs"))
     display(views.phenome_figure(result))

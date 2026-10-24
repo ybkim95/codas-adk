@@ -179,9 +179,9 @@ def write_package(out: Path, spec: cohort.CohortSpec, label: str, prereg: dict[s
                 for h in prereg.get("hypotheses") or []}
     lock = cohort.ROOT / "scripts" / "aou" / "feature_definitions.json"
     record = {"cohort_spec.json": asdict(spec), "features.json": features,
-              "pre_registration.json": prereg,
+              "pre_registration.json": mask_small_counts(prereg),
               "holdout_results.json": mask_small_counts(result or {}),
-              "scorecard.json": state.get("scorecard") or {},
+              "scorecard.json": mask_small_counts(state.get("scorecard") or {}),
               "feature_definition_hashes.json": json.loads(lock.read_text()) if lock.exists() else {}}
     for name, value in record.items():
         files[name] = json.dumps(value, indent=1, default=str) + "\n"

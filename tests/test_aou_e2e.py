@@ -691,3 +691,44 @@ def _run_result_cells(result):
     tables = [x for x in shown if isinstance(x, views.Fitted)]
     assert tables and all("<table" in t._repr_html_() for t in tables)  # every table is shown fitted to the page
     assert not any(isinstance(x, views.pd.DataFrame) for x in shown)
+
+
+def test_the_rehearsal_finds_the_planted_reactivity_on_synthetic_data(aou_env, monkeypatch):
+    """The dress rehearsal end to end with scripted models: the hypotheses agent defines the within-person
+    coupling of resting heart rate on the previous night's sleep and registers it; the holdout computes it on the
+    sealed share's days by the registered definition, and it replicates, though no mean shows the signal."""
+    from codas.aou import rehearsal, scenarios
+    from codas.core import phenotype_dsl as dsl
+
+    column = dsl.column_name(scenarios.S1_COUPLING)
+    hypothesis = {"feature": column, "direction": "negative", "construct": "heart-rate reactivity to a short night",
+                  "incumbent": "hr_rest_mean", "shape": "monotone",
+                  "magnitude": {"measure": "hr_per_sd", "low": 0.5, "high": 0.95, "source": "analogy"},
+                  "mechanism": ["a short night raises the next day's sympathetic tone",
+                                "a strong response marks autonomic strain that precedes disease"],
+                  "alternatives": ["wear", "reverse_causation"], "predictions": ["adherence_robust", "survives_lag"],
+                  "citation": "", "knownness": "unexplored", "relevance": "a sleep-responsive marker"}
+    monkeypatch.setitem(SCRIPTS, "scout_agent", [
+        _call("profile_dataset"), _call("set_target", target_column="condition", confounder_columns_csv="age,female")])
+    monkeypatch.setitem(SCRIPTS, "hypotheses_agent", [
+        _call("define_phenotype", definition_json=json.dumps(scenarios.S1_COUPLING), rationale="reactivity to lost sleep"),
+        _call("register_hypotheses", hypotheses_json=json.dumps([hypothesis]))])
+    monkeypatch.setitem(SCRIPTS, "hypothesis_reviewer", [_call("record_hypothesis_review", reviews_json=json.dumps(
+        [{"feature": column, "specificity": 4, "falsifiability": 4, "plausibility": 4, "novelty": 4,
+          "testability": 4, "artefact_risk": 2, "comment": "scripted"}]))])
+    monkeypatch.setitem(SCRIPTS, "critic_agent", [])
+    monkeypatch.setitem(SCRIPTS, "statistical_interpreter", [_call("run_dose_response", feature="act_steps_mean")])
+    monkeypatch.setitem(SCRIPTS, "ml_interpreter", [])
+    result = rehearsal.rehearse(RUN_DIR, n=2000, log=lambda *_: None)
+    assert not result["critical_failures"], result
+    assert result["found"] == [column] and result["defined"][0]["column"] == column
+    passed = {c["check"]: c["passed"] for c in result["checks"]}
+    assert passed["a dynamic phenotype was defined (how days vary, drift or respond)"]
+    assert not passed["the literature could be searched"]  # off in tests: a warning, never a failure
+    state = json.loads((RUN_DIR / "rehearsal" / f"{scenarios.S1_STEM}_state.json").read_text())
+    row = next(h for h in state["confirmation"]["hypotheses"] if h["feature"] == column)
+    assert row["hr_per_sd"] < 0.85 and row["replicated"]
+    assert len(state["rounds"]) == 1  # the rehearsal's round limit
+    # The rehearsal ran on synthetic rows only: no request carried a person id or a count of 1-20.
+    sent = "\n".join(_serialize(req) for _, req in aou_env)
+    assert not re.search(r"\b2\d{11}\b", sent)

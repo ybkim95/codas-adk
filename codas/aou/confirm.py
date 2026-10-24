@@ -87,6 +87,7 @@ _QUANTILES = 5
 _MONOTONE_RHO = 0.8  # rank correlation between quantile and effect that counts as monotone
 # A registered hypothesis's own predictions (codas.core.hypotheses), scored on the holdout.
 _TEMPLATE_FIELDS = ("incumbent", "shape", "magnitude", "predictions", "mechanism_steps", "alternatives", "mediators")
+_LAG_KEPT = 0.5  # the share of the log hazard ratio an effect must keep after the lag when its interval spans no effect
 _THRESHOLD_SHARE = 0.6  # a threshold: one step between adjacent quantiles carries this share of the change
 _U_SHARE = 0.25  # a U shape: both end quantiles sit this share of the range beyond the middle ones
 _ATTENUATION_LIMIT = 0.5
@@ -715,6 +716,21 @@ def _shrinkage(row: dict[str, Any]) -> float | None:
     return round(float(np.log(b) / np.log(a)), 3)
 
 
+def _lag_holds(row: dict[str, Any], lag: dict[str, Any]) -> bool:
+    """Whether the effect survives the lag: among those still free of the outcome after it, the same direction
+    and either an interval that still excludes no effect or at least half the effect's size (log hazard
+    ratio). An effect carried by the events soon after the index date is the coming diagnosis changing the
+    feature (reverse causation), not the feature raising the risk."""
+    if not lag.get("same_direction"):
+        return False
+    if _excludes_null(lag):
+        return True
+    a, b = row.get("hr_per_sd"), lag.get("hr_per_sd")
+    if not all(isinstance(v, (int, float)) and v > 0 for v in (a, b)) or a == 1:
+        return False
+    return bool(np.log(b) / np.log(a) >= _LAG_KEPT)
+
+
 def _falsification(row: dict[str, Any]) -> tuple[list[str], list[str]]:
     """(tests passed, tests failed) among the falsification tests that ran for ``row``."""
     passed, failed = [], []
@@ -723,7 +739,7 @@ def _falsification(row: dict[str, Any]) -> tuple[list[str], list[str]]:
         (passed if dose["monotone"] else failed).append("dose-response")
     lag = row.get("lag_sensitivity")
     if lag is not None and _finite(lag):
-        (passed if lag["same_direction"] else failed).append("lag")
+        (passed if _lag_holds(row, lag) else failed).append("lag")
     adherence = row.get("adherence_adjusted")
     if adherence is not None and np.isfinite(adherence.get("p", np.nan)):
         (passed if adherence["holds"] else failed).append("adherence adjustment")

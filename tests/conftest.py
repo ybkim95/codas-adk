@@ -7,6 +7,12 @@ os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "3")
 
 
 @pytest.fixture(autouse=True)
+def _no_rehearsal(monkeypatch):
+    """The background job rehearses with the real models before exploring; tests that need it say so."""
+    monkeypatch.setenv("CODAS_REHEARSAL", "0")
+
+
+@pytest.fixture(autouse=True)
 def _reports_in_tmp(tmp_path, monkeypatch):
     """Runs mirror their outputs to codas_reports/; keep tests from writing into the checkout."""
     monkeypatch.setenv("CODAS_REPORTS_DIR", str(tmp_path / "codas_reports"))

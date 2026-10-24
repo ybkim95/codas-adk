@@ -130,7 +130,9 @@ The example spec uses `design: "incident"`, the design of the landmark All of Us
   * *dose-response*: the effect across quintiles of the feature must change monotonically in the
     pre-registered direction;
   * *lag sensitivity* (time to event): dropping the first 365 days of follow-up must keep the
-    direction.
+    direction and the effect: its interval still excludes no effect, or it keeps at least half its size (log
+    hazard ratio). An effect carried by the events soon after the index date is the coming diagnosis changing
+    the feature (reverse causation), not the feature raising the risk.
   A candidate that replicates and passes every test that could run is reported as *robust*.
   *Positive controls* (`positive_controls`, columns with a known association with the outcome, e.g.
   age and BMI) are tested the same way, to show the holdout can detect a real effect.
@@ -328,6 +330,20 @@ Each outcome's report ends with a scorecard computed from the run's records (`co
   incumbents, magnitudes from papers, verified citations), the holdout's replications, robust results,
   reproduced references, predictions met and shrinkage, the rungs reached and the share of recipe steps done.
 The notebook shows these as tables (with an absolute-risk-by-quarter figure), and the PDF as its own section.
+
+## A rehearsal before any query, and the scenario it runs
+
+Every Run All with new analysis code or new models starts with a dress rehearsal (`codas/aou/rehearsal.py`,
+`CODAS_REHEARSAL=0` turns it off): the real models run the whole pipeline once, for one discovery round, on a
+synthetic scenario with a planted truth, synthetic rows only, before any All of Us query. Scenario S1
+(`codas/aou/scenarios.py`): each person's resting heart rate rises the day after a short night by their own
+amount, and the hazard of a condition rises with that reactivity, while mean heart rate, sleep and steps do not
+depend on it, so only a phenotype defined on the day-by-day data (the within-person coupling of resting heart
+rate on the previous night's sleep) can find it. The rehearsal stops the exploration before any query when the
+pipeline fails, nothing is registered, the sealed half is not tested, no report is written or no model call's
+tokens are recorded; it warns when no phenotype (or no dynamic one) was defined, the planted signal was not
+found, or the literature could not be searched or cited. Its checks appear at the top of the exploration's
+results, and the result is kept for this code and these models, so it does not run again until they change.
 
 ## Replication beyond the split
 

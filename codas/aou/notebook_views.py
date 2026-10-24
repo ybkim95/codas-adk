@@ -210,6 +210,17 @@ def _scan(result: dict[str, Any]) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
+def rehearsal_table(result: dict[str, Any]) -> pd.DataFrame | None:
+    """The dress rehearsal's checks (the real models on synthetic data before any query): passed, or failed and
+    whether that would have stopped the run."""
+    rehearsal = _read(_out_dir(result) / "rehearsal" / "latest.json")
+    if not rehearsal.get("checks"):
+        return None
+    return pd.DataFrame([{"check": c["check"], "result": "passed" if c["passed"] else
+                          ("FAILED (stops the run)" if c["critical"] else "not met (a warning)")}
+                         for c in rehearsal["checks"]])
+
+
 def phenome_hits_table(result: dict[str, Any], limit: int = 25) -> pd.DataFrame | None:
     """The phenome scan's strongest hits (discovery share): effect adjusted for age and sex, its q across the
     matrix, both halves, the effect after covariates and wear, and what the literature says."""

@@ -805,13 +805,19 @@ def _preflight_args(spec: CohortSpec, csv: Path) -> dict[str, Any]:
 
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None,
-             on_agent: Any = None, lessons: list[str] | None = None, test_holdout: bool = True) -> dict[str, Any]:
+             on_agent: Any = None, lessons: list[str] | None = None, test_holdout: bool = True,
+             csv: str | Path | None = None, extra_state: dict[str, Any] | None = None) -> dict[str, Any]:
     """Extract one cohort, run the agents on it, save the masked outputs and the agent trace. ``lessons``
     are earlier outcomes' lessons about this cohort. They come from other outcomes' discovery statistics on
     the same people, so the agents see them only once registration has closed (state ``cohort_lessons``),
     never in the goal. With ``test_holdout`` off the agents run on the discovery share as usual but nothing
     is registered or tested: the sealed holdout stays unopened and the outcome stays fresh for a
-    confirmatory run."""
+    confirmatory run. ``csv`` names tables already in the extraction's layout (a synthetic scenario,
+    ``codas.aou.scenarios``) to use instead of extracting; ``extra_state`` goes to the agents' state (e.g. a
+    ``round_limit``)."""
+    if csv is not None:
+        return _run_tables(spec, Path(csv), cdr, label=label, out_dir=out_dir, on_tool_call=on_tool_call,
+                           on_agent=on_agent, lessons=lessons, test_holdout=test_holdout, extra_state=extra_state)
     if check_schema:  # fit optional sources to this CDR first, so the goal and context match the table
         if client is None:
             from google.cloud import bigquery
@@ -820,6 +826,15 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         present = cohort._query(client, *cohort.schema_check_sql(spec, resolve_cdr(cdr)))
         spec, _skipped = cohort.resolve_sources(spec, list(zip(present["table_name"], present["column_name"])))
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
+    return _run_tables(spec, csv, cdr, label=label, out_dir=out_dir, on_tool_call=on_tool_call, on_agent=on_agent,
+                       lessons=lessons, test_holdout=test_holdout, extra_state=extra_state)
+
+
+def _run_tables(spec: CohortSpec, csv: Path, cdr: str | None, *, label: str | None, out_dir: str | Path,
+                on_tool_call: Any, on_agent: Any, lessons: list[str] | None, test_holdout: bool,
+                extra_state: dict[str, Any] | None) -> dict[str, Any]:
+    """run_spec once the cohort's tables are written: the agents, the pre-registration, the holdout test and
+    the outputs."""
     out = Path(out_dir).expanduser().resolve()
     key = _run_key(spec, goal_for(spec, label), test_holdout)  # as explore keys finished runs (lessons excluded)
     saved = _saved_agents(out, spec.name, key)
@@ -852,7 +867,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                                   **_day_state(csv),
                                   "extraction_qc": _extraction_qc(csv), **evidence,
                                   "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()
-                                                     else "")})
+                                                     else ""), **(extra_state or {})})
         if checked is not None:
             state["preflight"] = checked
         _save_agents(out, spec.name, key, state, recorder)
@@ -1017,9 +1032,10 @@ def explore(
     if scan is not None:
         table = (phenome.scan_table(scan, problems, chosen, opened) + "\n\n### Strongest hits\n\n"
                  + phenome.hits_table(scan))
+        log(phenome.scan_table(scan, problems, chosen, opened, limit=25) + "\n\n" + phenome.hits_table(scan, limit=10))
     else:
         table = feas.feasibility_table(rows, problems, chosen, opened)
-    log(table)
+        log(table)
     screen = "Phenome scan" if scan is not None else "Feasibility screen"
 
     out.mkdir(parents=True, exist_ok=True)
