@@ -128,6 +128,7 @@ def report_grounding_audit(callback_context: Any) -> None:
             fact_sheet,
             (state.get("latest_report", {}) or {}).get("candidates"),
             state.get("rounds"),
+            state.get("analyses"),
         )
         ungrounded, total = ungrounded_claims(report, engine_vals)
         if total:
@@ -141,9 +142,8 @@ def report_grounding_audit(callback_context: Any) -> None:
                 flagged = ", ".join(f"{kw} {val:g}" for kw, val in ungrounded[:8])
                 report = report + (
                     "\n\n---\n**Numeric verification.** These figures could not be traced to a value the "
-                    f"deterministic engine produced and must be checked before use: {flagged}. Every "
-                    "reportable statistic should come from the Fact Sheet; the engine does not compute "
-                    "quantities such as hazard/odds ratios, sensitivity, or specificity."
+                    f"deterministic engine or a recorded analysis produced and must be checked before use: "
+                    f"{flagged}. Every reportable statistic should come from the Fact Sheet or a recorded analysis."
                 )
                 state["report"] = report
 

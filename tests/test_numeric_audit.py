@@ -62,3 +62,25 @@ def test_report_callback_corrects_and_writes_audit_file(tmp_path, monkeypatch):
     assert "7,497 participants" in ctx.state["report"]  # count corrected toward ground truth
     audits = list(tmp_path.glob("numeric_audit_*.json"))
     assert len(audits) == 1  # per-run audit file written
+
+
+def test_numbers_from_recorded_analyses_are_traceable(tmp_path, monkeypatch):
+    """A lasso AUC that a recorded method run produced was once flagged as untraceable: the audit read only
+    the fact sheet and the candidates, not the analyses."""
+    from codas.agents.callbacks import report_grounding_audit
+
+    monkeypatch.setenv("CODAS_AUDIT_DIR", str(tmp_path))
+    analyses = [{"tool": "method:lasso", "args": {}, "result": {"metric": "auc", "value": 0.6671}},
+                {"tool": "survival_screen", "args": {},
+                 "result": {"results": [{"feature": "x", "hr_per_sd": 1.234, "ci95": [1.05, 1.44]}]}}]
+
+    def audited(report):
+        ctx = _FakeContext({"report": report, "fact_sheet": {"rows": 7497}, "latest_report": {"candidates": []},
+                            "rounds": [], "analyses": analyses})
+        report_grounding_audit(ctx)
+        return ctx.state["report"]
+
+    assert "could not be traced" not in audited("The lasso reached AUC = 0.667; the hazard ratio was 1.23 per SD.")
+    flagged = audited("The hazard ratio was 2.71 per SD.")
+    assert "could not be traced" in flagged and "2.71" in flagged
+    assert "does not compute" not in flagged  # the engine does estimate hazard ratios now

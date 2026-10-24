@@ -165,6 +165,9 @@ def test_each_model_tier_backs_up_the_other():
         pytest.skip("a single model serves both tiers")
     assert [m.model for m in reasoning.models][:2] == [reasoning.model, fast.model]
     assert [m.model for m in fast.models][:2] == [fast.model, reasoning.model]
+    lite = agent.LITE_MODEL
+    if lite.model not in (reasoning.model, fast.model):
+        assert [m.model for m in lite.models] == [lite.model, fast.model, reasoning.model]
 
 
 class _Silent(BaseLlm):
@@ -357,3 +360,130 @@ def test_a_failed_preflight_stops_the_outcome_before_the_agents(synthetic_explor
                                                                "duplicates": []})
     result = explore()
     assert calls == [] and all("PreflightError" in r["failed"] for r in result["runs"])
+
+
+async def _collect_request(llm: BaseLlm, request: LlmRequest) -> list[str]:
+    return [r.content.parts[0].text async for r in llm.generate_content_async(request)]
+
+
+def _llm_agents(node):
+    from google.adk.agents import LlmAgent
+
+    if isinstance(node, LlmAgent):
+        yield node
+    for child in getattr(node, "sub_agents", None) or []:
+        yield from _llm_agents(child)
+
+
+class _RejectsThinking(BaseLlm):
+    """A model that refuses requests carrying a thinking level, as a model without thinking levels does."""
+
+    async def generate_content_async(self, llm_request: LlmRequest, stream: bool = False
+                                     ) -> AsyncGenerator[LlmResponse, None]:
+        thinking = getattr(llm_request.config, "thinking_config", None)
+        SEEN.append(f"{llm_request.model}:{'thinking' if thinking else 'plain'}")
+        if thinking is not None:
+            raise ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                              "message": "Thinking level is not supported for this model."}})
+        yield LlmResponse(content=types.Content(role="model", parts=[types.Part(text=f"from {self.model}")]))
+
+
+def test_a_model_that_rejects_the_thinking_level_is_asked_again_without_it():
+    SEEN.clear()
+    llm = FallbackLlm(model="older", models=[_RejectsThinking(model="older")])
+    request = LlmRequest(model="older", contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+                         config=types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_level="HIGH")))
+    out = asyncio.run(_collect_request(llm, request))
+    assert out == ["from older"] and SEEN == ["older:thinking", "older:plain"]
+    # Any other bad request is still raised, not retried.
+    with pytest.raises(ClientError):
+        asyncio.run(_collect(FallbackLlm(model="p", models=[_Fake(model="p", fail_with=400)])))
+
+
+def test_agents_run_on_the_current_model_tiers_with_a_thinking_level():
+    from codas.agents import agent
+    from codas.core import model_tiers
+
+    lite = {"gapcheck_agent", "artifact_agent", "lessons_agent"}
+    fast = {"search_agent", "statistical_interpreter", "ml_interpreter"}
+    superseded = set(model_tiers.SUPERSEDED)
+    for a in _llm_agents(agent.root_agent):
+        tier = "lite" if a.name in lite else "fast" if a.name in fast else "reasoning"
+        assert a.model.model == model_tiers.model(tier), a.name
+        assert not superseded & {m.model for m in a.model.models}, a.name
+        level = a.generate_content_config.thinking_config.thinking_level
+        expected = "HIGH" if a.name == "hypotheses_agent" else model_tiers.THINKING[tier]
+        assert str(getattr(level, "value", level)) == expected, a.name
+
+
+def test_outcomes_already_tested_on_this_holdout_are_not_selected_again(synthetic_explore):
+    """A ranked selection skips outcomes whose holdout results are already known; an outcome named
+    explicitly still runs (the ledger reports its registrations as non-confirmatory)."""
+    from dataclasses import replace
+
+    from codas.aou import ledger
+    from codas.aou.synthetic import SYNTHETIC_CDR
+
+    spec = replace(_window_spec(), holdout_fraction=0.5)
+    ledger.append(RUN_DIR, runner.holdout_key(spec, SYNTHETIC_CDR), [{"prereg": "earlier", "stem": "explore_hdl",
+                                                                      "feature": "act_steps_mean"}])
+
+    def screen(**kw):
+        return runner.explore(CATALOG, spec, SYNTHETIC_CDR, client=object(), top_k=1, min_measurement_n=100,
+                              min_cases=30, out_dir=RUN_DIR, screen_only=True, log=lambda *_: None, **kw)
+
+    ranked = screen()
+    assert "hdl" not in ranked["chosen"] and "depression" in ranked["chosen"]
+    assert "already tested on this holdout" in ranked["table"]
+    assert screen(outcome_names=["hdl"])["chosen"] == ["hdl"]
+    assert len(screen(max_outcomes=1)["chosen"]) == 1
+
+
+def test_running_again_resumes_an_outcome_this_exploration_opened(tmp_path):
+    """An outcome tested on the holdout is skipped by a ranked selection, unless its run with this code
+    finished here: then running the exploration again reuses it instead of starting another outcome."""
+    from dataclasses import replace
+
+    from codas.aou import feasibility as feas
+    from codas.aou import ledger
+
+    base = replace(_window_spec(), holdout_fraction=0.5)
+    outcome = next(o for o in feas.load_catalog(CATALOG) if o.name == "hdl")
+    spec = feas.spec_for(outcome, base)
+    key = "cdr|salt=1|permille=500"
+    ledger.append(tmp_path, key, [{"prereg": "p", "stem": spec.name, "feature": "x"}])
+    assert runner._opened_outcomes(tmp_path, [key], {"hdl": outcome}, base) == {"hdl"}
+    report = tmp_path / f"{spec.name}_report.md"
+    report.write_text("report", encoding="utf-8")
+    run_key = runner._run_key(spec, runner.goal_for(spec, outcome.label), True)
+    (tmp_path / f"{spec.name}_run.json").write_text(json.dumps({"key": run_key, "summary": {
+        "cohort": spec.name, "report_path": str(report)}}), encoding="utf-8")
+    assert runner._opened_outcomes(tmp_path, [key], {"hdl": outcome}, base) == set()
+    # Finished with older code: the outcome counts as opened again, and the selection moves on.
+    monkeypatch_key = runner._run_key(spec, runner.goal_for(spec, outcome.label), False)
+    assert monkeypatch_key != run_key
+    assert runner._opened_outcomes(tmp_path, [key], {"hdl": outcome}, base, test_holdout=False) == {"hdl"}
+
+
+def test_an_instrumentation_run_leaves_the_sealed_holdout_unopened(synthetic_explore, monkeypatch):
+    """With test_holdout off the agents run on the discovery share, but nothing is registered or tested, so
+    the outcome stays fresh for a confirmatory run (whose key differs, so it is not served this run)."""
+    from dataclasses import replace
+
+    from codas.aou import ledger
+    from codas.aou.synthetic import SYNTHETIC_CDR
+
+    _, calls, _ = synthetic_explore
+    monkeypatch.setattr(runner, "PREFLIGHT", False)
+    tested = []
+    monkeypatch.setattr(runner, "confirm", lambda *a, **k: tested.append(a) or {})
+    spec = replace(_window_spec(), holdout_fraction=0.5)
+    result = runner.explore(CATALOG, spec, SYNTHETIC_CDR, client=object(), top_k=1, min_measurement_n=100,
+                            min_cases=30, out_dir=RUN_DIR, log=lambda *_: None, test_holdout=False, max_outcomes=1)
+    run = result["runs"][0]
+    assert calls == [run["cohort"]] and run["holdout_tested"] is False and tested == []
+    assert not (RUN_DIR / ledger.LEDGER_NAME).exists()
+    assert "left unopened" in Path(run["report_path"]).read_text(encoding="utf-8")
+    assert "not tested in this run" in Path(result["summary_path"]).read_text(encoding="utf-8")
+    goal = runner.goal_for(spec, "x")
+    assert runner._run_key(spec, goal, test_holdout=False) != runner._run_key(spec, goal, test_holdout=True)

@@ -12,11 +12,10 @@ import re
 from typing import Any
 
 # A number immediately preceded by a statistic keyword is a "claim" we must be able to trace. The list
-# spans what the engine produces (auc, rho, p, q, r2) AND the clinical metrics it deliberately does NOT
-# (hazard/odds ratios, sensitivity, specificity, F1, effect size): the engine never emits those, so any
-# such number in a report is by definition ungrounded and must be flagged. Short ambiguous abbreviations
-# (HR/OR/RR) are matched only when written as a statistic ("HR=4.2", "OR: 3.1") to avoid catching the
-# English words.
+# spans what the engine and the recorded analyses produce (auc, rho, p, q, r2, hazard ratios) AND metrics
+# no analysis produced (odds ratios, sensitivity, specificity, F1, effect size): such a number traces to
+# nothing and is flagged. Short ambiguous abbreviations (HR/OR/RR) are matched only when written as a
+# statistic ("HR=4.2", "OR: 3.1") to avoid catching the English words.
 STAT_CLAIM = re.compile(
     r"(auroc|auprc|auc|r2|r²|r-squared|rho|ρ|spearman|pearson|kendall|"
     r"p-?value|p value|\bp\b|q-?value|q=|correlation|coefficient|variance|"
@@ -34,9 +33,23 @@ _BENIGN_INTS = frozenset({0, 1, 2, 3, 4, 5, 6, 10})
 _MATCH_TOL = 0.011  # two-decimal rounding tolerance for matching a claim to an engine value
 
 
-def engine_numbers(fact_sheet: dict | None, candidates: list | None, rounds: list | None = None) -> set[float]:
-    """Every number the engine produced (+ legitimate derivations: rho^2 variance, percent forms),
-    each rounded to 2/3/4 dp so a report citing any reasonable precision matches."""
+def _numbers(obj: Any):
+    """Every number inside a nested result (dicts and lists), booleans excluded."""
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _numbers(value)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _numbers(value)
+    elif isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        yield obj
+
+
+def engine_numbers(fact_sheet: dict | None, candidates: list | None, rounds: list | None = None,
+                   analyses: list | None = None) -> set[float]:
+    """Every number the engine produced (+ legitimate derivations: rho^2 variance, percent forms), including
+    every number in the recorded analyses (``state["analyses"]``: the method pools and the agents' analysis
+    tools), each rounded to 2/3/4 dp so a report citing any reasonable precision matches."""
     vals: set[float] = set()
 
     def add(value: Any) -> None:
@@ -62,6 +75,11 @@ def engine_numbers(fact_sheet: dict | None, candidates: list | None, rounds: lis
             add(cand["rho"] ** 2)
             add(cand["rho"] ** 2 * 100)
             add(abs(cand["rho"]))
+    for record in analyses or []:
+        for value in _numbers((record or {}).get("result") if isinstance(record, dict) else None):
+            add(value)
+            add(abs(value))
+            add(value * 100)
     return vals
 
 

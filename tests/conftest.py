@@ -13,10 +13,11 @@ def _reports_in_tmp(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_literature_cache():
-    """The literature search caches identical queries for a run; each test starts with none."""
+def _fresh_tool_usage():
+    """Tools record the model calls they make on their own for the execution report; each test starts
+    with none recorded."""
     try:
         from codas.agents import tools
-    except ImportError:  # the agent layer is optional; engine-only installs have no cache to clear
+    except ImportError:  # the agent layer is optional; engine-only installs record nothing
         return
-    tools.LITERATURE_CACHE.clear()
+    tools.MODEL_USAGE.clear()

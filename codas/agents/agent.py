@@ -49,6 +49,7 @@ from typing import Any, AsyncGenerator
 # run's output is not mistaken for staleness.
 from google.adk.agents import LlmAgent, LoopAgent, ParallelAgent, SequentialAgent
 from google.adk.models import BaseLlm, Gemini, LlmRequest, LlmResponse
+from google.genai import types
 from google.genai.types import HttpRetryOptions
 
 from codas.aou.privacy import check_llm_backend
@@ -85,7 +86,7 @@ from codas.agents.tools import (
     set_target,
 )
 from codas.agents.runners import CandidateDebate, MethodRunner
-from codas.core import methods
+from codas.core import methods, model_tiers
 from codas.core.settings import load_local_env
 
 load_local_env()
@@ -94,14 +95,10 @@ load_local_env()
 # internal) with exponential backoff + jitter, so a Gemini 503 spike no longer aborts a multi-agent
 # run. This is cheaper and stronger than retrying the whole pipeline — only the failing call repeats,
 # not the agents that already succeeded. The service boundary keeps a last-resort retry on top.
-# Two model tiers: a Pro tier for research-intensive reasoning and
-# code generation (design, adversarial debate, mechanism, reporting) and a Flash tier for the repeated
-# lower-latency tasks in the discovery loop (interpretation, gap-checking). Set CODAS_GEMINI_MODEL to
-# force a single model across every agent (useful for CI or a constrained quota).
-_REASONING_MODEL_NAME = os.getenv("CODAS_GEMINI_REASONING_MODEL", "gemini-3.1-pro-preview")
-_FAST_MODEL_NAME = os.getenv("CODAS_GEMINI_FAST_MODEL", "gemini-3-flash-preview")
-if os.getenv("CODAS_GEMINI_MODEL"):  # single-model override applies to both tiers
-    _REASONING_MODEL_NAME = _FAST_MODEL_NAME = os.environ["CODAS_GEMINI_MODEL"]
+# Three model tiers (codas/core/model_tiers.py): reasoning for design, adversarial debate, mechanism and
+# reporting; fast for the repeated discovery-loop turns; lite for short bookkeeping turns. Each tier falls
+# back to the others' models, and each agent thinks at its tier's level unless it asks for another.
+# CODAS_GEMINI_MODEL forces a single model across every agent (useful for CI or a constrained quota).
 # A 429 on shared capacity reflects load across the service, not this project's quota, and can last
 # minutes; the backoff (2, 4, 8, 16, 32, 60, 60 s, with jitter) rides out about three minutes of it
 # before the call gives up and the next configured model is tried.
@@ -141,10 +138,21 @@ async def _within(agen: AsyncGenerator[LlmResponse, None], seconds: float) -> As
         await agen.aclose()
 
 
+def _without_thinking(request: LlmRequest, exc: Exception) -> LlmRequest | None:
+    """The request without its thinking level, when ``exc`` says the model does not accept that level;
+    None otherwise (or when the request has no thinking level to drop)."""
+    config = getattr(request, "config", None)
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code != 400 or "thinking" not in str(exc).lower() or getattr(config, "thinking_config", None) is None:
+        return None
+    return request.model_copy(update={"config": config.model_copy(update={"thinking_config": None})})
+
+
 class FallbackLlm(BaseLlm):
     """Tries ``models`` in order: when one fails with a capacity or not-found error, or stays silent past
     MODEL_TIMEOUT_S (after MODEL_TIMEOUT_RETRIES more tries), before it has produced any output, the same
-    request goes to the next one.
+    request goes to the next one. A model that refuses the request's thinking level is asked again
+    without one.
 
     Any other error, or one raised after part of a response was streamed, is raised unchanged, so two
     models' answers are never spliced together. ``model`` is the first model's name.
@@ -158,7 +166,8 @@ class FallbackLlm(BaseLlm):
                                      ) -> AsyncGenerator[LlmResponse, None]:
         for i, llm in enumerate(self.models):
             request = llm_request.model_copy(update={"model": llm.model})
-            for attempt in range(self.timeout_retries + 1):
+            attempt = 0
+            while attempt <= self.timeout_retries:
                 produced = False
                 try:
                     async for response in _within(llm.generate_content_async(request, stream=stream), self.timeout_s):
@@ -168,14 +177,20 @@ class FallbackLlm(BaseLlm):
                 except ModelTimeout:
                     if produced:
                         raise
+                    attempt += 1
                     LOGGER.warning("model %s: %s (try %d of %d)", llm.model, "no response within "
-                                   f"{self.timeout_s:.0f} s", attempt + 1, self.timeout_retries + 1)
-                    if attempt < self.timeout_retries:
+                                   f"{self.timeout_s:.0f} s", attempt, self.timeout_retries + 1)
+                    if attempt <= self.timeout_retries:
                         continue
                     if i == len(self.models) - 1:
                         raise
                     break
                 except Exception as exc:  # noqa: BLE001 - re-raised unless another model can serve the call
+                    plain = None if produced else _without_thinking(request, exc)
+                    if plain is not None:
+                        LOGGER.warning("model %s does not accept the thinking level; asking it without one", llm.model)
+                        request = plain
+                        continue
                     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
                     if produced or code not in _FALLBACK_CODES or i == len(self.models) - 1:
                         raise
@@ -203,8 +218,8 @@ def _make_model(name: str, *fallbacks: str) -> BaseLlm:
 
 
 check_llm_backend()  # AoU mode: refuse to build the graph on a backend outside the workspace project
-REASONING_MODEL = _make_model(_REASONING_MODEL_NAME, _FAST_MODEL_NAME)  # the fast tier backs up the reasoning tier
-FAST_MODEL = _make_model(_FAST_MODEL_NAME, _REASONING_MODEL_NAME)  # and the reasoning tier backs up the fast one
+MODELS = {tier: _make_model(*model_tiers.fallback_order(tier)) for tier in model_tiers.TIERS}
+REASONING_MODEL, FAST_MODEL, LITE_MODEL = MODELS["reasoning"], MODELS["fast"], MODELS["lite"]
 # The orchestrator's loop runs at most this many deepening rounds; the GapChecker usually stops it
 # earlier via escalate once deeper search saturates. Bounded so a live run stays within the timeout.
 MAX_DISCOVERY_ROUNDS = int(os.getenv("CODAS_MAX_DISCOVERY_ROUNDS", "3"))
@@ -215,7 +230,8 @@ def _agent(
     description: str,
     instruction: str,
     *,
-    model: BaseLlm = FAST_MODEL,
+    tier: str = "fast",
+    thinking: str | None = None,
     tools: list | None = None,
     output_key: str | None = None,
     after_agent: Any = None,
@@ -224,8 +240,9 @@ def _agent(
 ) -> LlmAgent:
     """Construct an LlmAgent with the shared logging/guardrail callbacks.
 
-    ``model`` selects the tier: the Flash ``FAST_MODEL`` is the default for the repeated discovery-loop
-    tasks; reasoning-heavy agents pass ``model=REASONING_MODEL`` (the Pro tier). ``output_key`` publishes
+    ``tier`` selects the model tier (``fast`` for the repeated discovery-loop turns, ``reasoning`` for
+    design, debate and writing, ``lite`` for bookkeeping); ``thinking`` overrides the tier's thinking level
+    (Gemini ``thinking_level``: LOW, MEDIUM or HIGH). ``output_key`` publishes
     the agent's response into shared memory so later agents (including the other branch of a
     ParallelAgent) can read it; ``tools`` wires the deterministic tool guardrail; ``after_agent`` runs a
     post-agent callback (used to grounding-audit the final report).
@@ -236,11 +253,13 @@ def _agent(
         instruction = prompts.TASK_CONTEXT + instruction
     kwargs: dict[str, Any] = dict(
         name=name,
-        model=model,
+        model=MODELS[tier],
         description=description,
         instruction=instruction,
         before_model_callback=before_model_logger,
         include_contents=include_contents,
+        generate_content_config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_level=thinking or model_tiers.THINKING[tier])),
     )
     if tools:
         kwargs.update(
@@ -263,7 +282,7 @@ scout_agent = _agent(
     "scout_agent",
     "Profiles the dataset and records the target and participant/time/confounder roles in memory.",
     prompts.SCOUT,
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[profile_dataset, preview_columns, set_target],
     before_agent=remember_goal,
     include_contents="default",  # the first agent reads the user's task directly
@@ -272,7 +291,8 @@ hypotheses_agent = _agent(
     "hypotheses_agent",
     "Grounds prior expectations in the scientific literature to orient the search (biological anchoring).",
     prompts.HYPOTHESES,
-    model=REASONING_MODEL,
+    tier="reasoning",
+    thinking="HIGH",  # designing falsifiable hypotheses is the step that most rewards deliberation
     tools=[search_literature, declare_confounders, exclude_features, propose_feature, register_hypotheses],
     output_key="hypotheses",
 )
@@ -313,7 +333,7 @@ critic_agent = _agent(
     "critic_agent",
     "Adversarially attacks candidates for leakage, confounding, construct overlap, and overclaiming.",
     prompts.CRITIC,
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[declare_confounders, exclude_features, run_subgroup_analysis, run_multivariable_model, run_dose_response,
            run_mixed_model, run_method],
     output_key="critique",
@@ -322,7 +342,7 @@ defender_agent = _agent(
     "defender_agent",
     "Defends candidates only when deterministic evidence supports retention; concedes otherwise.",
     prompts.DEFENDER,
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[*ANALYSIS_TOOLS, run_method],
     output_key="defense",
 )
@@ -335,7 +355,7 @@ gap_finder = _agent(
     "Identifies what the analysis leaves open and chooses the next methods from the statistical and ML pools.",
     prompts.GAP_FINDER + "\n".join(f"- {m}: {methods.describe(m)}" for pool in methods.available(True).values()
                                     for m in pool),
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[record_gap_analysis],
     output_key="gap_analysis_text",
 )
@@ -343,6 +363,7 @@ gapcheck_agent = _agent(
     "gapcheck_agent",
     "GapChecker: compares rounds and escalates to end the loop once deeper search saturates.",
     prompts.GAPCHECK,
+    tier="lite",
     tools=[check_convergence],
 )
 discovery_loop = LoopAgent(
@@ -359,7 +380,7 @@ candidate_critic = _agent(
     "candidate_critic",
     "Attacks one final candidate at a time, checking its suspicions with the analysis tools.",
     prompts.CANDIDATE_CRITIC,
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[*ANALYSIS_TOOLS, run_method],
     output_key="candidate_critique",
 )
@@ -367,7 +388,7 @@ candidate_defender = _agent(
     "candidate_defender",
     "Answers the critique of one candidate from evidence and records keep / caveat / concede.",
     prompts.CANDIDATE_DEFENDER,
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[*ANALYSIS_TOOLS, run_method, record_debate],
     output_key="candidate_defense",
 )
@@ -380,7 +401,7 @@ mechanism_agent = _agent(
     "mechanism_agent",
     "Links surviving candidates to literature-grounded mechanisms and interpretation boundaries.",
     prompts.MECHANISM,
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[search_literature],
     output_key="mechanisms",
 )
@@ -388,7 +409,7 @@ novelty_agent = _agent(
     "novelty_agent",
     "Classifies candidates as established, supported, emerging, or unverified against the literature.",
     prompts.NOVELTY,
-    model=REASONING_MODEL,
+    tier="reasoning",
     tools=[search_literature],
     output_key="novelty",
 )
@@ -396,20 +417,21 @@ strategy_agent = _agent(
     "strategy_agent",
     "Recommends accept / reinvestigate / deeper-analysis / human-feedback from the run evidence.",
     prompts.STRATEGY,
-    model=REASONING_MODEL,
+    tier="reasoning",
     output_key="strategy",
 )
 artifact_agent = _agent(
     "artifact_agent",
     "Assembles tables and a fact-sheet view from grounded outputs.",
     prompts.ARTIFACT,
+    tier="lite",
     output_key="artifacts",
 )
 report_agent = _agent(
     "report_agent",
     "Drafts a publication-style summary from the Fact Sheet and invites human feedback.",
     prompts.REPORT,
-    model=REASONING_MODEL,
+    tier="reasoning",
     output_key="report",
     after_agent=report_grounding_audit,  # runtime grounding guardrail: logs/warns on unverified figures
 )
@@ -417,14 +439,14 @@ report_reviewer = _agent(
     "report_reviewer",
     "Checks the draft report against the fact sheet, rounds, analyses and debates; lists the issues.",
     prompts.REPORT_REVIEWER,
-    model=REASONING_MODEL,
+    tier="reasoning",
     output_key="report_review",
 )
 report_reviser = _agent(
     "report_reviser",
     "Revises the report to fix the reviewer's issues, keeping every engine number and verdict.",
     prompts.REPORT_REVISER,
-    model=REASONING_MODEL,
+    tier="reasoning",
     output_key="report",
     after_agent=report_grounding_audit,  # the numeric audit runs again on the revised text
 )
@@ -432,6 +454,7 @@ lessons_agent = _agent(
     "lessons_agent",
     "Records methodological lessons about this cohort's features for later outcomes (cross-outcome memory).",
     prompts.LESSONS,
+    tier="lite",
     tools=[record_lessons],
 )
 reporting = SequentialAgent(

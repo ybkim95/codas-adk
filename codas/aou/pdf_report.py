@@ -193,6 +193,36 @@ class _Doc:
         pdf.set_fill_color(255, 255, 255)
         pdf.ln(3)
 
+    def gantt(self, timeline: list[dict[str, Any]]) -> None:
+        """One row per agent and one bar per turn on a shared axis of minutes since the agents started;
+        turns that ran in parallel overlap."""
+        if not timeline:
+            self.plain("(no agent turns recorded)")
+            return
+        pdf = self.pdf
+        agents = list(dict.fromkeys(t["agent"] for t in timeline))
+        end = max(t["end_s"] for t in timeline) or 1.0
+        label_w, chart_w, h = 45.0, 135.0, 3.6
+        x0 = pdf.l_margin + label_w
+        pdf.set_font(self.family, "", 6)
+        for name in agents:
+            if pdf.get_y() > pdf.h - 25:
+                pdf.add_page()
+            y = pdf.get_y()
+            pdf.set_xy(pdf.l_margin, y)
+            pdf.cell(label_w - 2, h, self.text(name[:34]), align="R")
+            pdf.set_fill_color(42, 120, 214)
+            for t in timeline:
+                if t["agent"] == name:
+                    width = max(chart_w * (t["end_s"] - t["start_s"]) / end, 0.3)
+                    pdf.rect(x0 + chart_w * t["start_s"] / end, y + 0.6, width, h - 1.2, style="F")
+            pdf.ln(h)
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_font(self.family, "", 7)
+        pdf.set_x(x0)
+        pdf.cell(chart_w, 4, self.text(f"0 to {end / 60:.1f} minutes after the agents started"), align="C")
+        pdf.ln(6)
+
 
 def _analysis_figures(analyses: list[dict[str, Any]]) -> list[tuple[str, list[tuple], bool]]:
     """Figures from the recorded analyses: subgroup forests, the dose-response curve and the importance of
@@ -241,11 +271,12 @@ def _forest_items(confirmation: dict[str, Any]) -> tuple[list[tuple], list[tuple
 
 
 def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dict[str, Any]],
-              coverage_md: str, meta: dict[str, Any]) -> Path:
+              coverage_md: str, meta: dict[str, Any], execution: dict[str, Any] | None = None) -> Path:
     """Write ``<stem>_report.pdf`` and return its path.
 
     ``phases`` is the saved phase output (``<stem>_state.json``), ``events`` the trace events, and
-    ``meta`` short run facts for the cover (participants, code version, models). Each section is
+    ``meta`` short run facts for the cover (participants, code version, models), and ``execution`` the
+    agent execution tables (``codas.aou.execution``), shown in their own section. Each section is
     rendered on its own: one that fails is replaced by a note, the rest of the report is kept, and the
     full traceback goes to ``<stem>_pdf_error.txt`` (removed again when every section renders).
     """
@@ -366,6 +397,38 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                       [[x.get("lesson"), ", ".join(x.get("about") or []), x.get("evidence")] for x in lessons],
                       widths=[100, 40, 40])
 
+    def agent_execution() -> None:
+        if not (execution or {}).get("agents"):
+            return
+        from codas.aou.execution import totals_text
+
+        doc.heading("Agent execution")
+        doc.plain(totals_text(execution.get("totals") or {}), size=9)
+        doc.table(["agent", "turns", "active min", "model calls", "errors", "tool calls (by tool)", "tokens",
+                   "thinking", "models served", "cost (USD)"],
+                  [[a["agent"], a["turns"], f"{a['active_s'] / 60:.1f}", a["model_calls"],
+                    a["model_errors"] + a["tool_errors"],
+                    f"{a['tool_calls']} " + ", ".join(f"{k} x{v}" for k, v in sorted(a["tools"].items(),
+                                                                                     key=lambda kv: -kv[1])),
+                    f"{a['total']:,}", f"{a['thoughts']:,}", ", ".join(f"{k} x{v}" for k, v in a["models"].items()),
+                    "" if a["cost_usd"] is None else f"{a['cost_usd']:.3f}"] for a in execution["agents"]],
+                  widths=[28, 10, 12, 12, 10, 42, 16, 14, 24, 12])
+        if execution.get("timeline"):
+            doc.heading("Agent turns over time", 2)
+            doc.gantt(execution["timeline"])
+        if execution.get("design_changes"):
+            doc.heading("Design changes (who changed what the later agents work on, and in which round)", 2)
+            doc.table(["round", "minute", "agent", "tool"],
+                      [[c["round"], f"{c['at_s'] / 60:.1f}", c["agent"], c["tool"] + (" (error)" if c["error"] else "")]
+                       for c in execution["design_changes"]], widths=[15, 20, 65, 80])
+        if execution.get("flow"):
+            from codas.aou.execution import flow_by_writer
+
+            doc.heading("Information flow (a memory key one agent wrote, and the later agents that read it)", 2)
+            doc.table(["writer", "key", "read by (turns)"],
+                      [[f["writer"], f["key"], f["read by (turns)"]] for f in flow_by_writer(execution["flow"])],
+                      widths=[38, 38, 104])
+
     def appendix() -> None:
         doc.heading("Appendix")
         if conf:
@@ -396,7 +459,8 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
 
     # (section, starts on a new page)
     sections = [(cover, True), (cohort, False), (final_report, True), (phase_a, True), (phases_bc, True),
-                (phase_d, True), (phases_ef, True), (appendix, True)]
+                (phase_d, True), (phases_ef, True),
+                (agent_execution, bool((execution or {}).get("agents"))), (appendix, True)]
     errors = []
     for section, new_page in sections:
         if new_page or not pdf.page:

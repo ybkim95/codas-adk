@@ -137,14 +137,18 @@ def mask_identifiers(text: str) -> str:
 
 
 def sanitize_shared_state(state: Any) -> None:
-    """Mask small counts in the memory keys that prompts interpolate ({fact_sheet?}, {rounds?})."""
+    """Mask small counts in the memory keys that prompts interpolate ({fact_sheet?}, {rounds?}). A key that is
+    already masked is not written again: every write is a state change, recorded as made by the agent
+    whose tool ran, and would misattribute who produced the value."""
     for key in ("fact_sheet", "rounds"):
         try:
             value = state.get(key)
         except Exception:
             return
         if value:
-            state[key] = mask_small_counts(value)
+            masked = mask_small_counts(value)
+            if masked != value:
+                state[key] = masked
 
 
 class AouBackendError(RuntimeError):

@@ -45,7 +45,7 @@ HEARTBEAT_NAME = "explore_heartbeat.jsonl"
 HEARTBEAT_S = float(os.getenv("CODAS_HEARTBEAT_S", "60"))
 # Settings worth recording for debugging; nothing else from the environment is written.
 _SETTINGS = ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "CODAS_AOU_CDR", "CODAS_GEMINI_REASONING_MODEL",
-             "CODAS_GEMINI_FAST_MODEL", "CODAS_GEMINI_FALLBACK_MODELS", "CODAS_MODEL_TIMEOUT_S",
+             "CODAS_GEMINI_FAST_MODEL", "CODAS_GEMINI_LITE_MODEL", "CODAS_GEMINI_FALLBACK_MODELS", "CODAS_MODEL_TIMEOUT_S",
              "CODAS_MODEL_TIMEOUT_RETRIES", "CODAS_OUTCOME_TIMEOUT_MIN", "CODAS_MODEL_RETRY_ATTEMPTS")
 
 
@@ -547,8 +547,9 @@ def main(argv: list[str]) -> int:
         client = bigquery.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
         result = runner.explore(
             args["catalog"], CohortSpec.from_json(args["spec"]), args.get("cdr"), client=client,
-            top_k=int(args.get("top_k", 3)), outcome_names=args.get("outcomes") or None, out_dir=out, log=on_log,
-            on_tool_call=on_tool, on_agent=on_agent)
+            top_k=int(args.get("top_k", 3)), outcome_names=args.get("outcomes") or None,
+            max_outcomes=args.get("max_outcomes") or None, test_holdout=bool(args.get("test_holdout", True)),
+            out_dir=out, log=on_log, on_tool_call=on_tool, on_agent=on_agent)
         _write(result_path, result)
         ending = {"state": "finished", "summary_path": result["summary_path"]}
         _say("exploration finished", milestone=True)

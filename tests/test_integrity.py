@@ -69,7 +69,9 @@ def _permuted_outcome(table: pd.DataFrame, seed: int = 3) -> pd.DataFrame:
 def test_nothing_the_agents_see_before_registration_depends_on_the_outcome(aou_env, monkeypatch):
     monkeypatch.setitem(SCRIPTS, "hypotheses_agent", _PRE_REGISTRATION)
     search = next(a for a in _llm_agents(agent_module.root_agent) if a.name == "search_agent")
-    monkeypatch.setattr(search, "model", _StopAtSearch(model="scripted", agent_name="search_agent"))
+    # A plain assignment: aou_env puts every agent's real model back. monkeypatch would restore the scripted
+    # stand-in after aou_env's teardown and leak it into later tests.
+    search.model = _StopAtSearch(model="scripted", agent_name="search_agent")
     table = _cohort_table()
     permuted = _permuted_outcome(table)
     assert not np.allclose(table["hba1c"], permuted["hba1c"])

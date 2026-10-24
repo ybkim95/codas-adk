@@ -78,10 +78,14 @@ REPORT_TEXT = ("Mean daily steps were inversely associated with HbA1c. A subgrou
 # Every (agent name, request) the graph sends to a model. Module-level because pydantic copies
 # list-valued fields, so a list passed to each model instance would not be shared.
 RECORDS: list[tuple[str, LlmRequest]] = []
+# The token counts every scripted response reports, as a served Gemini response does, so the execution
+# report can be checked exactly.
+SCRIPTED_USAGE = {"prompt": 1200, "output": 80, "thoughts": 40, "total": 1320}
 
 
 class ScriptedLlm(BaseLlm):
-    """Replays SCRIPTS[agent_name], one step per model call within a turn, and records requests."""
+    """Replays SCRIPTS[agent_name], one step per model call within a turn, records requests, and reports
+    SCRIPTED_USAGE tokens and its model name like a served response."""
 
     agent_name: str = ""
 
@@ -114,7 +118,11 @@ class ScriptedLlm(BaseLlm):
             text = (REPORT_TEXT if self.agent_name in {"report_agent", "report_reviser"}
                     else f"{self.agent_name}: done.")
             part = types.Part(text=text)
-        yield LlmResponse(content=types.Content(role="model", parts=[part]))
+        usage = types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=SCRIPTED_USAGE["prompt"], candidates_token_count=SCRIPTED_USAGE["output"],
+            thoughts_token_count=SCRIPTED_USAGE["thoughts"], total_token_count=SCRIPTED_USAGE["total"])
+        yield LlmResponse(content=types.Content(role="model", parts=[part]), usage_metadata=usage,
+                          model_version=self.model)
 
 
 def _llm_agents(node: Any):
@@ -543,7 +551,12 @@ def _run_result_cells(result):
           "Path": Path, "os": os, "FileLink": FileLink, "runner": aou_runner}
     code = [c.source for c in nb.cells if c.cell_type == "code"]
     after = code[code.index(next(c for c in code if "job.run_or_attach" in c)) + 1:]
-    exploration = next(c for c in code if "job.run_or_attach" in c).split("\n", 2)[2]  # skip the run itself
+    cell = next(c for c in code if "job.run_or_attach" in c)
+    import ast
+
+    # Skip the run itself, however many lines its call takes.
+    run = next(n for n in ast.parse(cell).body if "job.run_or_attach" in (ast.get_source_segment(cell, n) or ""))
+    exploration = "\n".join(cell.splitlines()[run.end_lineno:])
     import sys
     import types
 

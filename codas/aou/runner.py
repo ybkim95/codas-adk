@@ -27,6 +27,7 @@ os.environ.setdefault("CODAS_OUTCOME_TIMEOUT_MIN", "180")
 
 from codas.aou import cohort  # noqa: E402
 from codas.aou import feasibility as feas
+from codas.aou import ledger as ledger_book
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
 from codas.aou.phenotypes import describe as describe_phenotypes
@@ -34,6 +35,8 @@ from codas.aou.confirm import (confirm, confirmation_markdown, ledger_summary, p
                               reconciliation_markdown)
 from codas.aou.privacy import check_llm_backend, mask_identifiers, mask_small_counts, mask_small_counts_in_text
 from codas.aou.table1 import cohort_table
+from codas.core import model_tiers
+from codas.aou.execution import totals_text
 from codas.aou.trace import TraceRecorder
 
 GOAL_TEMPLATE = (
@@ -139,21 +142,25 @@ async def _run_agents_async(csv: Path, goal: str, on_tool_call: Any = None,
                             context_columns: list[str] | None = None,
                             recorder: TraceRecorder | None = None, on_agent: Any = None,
                             state: dict[str, Any] | None = None) -> dict[str, Any]:
+    from google.adk.apps import App
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
 
     from codas.agents.agent import root_agent  # AoU mode checks the model backend on import
+    from codas.aou.execution import ExecutionPlugin
 
+    plugin = ExecutionPlugin()  # every agent turn, model call and tool call, for the execution report
     if recorder is not None:
         recorder.bind(root_agent)
+        recorder.attach(plugin)
 
     sessions = InMemorySessionService()
     sid = uuid.uuid4().hex[:12]
     await sessions.create_session(app_name="codas_aou", user_id="aou", session_id=sid,
                                   state={**(state or {}), "csv_path": str(csv),
                                          "context_columns": list(context_columns or [])})
-    runner = Runner(app_name="codas_aou", agent=root_agent, session_service=sessions)
+    runner = Runner(app=App(name="codas_aou", root_agent=root_agent, plugins=[plugin]), session_service=sessions)
     message = types.Content(role="user", parts=[types.Part(text=goal)])
     speaking = None
     async for event in runner.run_async(user_id="aou", session_id=sid, new_message=message):
@@ -253,12 +260,13 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
               for k, v in state.items() if k in STATE_KEYS}
     (out / f"{stem}_state.json").write_text(json.dumps(phases, indent=2, default=str), encoding="utf-8")
     files = {"state": str(out / f"{stem}_state.json")}
-    coverage_missing = None
+    coverage_missing, execution = None, None
     if recorder is not None:
         files.update(recorder.write(out, stem))
         coverage_missing = recorder.coverage()["missing"]
+        execution = recorder.execution_tables()
     files.update(_compile_pdf(out, stem, phases, recorder.events if recorder else [],
-                              recorder.coverage_markdown() if recorder else "", fact_sheet.get("rows")))
+                              recorder.coverage_markdown() if recorder else "", fact_sheet.get("rows"), execution))
     files["report_md"] = str(out / f"{stem}_report.md")
     files.update(_publish({k: v for k, v in files.items() if not k.endswith("_error")}, out))
     last = rounds[-1] if rounds else {}
@@ -280,11 +288,12 @@ def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT
         "replication": (f"{state['confirmation']['replicated']}/{state['confirmation']['tested']}"
                         if state.get("confirmation") else None),
         "robust": state["confirmation"].get("robust") if state.get("confirmation") else None,
+        "execution": execution["totals"] if execution and execution.get("agents") else None,
     })
 
 
 def _compile_pdf(out: Path, stem: str, phases: dict[str, Any], events: list[dict[str, Any]], coverage_md: str,
-                 rows: Any) -> dict[str, str]:
+                 rows: Any, execution: dict[str, Any] | None = None) -> dict[str, str]:
     """Build ``<stem>_report.pdf``; a failure, or a section that could not be rendered, leaves its full
     traceback in ``<stem>_pdf_error.txt``. Returns the file entries for the run summary."""
     import traceback
@@ -293,10 +302,11 @@ def _compile_pdf(out: Path, stem: str, phases: dict[str, Any], events: list[dict
     try:
         from codas.aou.pdf_report import build_pdf
 
+        served = ((execution or {}).get("totals") or {}).get("models") or {}
         meta = {"rows": rows, "code_version": _code_version()[:12],
-                "models": ", ".join(dict.fromkeys(filter(None, (os.getenv("CODAS_GEMINI_REASONING_MODEL"),
-                                                                 os.getenv("CODAS_GEMINI_FAST_MODEL")))))}
-        files = {"pdf": str(build_pdf(out, stem, phases, events, coverage_md, meta))}
+                "models": (", ".join(f"{m} x{n} calls" for m, n in served.items()) if served else
+                           ", ".join(dict.fromkeys(model_tiers.model(t) for t in model_tiers.TIERS)))}
+        files = {"pdf": str(build_pdf(out, stem, phases, events, coverage_md, meta, execution))}
         if error_file.exists():
             files["pdf_warnings"] = str(error_file)
         return files
@@ -316,7 +326,10 @@ def rebuild_pdf(out_dir: str | Path, stem: str) -> dict[str, str]:
     trace = next((p for p in (out / f"{stem}_trace.jsonl", reports_dir(out) / f"{stem}_trace.jsonl") if p.exists()), None)
     events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines() if line.strip()] if trace else []
     coverage = "Rebuilt from the saved outputs; the trace file shows which agents ran in each phase and round."
-    files = _compile_pdf(out, stem, phases, events, coverage, (phases.get("fact_sheet") or {}).get("rows"))
+    execution_file = next((p for p in (out / f"{stem}_execution.json", reports_dir(out) / f"{stem}_execution.json")
+                           if p.exists()), None)
+    execution = json.loads(execution_file.read_text(encoding="utf-8")) if execution_file else None
+    files = _compile_pdf(out, stem, phases, events, coverage, (phases.get("fact_sheet") or {}).get("rows"), execution)
     files.update(_publish({k: v for k, v in files.items() if not k.endswith("_error")}, out))
     return files
 
@@ -383,9 +396,9 @@ def _analysis_version(root: Path | None = None) -> str:
     return digest.hexdigest()
 
 
-def _run_key(spec: CohortSpec, goal: str) -> str:
-    payload = json.dumps({"spec": asdict(spec), "goal": goal, "code": _analysis_version()}, sort_keys=True,
-                         default=str)
+def _run_key(spec: CohortSpec, goal: str, test_holdout: bool = True) -> str:
+    payload = json.dumps({"spec": asdict(spec), "goal": goal, "code": _analysis_version(),
+                          "holdout_test": test_holdout}, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -466,6 +479,25 @@ def _recalled_lessons(out: Path, key: str, stem: str) -> list[str]:
     return [mask_small_counts_in_text(t) for t in seen[-_MAX_RECALLED:]]
 
 
+def _opened_outcomes(out: Path, keys: list[str], outcomes: dict[str, Any], base: CohortSpec,
+                     test_holdout: bool = True) -> set[str]:
+    """Catalog outcomes already tested on this holdout, by run name or by outcome definition. An outcome whose
+    run with the current code already finished here, or whose agents finished before a later step failed, is
+    not counted: running the exploration again resumes it rather than moving on to another outcome."""
+    if not keys:
+        return set()
+    stems, outcome_keys = ledger_book.opened(out, keys[0])
+    opened = set()
+    for name, outcome in outcomes.items():
+        spec = feas.spec_for(outcome, base)
+        if spec.name not in stems and ledger_book.outcome_key(outcome_identity(spec), spec.name) not in outcome_keys:
+            continue
+        key = _run_key(spec, goal_for(spec, outcome.label), test_holdout)
+        if _finished_run(out, spec.name, key) is None and _saved_agents(out, spec.name, key) is None:
+            opened.add(name)
+    return opened
+
+
 def holdout_key(spec: CohortSpec, cdr: str | None) -> str:
     """Which participants a spec's holdout holds: the split depends only on the person id, the salt and
     the share, so every spec with the same three seals the same people."""
@@ -501,6 +533,15 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_key
     if billed:
         lines += [f"BigQuery in this run: {cohort.billed_text(sum(b['bytes_billed'] for b in billed))} over "
                   f"{len(billed)} jobs.", ""]
+    ran = [r["execution"] for r in runs if r.get("execution")]
+    if ran:
+        costs = [t.get("cost_usd") for t in ran]
+        cost = ("" if any(c is None for c in costs) else
+                f"; model cost about ${sum(costs):,.2f} at list prices")
+        lines += [f"Agents in this run: {sum(t['model_calls'] for t in ran):,} model calls, "
+                  f"{sum(t['tool_calls'] for t in ran):,} tool calls, {sum(t['tokens'] for t in ran):,} tokens "
+                  f"({sum(t.get('thoughts', 0) for t in ran):,} thinking), "
+                  f"{sum(t['wall_s'] for t in ran) / 60:.0f} agent minutes{cost}.", ""]
     lines += ["## Feasibility screen", "", table, "", "## Runs", ""]
     for r in runs:
         if r.get("failed"):
@@ -520,6 +561,10 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_key
             lines.append(f"- covariates not adjusted for: {_with_coverage(unused, coverage)}")
         if r.get("coverage_missing"):
             lines.append(f"- steps without output: {'; '.join(r['coverage_missing'])}")
+        if r.get("execution"):
+            lines.append(f"- agents: {totals_text(r['execution'])}")
+        if r.get("holdout_tested") is False:
+            lines.append("- sealed holdout: not tested in this run; the outcome stays fresh for a confirmatory run")
         lines += [*[f"- {c}" for c in r["top_candidates"]], f"- report: {r['report_path']}"]
         lines += [f"- {kind}: {path}" for kind, path in (r.get("files") or {}).items()] + [""]
     lines += _ledger_lines(out, ledger_keys or [])
@@ -611,11 +656,13 @@ def _preflight_args(spec: CohortSpec, csv: Path) -> dict[str, Any]:
 
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
              out_dir: str | Path = DEFAULT_OUT_DIR, check_schema: bool = True, on_tool_call: Any = None,
-             on_agent: Any = None, lessons: list[str] | None = None) -> dict[str, Any]:
+             on_agent: Any = None, lessons: list[str] | None = None, test_holdout: bool = True) -> dict[str, Any]:
     """Extract one cohort, run the agents on it, save the masked outputs and the agent trace. ``lessons``
     are earlier outcomes' lessons about this cohort. They come from other outcomes' discovery statistics on
     the same people, so the agents see them only once registration has closed (state ``cohort_lessons``),
-    never in the goal."""
+    never in the goal. With ``test_holdout`` off the agents run on the discovery share as usual but nothing
+    is registered or tested: the sealed holdout stays unopened and the outcome stays fresh for a
+    confirmatory run."""
     if check_schema:  # fit optional sources to this CDR first, so the goal and context match the table
         if client is None:
             from google.cloud import bigquery
@@ -625,7 +672,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         spec, _skipped = cohort.resolve_sources(spec, list(zip(present["table_name"], present["column_name"])))
     csv = extract_cohort(spec, cdr, out_dir, client=client, check_schema=check_schema)
     out = Path(out_dir).expanduser().resolve()
-    key = _run_key(spec, goal_for(spec, label))  # as explore keys finished runs (lessons excluded)
+    key = _run_key(spec, goal_for(spec, label), test_holdout)  # as explore keys finished runs (lessons excluded)
     saved = _saved_agents(out, spec.name, key)
     if saved is not None:  # the agents finished earlier and a later step failed: redo only the later steps
         state, recorder = saved
@@ -654,7 +701,11 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         _save_agents(out, spec.name, key, state, recorder)
     state["cohort_table"] = cohort_table(spec, csv)  # deterministic, masked; written after the agents finish
     sealed = holdout_path(csv)
-    if spec.holdout_fraction > 0 and sealed.exists():
+    tested = test_holdout and spec.holdout_fraction > 0 and sealed.exists()
+    if spec.holdout_fraction > 0 and not test_holdout:
+        state["report"] = ("_The sealed holdout was left unopened in this run: nothing was registered or tested on "
+                           f"it, so nothing here is confirmed._\n\n{state.get('report') or ''}")
+    if tested:
         prereg = preregister(state, out, spec.name, survival_time=FOLLOWUP_COLUMN if is_survival(spec) else None,
                              negative_controls=[c.name for c in spec.negative_controls],
                              positive_controls=list(spec.positive_controls),
@@ -678,7 +729,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         engine = {c.get("feature"): c.get("verdict") for c in (state.get("latest_report") or {}).get("candidates") or []}
         state["report"] = (f"{reconciliation_markdown(result, engine)}\n{state.get('report') or ''}\n\n"
                            f"{confirmation_markdown(result)}")
-    summary = save_outputs(state, spec.name, out_dir, recorder)
+    summary = {**save_outputs(state, spec.name, out_dir, recorder), "holdout_tested": tested}
     _agents_checkpoint(out, spec.name).unlink(missing_ok=True)
     return summary
 
@@ -696,6 +747,8 @@ def explore(
     out_dir: str | Path = DEFAULT_OUT_DIR,
     screen_only: bool = False,
     outcome_names: list[str] | None = None,
+    max_outcomes: int | None = None,
+    test_holdout: bool = True,
     on_tool_call: Any = None,
     log: Any = print,
     rerun: bool = False,
@@ -705,7 +758,11 @@ def explore(
 
     With ``per_kind`` (the default) the top K is taken for each outcome kind in the catalog, so one
     run covers measurements and conditions alike. ``outcome_names`` names catalog entries to run instead of the ranked top K; they still have to pass the
-    concept check and have at least one qualifying participant.
+    concept check and have at least one qualifying participant. A ranked selection skips outcomes already
+    tested on this holdout (their holdout results are known, so a new test of them would not be
+    confirmatory); a named one still runs, and the ledger reports its registrations as non-confirmatory.
+    ``max_outcomes`` caps how many run in all. With ``test_holdout`` off nothing is registered or tested on the
+    sealed holdout (an instrumentation run that keeps the outcomes fresh).
 
     An outcome whose run fails (a model that stays out of capacity, a query error) is recorded as
     failed and the exploration moves on; ``explore_summary.md`` is rewritten after every outcome. Calling
@@ -744,6 +801,10 @@ def explore(
     log(f"catalog: {len(verified)}/{len(outcomes)} outcomes verified against the concept table")
 
     rows = feas.feasibility(verified, base, cdr, client)
+    out = Path(out_dir).expanduser().resolve()
+    keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
+    by_name = {o.name: o for o in verified}
+    opened = _opened_outcomes(out, keys, by_name, base, test_holdout)
     if outcome_names:
         unknown = sorted(set(outcome_names) - {o.name for o in outcomes})
         if unknown:
@@ -753,23 +814,24 @@ def explore(
         if skipped:
             log(f"skipped (failed the concept check or no qualifying participants): {', '.join(skipped)}")
     else:
-        chosen = feas.rank_outcomes(rows, top_k=top_k, min_measurement_n=min_measurement_n, min_cases=min_cases,
-                                    per_kind=per_kind)
-    table = feas.feasibility_table(rows, problems, chosen)
+        chosen = feas.rank_outcomes([r for r in rows if r["name"] not in opened], top_k=top_k,
+                                    min_measurement_n=min_measurement_n, min_cases=min_cases, per_kind=per_kind)
+        if opened:
+            log(f"already tested on this holdout, not selected again: {', '.join(sorted(opened))}")
+    if max_outcomes:
+        chosen = chosen[:max_outcomes]
+    table = feas.feasibility_table(rows, problems, chosen, opened)
     log(table)
 
-    out = Path(out_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, Any]] = []
-    keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
     memory_key = keys[0] if keys else cdr  # lessons are shared across outcomes on the same participants
     summary_path = _write_summary(out, table, runs, keys, cohort.QUERY_LOG[first_job:])
     if not screen_only:
-        by_name = {o.name: o for o in verified}
         for row in chosen:
             o = by_name[row["name"]]
             spec = feas.spec_for(o, base)
-            key = _run_key(spec, goal_for(spec, o.label))
+            key = _run_key(spec, goal_for(spec, o.label), test_holdout)
             done = None if rerun else _finished_run(out, spec.name, key)
             if done:
                 log(f"\n=== {o.label} === finished earlier with this code; reusing its report")
@@ -779,7 +841,8 @@ def explore(
                 try:
                     result = run_spec(spec, cdr, label=o.label, client=client, out_dir=out, check_schema=False,
                                       on_tool_call=on_tool_call, on_agent=on_agent,
-                                      lessons=_recalled_lessons(out, memory_key, spec.name))
+                                      lessons=_recalled_lessons(out, memory_key, spec.name),
+                                      test_holdout=test_holdout)
                 except Exception as exc:  # noqa: BLE001 - one outcome's failure must not discard the others
                     reason = mask_identifiers(f"{type(exc).__name__}: {str(exc)[:300]}")
                     log(f"  failed: {reason}\n  Run again to retry; finished outcomes are reused.")

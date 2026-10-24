@@ -8,59 +8,17 @@ import random
 import time
 from typing import Any
 
+from codas.core import model_tiers
 from codas.core.settings import load_local_env
 
 
 load_local_env()
 
 
-DEFAULT_MODELS = [
-    "gemini-3.5-flash",
-    "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-latest",
-    "gemini-pro-latest",
-    "gemini-flash-lite-latest",
-    "gemini-2.5-flash-lite",
-]
-
-MODEL_ALIASES = {
-    # Keep visible choices aligned with the live models/list endpoint and a
-    # generateContent probe in this environment. Deprecated preview names still
-    # degrade to a nearby live model instead of surfacing a 404 to users.
-    "models/gemini-3.5-flash": "gemini-3.5-flash",
-    "gemini-3.5-flash": "gemini-3.5-flash",
-    "models/gemini-3-flash-preview": "gemini-3-flash-preview",
-    "gemini-3-flash-preview": "gemini-3-flash-preview",
-    "models/gemini-3-pro-preview": "gemini-3-pro-preview",
-    "gemini-3-pro-preview": "gemini-3-pro-preview",
-    "models/gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
-    "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
-    "models/gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview-customtools",
-    "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview-customtools",
-    "models/gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
-    "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
-    "models/gemini-flash-latest": "gemini-flash-latest",
-    "gemini-flash-latest": "gemini-flash-latest",
-    "models/gemini-pro-latest": "gemini-pro-latest",
-    "gemini-pro-latest": "gemini-pro-latest",
-    "models/gemini-flash-lite-latest": "gemini-flash-lite-latest",
-    "gemini-flash-lite-latest": "gemini-flash-lite-latest",
-    "models/gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
-    "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
-    "models/gemini-2.0-flash": "gemini-2.0-flash",
-    "gemini-2.0-flash": "gemini-2.0-flash",
-    "models/gemini-2.0-flash-lite": "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-lite": "gemini-2.0-flash-lite",
-    # Historical/deprecated selections.
-    "models/gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
-    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
-    "gemini-2.5-flash": "gemini-3.5-flash",
-    "models/gemini-2.5-flash": "gemini-3.5-flash",
-    "gemini-2.5-pro": "gemini-3.1-pro-preview",
-    "models/gemini-2.5-pro": "gemini-3.1-pro-preview",
-}
+# The fast, reasoning and lite tiers' newest models (codas/core/model_tiers.py), in that order.
+DEFAULT_MODELS = [model_tiers.CANDIDATES[tier][0] for tier in ("fast", "reasoning", "lite")]
+# Superseded names run on their successor instead of surfacing a 404.
+MODEL_ALIASES = dict(model_tiers.SUPERSEDED)
 
 
 def _normalize_model_id(value: str | None) -> str:
@@ -78,6 +36,9 @@ class GroundedResponse:
     sources: list[dict[str, str]]
     queries: list[str]
     error: str | None = None
+    # Tokens, the served model, Google Search queries run, tries and rate-limited tries: the execution report
+    # counts them for the agent whose tool made this call.
+    usage: dict[str, Any] | None = None
 
 
 def _grounding_from_response(response: Any) -> tuple[list[dict[str, str]], list[str]]:
@@ -205,6 +166,18 @@ def _client():
     return genai.Client(api_key=api_key)
 
 
+def _usage(response: Any, model: str, queries: list[str], attempts: int, rate_limited: int) -> dict[str, Any]:
+    meta = getattr(response, "usage_metadata", None)
+
+    def count(name: str) -> int:
+        return int(getattr(meta, name, None) or 0)
+
+    return {"model": getattr(response, "model_version", None) or model, "prompt": count("prompt_token_count"),
+            "tool_prompt": count("tool_use_prompt_token_count"), "output": count("candidates_token_count"),
+            "thoughts": count("thoughts_token_count"), "total": count("total_token_count"),
+            "search_queries": len(queries), "attempts": attempts, "rate_limited": rate_limited}
+
+
 def generate_grounded_reply(
     message: str,
     *,
@@ -223,10 +196,12 @@ def generate_grounded_reply(
             error="Gemini API key is missing. Set GOOGLE_API_KEY or GEMINI_API_KEY in .env.",
         )
     last_error: str | None = None
+    attempts = rate_limited = 0
     for candidate_model in _candidate_models(model):
         response = None
         # A 429 (the search tool's per-minute quota) is retried with backoff before moving on.
         for attempt in range(_GROUNDING_RETRIES + 1):
+            attempts += 1
             try:
                 from google.genai import types
 
@@ -244,6 +219,7 @@ def generate_grounded_reply(
                 break
             except Exception as exc:
                 last_error = str(exc)
+                rate_limited += int(_rate_limited(last_error))
                 if _rate_limited(last_error) and attempt < _GROUNDING_RETRIES:
                     _sleep(_backoff(attempt))
                     continue
@@ -251,9 +227,12 @@ def generate_grounded_reply(
         if response is None:
             if _model_unavailable_error(last_error) or _rate_limited(last_error):
                 continue
-            return GroundedResponse(text=None, model=candidate_model, configured=True, sources=[], queries=[], error=last_error)
+            return GroundedResponse(text=None, model=candidate_model, configured=True, sources=[], queries=[],
+                                    error=last_error, usage={"model": candidate_model, "attempts": attempts,
+                                                             "rate_limited": rate_limited})
         sources, queries = _grounding_from_response(response)
         text = (response.text or "").strip()
+        usage = _usage(response, candidate_model, queries, attempts, rate_limited)
         if not text:
             last_error = f"{candidate_model} returned an empty grounded text response."
             continue
@@ -263,5 +242,8 @@ def generate_grounded_reply(
             configured=True,
             sources=sources,
             queries=queries,
+            usage=usage,
         )
-    return GroundedResponse(text=None, model=selected_model, configured=True, sources=[], queries=[], error=last_error or "No configured Gemini model is available.")
+    return GroundedResponse(text=None, model=selected_model, configured=True, sources=[], queries=[],
+                            error=last_error or "No configured Gemini model is available.",
+                            usage={"model": selected_model, "attempts": attempts, "rate_limited": rate_limited})

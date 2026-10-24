@@ -292,14 +292,17 @@ def _show(n: Any) -> str:
 
 
 def feasibility_table(rows: list[dict[str, Any]], skipped: dict[str, str | None] | None = None,
-                      chosen: list[dict[str, Any]] | None = None) -> str:
-    """A Markdown table of the screen with counts of 1-20 masked; safe to display."""
+                      chosen: list[dict[str, Any]] | None = None, opened: set[str] | None = None) -> str:
+    """A Markdown table of the screen with counts of 1-20 masked; safe to display. ``opened`` names outcomes
+    already tested on this holdout."""
     picked = {r["name"] for r in chosen or []}
     lines = ["| outcome | kind | participants | cases | controls | selected |",
              "|---|---|---|---|---|---|"]
     for r in rows:
+        selected = ("yes" if r["name"] in picked else
+                    "already tested on this holdout" if r["name"] in (opened or set()) else "")
         lines.append(f"| {r['label']} | {r['kind']} | {_show(r['n_participants'])} | {_show(r.get('n_cases'))} | "
-                     f"{_show(r.get('n_controls'))} | {'yes' if r['name'] in picked else ''} |")
+                     f"{_show(r.get('n_controls'))} | {selected} |")
     for name, reason in (skipped or {}).items():
         if reason:
             lines.append(f"| {name} | skipped | - | - | - | {reason} |")

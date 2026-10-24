@@ -158,9 +158,25 @@ def run_discovery(
     return _json_safe(run_discovery_from_csv(Path(csv_path).expanduser().resolve(), request).to_dict())
 
 
-# Identical literature queries within a run (the mechanism and novelty agents of several outcomes
-# often ask the same question) are answered once; failures are not kept, so they are retried.
-LITERATURE_CACHE: dict[str, dict[str, Any]] = {}
+# Model calls a tool makes on its own, outside its agent's model (the literature search calls Gemini with
+# Google Search), keyed by the tool call's id. The execution report takes each entry when the call ends and
+# counts it for the agent that called the tool; at most _MAX_USAGE untaken entries are kept.
+MODEL_USAGE: dict[str, list[dict[str, Any]]] = {}
+_MAX_USAGE = 1000
+
+
+def _record_model_usage(tool_context: Any, usage: dict[str, Any] | None) -> None:
+    call_id = getattr(tool_context, "function_call_id", None)
+    if not call_id or not usage:
+        return
+    MODEL_USAGE.setdefault(call_id, []).append(dict(usage))
+    while len(MODEL_USAGE) > _MAX_USAGE:
+        MODEL_USAGE.pop(next(iter(MODEL_USAGE)))
+
+
+def take_model_usage(call_id: str | None) -> list[dict[str, Any]]:
+    """The model calls the tool call ``call_id`` made on its own, removed from the record."""
+    return MODEL_USAGE.pop(call_id, []) if call_id else []
 
 
 def search_literature(query: str, tool_context: ToolContext | None = None) -> dict[str, Any]:
@@ -173,6 +189,8 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
     key is configured the tool returns ``grounded=False`` with an empty summary — the caller must then
     reason from general principles and MUST NOT fabricate citations. Statistics are never sourced here;
     every reported number still comes only from the deterministic engine.
+
+    Every query goes to the search again: Google's grounding terms forbid caching or reusing its results.
     """
     if not query or not query.strip():
         return {"grounded": False, "summary": "", "sources": [], "queries": [], "note": "empty query"}
@@ -182,15 +200,13 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
                     "note": "Literature search is turned off for this All of Us run. Reason from general "
                             "principles and do not fabricate citations."}
         query = mask_small_counts_in_text(query)
-    key = " ".join(query.lower().split())
-    if key in LITERATURE_CACHE:
-        return {**LITERATURE_CACHE[key], "note": "Same query as earlier in this run; the earlier sources."}
     reply = gemini.generate_grounded_reply(
         query.strip(),
         context=("You are grounding a wearable-biomarker discovery finding in the scientific literature. "
                  "Summarise established evidence and mechanisms with citations; do not invent numeric "
                  "statistics — those come only from the deterministic engine."),
     )
+    _record_model_usage(tool_context, getattr(reply, "usage", None))
     if not reply.configured:
         return {"grounded": False, "summary": "", "sources": [], "queries": [],
                 "note": "Literature grounding unavailable (no Gemini key). Reason from general principles "
@@ -203,7 +219,7 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
     # which is parametric recall wearing the costume of retrieval; reporting that as grounded is how
     # an unsourced claim ends up in a report that says it was literature-anchored.
     grounded = bool(reply.sources)
-    result = _json_safe({
+    return _json_safe({
         "grounded": grounded,
         "summary": reply.text,
         "sources": reply.sources,
@@ -213,9 +229,6 @@ def search_literature(query: str, tool_context: ToolContext | None = None) -> di
         "literature. Treat it as a prior to be checked, attach no citations to it, and say in the "
         "report that literature grounding was unavailable.",
     })
-    if grounded:  # only retrieved evidence is kept; a reply without sources is asked again next time
-        LITERATURE_CACHE[key] = result
-    return result
 
 
 # --- stateful tools (shared session memory) ----------------------------------------------------

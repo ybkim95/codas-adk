@@ -91,6 +91,12 @@ def load(out_dir: Path, key: str) -> list[dict[str, Any]]:
     return entries
 
 
+def opened(out_dir: Path, key: str) -> tuple[set[str], set[str]]:
+    """The run names and outcome keys already tested on the holdout ``key``."""
+    entries = load(out_dir, key)
+    return {str(e.get("stem")) for e in entries}, {str(e["outcome_key"]) for e in entries if e.get("outcome_key")}
+
+
 def _novel_stream(entries: list[dict[str, Any]]) -> tuple[int, list[int]]:
     """How many novel tests the ledger holds and at which of them the null was rejected."""
     count, rejections = 0, []

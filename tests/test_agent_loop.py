@@ -317,7 +317,11 @@ def test_grounded_search_retries_when_rate_limited(monkeypatch):
     assert slept[1] > slept[0] > 0  # exponential backoff
 
 
-def test_identical_literature_queries_are_served_from_the_run_cache(monkeypatch):
+def test_grounded_search_results_are_never_cached(monkeypatch):
+    """Google's grounding terms forbid caching or reusing search results, so an identical query is sent
+    again; each call's tokens are recorded for the agent that made it."""
+    from types import SimpleNamespace
+
     from codas.agents import tools as tools_mod
     from codas.core.gemini import GroundedResponse
 
@@ -325,18 +329,13 @@ def test_identical_literature_queries_are_served_from_the_run_cache(monkeypatch)
 
     def sourced(query, context=""):
         calls.append(query)
-        return GroundedResponse(text="…", model="m", configured=True, sources=[{"title": "t", "url": "u"}], queries=[])
+        return GroundedResponse(text="…", model="m", configured=True, sources=[{"title": "t", "url": "u"}],
+                                queries=["q"], usage={"model": "m", "prompt": 10, "output": 5, "total": 15})
 
     monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", sourced)
-    first = tools_mod.search_literature("resting heart rate and blood pressure")
-    again = tools_mod.search_literature("  Resting heart rate and blood pressure ")
-    assert calls == ["resting heart rate and blood pressure"] and again["sources"] == first["sources"]
-
-    def failing(query, context=""):
-        calls.append(query)
-        return GroundedResponse(text=None, model="m", configured=True, sources=[], queries=[], error="429")
-
-    monkeypatch.setattr(tools_mod.gemini, "generate_grounded_reply", failing)
-    tools_mod.search_literature("night heart rate dip")
-    tools_mod.search_literature("night heart rate dip")
-    assert calls.count("night heart rate dip") == 2  # a failure is never cached
+    first = tools_mod.search_literature("resting heart rate and blood pressure", SimpleNamespace(function_call_id="a"))
+    again = tools_mod.search_literature("resting heart rate and blood pressure", SimpleNamespace(function_call_id="b"))
+    assert len(calls) == 2 and first["grounded"] and again["grounded"]
+    assert [u["total"] for u in tools_mod.take_model_usage("a")] == [15]
+    assert tools_mod.take_model_usage("a") == [] and len(tools_mod.take_model_usage("b")) == 1
+    assert not hasattr(tools_mod, "LITERATURE_CACHE")

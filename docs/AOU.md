@@ -38,14 +38,35 @@ pip install -e ".[aou]"
 export CODAS_AOU_MODE=1                      # set by run_codas_aou.py anyway
 export GOOGLE_GENAI_USE_VERTEXAI=TRUE
 export GOOGLE_CLOUD_PROJECT=$(gcloud config get-value project)
-export GOOGLE_CLOUD_LOCATION=global   # preview Gemini models are served from "global"; us-central1 returns 404 for them
+export GOOGLE_CLOUD_LOCATION=global   # the current Gemini models are served from "global"
 export CODAS_AOU_CDR=<cdr-project>.<cdr-dataset>   # the workspace's CDR; or WORKSPACE_CDR if exposed
 
-# models: Gemini by default; any claude-* name is served as Claude on Vertex AI
-export CODAS_GEMINI_REASONING_MODEL=gemini-3.1-pro-preview
-export CODAS_GEMINI_FAST_MODEL=gemini-3-flash-preview
+# models: optional; each tier defaults to its newest model (codas/core/model_tiers.py)
+# export CODAS_GEMINI_REASONING_MODEL=gemini-4-argon
+# export CODAS_GEMINI_FAST_MODEL=gemini-3.8-flash
+# export CODAS_GEMINI_LITE_MODEL=gemini-3.5-flash-lite
 # export CODAS_GEMINI_REASONING_MODEL=<claude model id enabled in Model Garden>
 ```
+
+### Models
+
+The agents run on three tiers, all from one table (`codas/core/model_tiers.py`) that the agent graph,
+the literature search, the notebook's model probe and the execution report share:
+
+| tier | model (newest first) | agents | thinking level |
+|---|---|---|---|
+| reasoning | `gemini-4-argon`, then `gemini-3.8-flash` | scout, hypotheses (HIGH), critic, defender, gap finder, per-candidate debate, mechanism, novelty, strategy, report, reviewer, reviser | MEDIUM |
+| fast | `gemini-3.8-flash`, then `gemini-3.5-flash` | search step, statistical and ML interpreters | LOW |
+| lite | `gemini-3.5-flash-lite`, then `gemini-3.8-flash` | convergence check, artifacts, lessons | LOW |
+
+The notebook probes each tier's candidates newest first and uses the first that answers from the
+workspace project, so a newer model is picked up by editing that one table. A tier whose model is out of
+capacity or not served falls back to the other tiers' models. A model that refuses a request's thinking
+level is asked again without one. Superseded names (`gemini-3.1-pro-preview`, `gemini-3-flash-preview`,
+the 2.x models) run on their successor. `CODAS_GEMINI_MODEL` forces one model everywhere. List prices
+(USD per 1M input and output tokens, Oct 2026): `gemini-4-argon` 2 and 10 (4 and 20 after 2026-11-30),
+`gemini-3.8-flash` 0.75 and 3.75 (1.50 and 7.50 after 2026-12-31), `gemini-3.5-flash-lite` 0.30 and 2.50;
+thinking tokens bill as output. `CODAS_MODEL_PRICES_JSON` overrides them for the cost estimates.
 
 Check that Vertex AI is enabled before the first run:
 
@@ -165,7 +186,12 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
 3. **Selection.** A fixed rule: keep measurements with at least `--min-n` participants (default
    1,000) and conditions with at least `--min-cases` cases and controls (default 200), order by that
    sample, and take `--top-k` (default 3) for each outcome kind, so one run covers lab measurements
-   and diagnoses. `--overall` takes the top K across kinds instead.
+   and diagnoses. `--overall` takes the top K across kinds instead. Outcomes already tested on this
+   holdout are not selected again (the screen table says "already tested on this holdout"): their
+   holdout results are known, so a new test of them could not be confirmatory; an outcome this exploration
+   tested itself and finished with the current code is reused, not skipped. `MAX_OUTCOMES` in the
+   notebook caps how many run in all, and `TEST_ON_HOLDOUT = False` runs the agents without registering or
+   testing anything on the sealed half (a run that measures the agents and keeps the outcome fresh).
 4. **Runs.** Each selected outcome gets a spec built from the base spec's wearables and covariates,
    is extracted, and goes through the full agent graph. `explore_summary.md` collects the masked
    screen table and, for each run, the validated candidates, the confounders adjusted for and the
@@ -195,6 +221,20 @@ mirrored to `codas_reports/aou/`, because Jupyter does not serve files inside hi
   mechanisms, novelty, strategy, artifacts, report, rounds, fact sheet, exclusion and confounder logs).
 * Phase coverage (in the trace, the PDF and `explore_summary.md`): which agents produced output in
   each phase and round, with any silent step listed, so a reader can check that every step ran.
+* `<cohort>_execution.md` / `<cohort>_execution.json`: how each agent ran, recorded by an ADK plugin
+  on the runner (`codas/aou/execution.py`). It covers:
+  - per agent: turns, active minutes, model calls and failures, tool calls by tool and failures, tokens
+    (prompt, output, thinking, cached), the models that actually served it (a fallback shows here) and
+    an estimated cost at list prices. The literature tool's own Gemini calls count for the agent that
+    called it.
+  - phases: how long each sequence, loop and parallel step ran.
+  - design changes: who set the target, declared confounders, excluded columns, proposed features,
+    registered hypotheses or recorded a gap analysis, and in which round.
+  - information flow: which agent wrote a memory key that a later agent's instructions read.
+  - a timeline of agent turns, parallel turns included.
+
+  The PDF has the same tables and the timeline. The notebook shows them per outcome, with tokens and
+  cost in the runs table. `explore_summary.md` gives the totals for each outcome and for the run.
 
 `codas_reports/` and `.codas_runs/` are git-ignored. Both hold only masked aggregates and LLM text,
 but review them against the Dissemination Policy before anything leaves the Workbench.
@@ -206,7 +246,7 @@ Vertex AI answers `429 RESOURCE_EXHAUSTED` when shared capacity is short (previe
 
 * each model call retries with exponential backoff and jitter for about three minutes
   (`CODAS_MODEL_RETRY_ATTEMPTS`, `CODAS_MODEL_RETRY_INITIAL_DELAY`, `CODAS_MODEL_RETRY_MAX_DELAY`);
-* if it is still refused (or the model is not served), the call goes to the next model: the two tiers
+* if it is still refused (or the model is not served), the call goes to the next model: the three tiers
   back each other up, and `CODAS_GEMINI_FALLBACK_MODELS` can add more;
 * an outcome that still fails is recorded as failed and the others continue. Running the exploration
   again resumes: outcomes already finished with the same spec, goal and code commit are reused
@@ -251,8 +291,12 @@ load). A log whose heartbeat simply stops, with no error, means the process or m
 out of memory. The Status cell charts it.
 
 Finished outcomes are reused when the exploration runs again with the same spec, goal and analysis
-code (a hash of `codas/core`, `codas/agents` and the AoU cohort, feasibility, confirmation, privacy
-and Table 1 modules); changes to the notebook, the job, the views or the PDF do not force reruns.
+code (a hash of `codas/core`, `codas/agents` and the AoU cohort, feasibility, confirmation, ledger,
+privacy and Table 1 modules); changes to the notebook, the job, the views, the execution report or the
+PDF do not force reruns.
+
+The notebook is generated by `scripts/aou/make_notebook.py`; a test fails when the committed notebook
+differs from what the script writes, so edit the script and regenerate rather than editing the notebook.
 
 The agents' finished work is kept (`<cohort>_agents.json`: aggregate state and trace, keyed like the run)
 until the outputs are saved. If a later step fails (pre-registration, the holdout test, writing the
@@ -447,8 +491,22 @@ counted, never as passed.
   times.
 
 **Literature search.** A 429 from the search tool's quota is retried with exponential backoff and jitter
-(`CODAS_GROUNDING_RETRIES`, default 3). Identical queries within a run are answered from the first
-grounded reply.
+(`CODAS_GROUNDING_RETRIES`, default 3). Every query goes to the search again: Google's grounding terms
+forbid caching or reusing its results, so the per-run cache of Phase 33 was removed. Each search's
+tokens, served model, Google Search queries, tries and rate-limited tries are recorded for the agent that
+asked.
+
+**Literature sources** (checks cell, `codas/core/literature.py`). One tiny query to each source shows what
+answers from the workspace (status, latency, bytes received). Only a fixed word is sent, never data, and
+every literature request is counted and capped (`CODAS_LITERATURE_MAX_REQUESTS`), because All of Us
+monitors outbound traffic. The sources:
+- Europe PMC, Crossref, OpenAlex, NCBI E-utilities (PubMed) and Semantic Scholar: open bibliographic APIs
+  that return PMIDs and DOIs and allow caching, so citations can point to them.
+- Nature and the other Springer Nature journals: found by DOI through those indexes; the probe checks
+  the Nature Portfolio prefix 10.1038 through Crossref. Springer Nature's own Metadata API is tried only
+  when `SPRINGER_NATURE_API_KEY` is set as a workspace secret.
+- Google Search grounding: web context for the agents' reasoning; its links are not citations.
+- Google Scholar: not used, because it has no API and its terms forbid automated queries.
 
 **Data inventory** (checks cell):
 - Every table with its columns, the participants each person-level table covers, and how many of them
@@ -471,7 +529,8 @@ grounded reply.
 | report review and revision | `report_reviewer` -> `report_reviser`; one document, not per-section writers |
 | LaTeX report | fpdf2 PDF with phase outputs, method and gap tables, debates, lessons, forest / subgroup / dose-response / importance figures; no LaTeX in the Workbench |
 | 80/20 row split | sealed 50% participant split, pre-registration hash, cumulative ledger, falsification battery (stricter) |
-| not ported | causal-model (DAG) generator, reinvestigation planner as a separate agent (the gap finder covers re-running methods on candidates), literature updater inside the loop, section-wise parallel writers, cost table |
+| cost table | per-agent execution report (calls, tokens, tools, time, estimated cost, models served), with the agents' information flow and design changes |
+| not ported | causal-model (DAG) generator, reinvestigation planner as a separate agent (the gap finder covers re-running methods on candidates), literature updater inside the loop, section-wise parallel writers |
 
 ## Testing outside the Workbench
 

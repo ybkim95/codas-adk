@@ -270,13 +270,15 @@ def runs_table(result: dict[str, Any]) -> pd.DataFrame:
     for r in result.get("runs") or []:
         stem = r["cohort"]
         conf = _read(out / f"{stem}_confirmation.json")
+        agents = r.get("execution") or {}
         rows.append({
             "outcome": stem, "status": "failed" if r.get("failed") else "finished",
             "participants (discovery)": r.get("rows"), "rounds": r.get("rounds"),
             "validated (last round)": r.get("validated_count"), "held-out model": _metric(r.get("ml_metric")),
             "replicated on holdout": r.get("replication"), "robust": r.get("robust"),
             "negative-control flags": sum(bool(h.get("falsification_failed")) for h in conf.get("hypotheses") or []),
-            "minutes": run_minutes(out, stem), "error": r.get("failed") or "",
+            "minutes": run_minutes(out, stem), "model calls": agents.get("model_calls"),
+            "tokens": agents.get("tokens"), "cost (USD)": agents.get("cost_usd"), "error": r.get("failed") or "",
         })
     return pd.DataFrame(rows)
 
@@ -433,6 +435,67 @@ def lessons_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
 
 
 _HR_TICKS = (0.25, 0.33, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0)
+
+
+# --- agent execution ------------------------------------------------------------------------------
+
+def _execution(result: dict[str, Any], stem: str) -> dict[str, Any]:
+    return _read(_out_dir(result) / f"{stem}_execution.json")
+
+
+def execution_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Per agent: turns, active minutes, model calls, errors, tool calls by tool, tokens, thinking tokens,
+    the models that actually served it (a fallback shows here) and the estimated cost at list prices."""
+    agents = _execution(result, stem).get("agents") or []
+    if not agents:
+        return None
+    return pd.DataFrame([{
+        "agent": a["agent"], "turns": a["turns"], "active min": round(a["active_s"] / 60, 1),
+        "model calls": a["model_calls"], "errors": a["model_errors"] + a["tool_errors"], "tool calls": a["tool_calls"],
+        "tools": ", ".join(f"{k} x{v}" for k, v in sorted(a["tools"].items(), key=lambda kv: -kv[1])),
+        "tokens": a["total"], "thinking": a["thoughts"],
+        "models served": ", ".join(f"{k} x{v}" for k, v in a["models"].items()),
+        "cost (USD)": a["cost_usd"]} for a in agents])
+
+
+def flow_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Which agent wrote a memory key, and which later agents' instructions read it (and in how many turns)."""
+    from codas.aou.execution import flow_by_writer
+
+    flow = _execution(result, stem).get("flow") or []
+    return pd.DataFrame(flow_by_writer(flow)) if flow else None
+
+
+def design_changes_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Who changed the design the later agents work on (target, confounders, exclusions, proposed
+    features, registered hypotheses, gap analyses), and in which discovery round."""
+    changes = _execution(result, stem).get("design_changes") or []
+    if not changes:
+        return None
+    return pd.DataFrame([{"round": c["round"], "minute": round(c["at_s"] / 60, 1), "agent": c["agent"],
+                          "tool": c["tool"] + (" (error)" if c["error"] else "")} for c in changes])
+
+
+def execution_timeline_figure(result: dict[str, Any], stem: str):
+    """One row per agent, one bar per turn, in minutes since the agents started; parallel turns overlap."""
+    timeline = _execution(result, stem).get("timeline") or []
+    if not timeline:
+        return None
+    agents = list(dict.fromkeys(t["agent"] for t in timeline))
+    fig = _figure(8, 0.2 * len(agents) + 1.3)
+    ax = fig.subplots()
+    end = max(t["end_s"] for t in timeline) / 60 or 1.0
+    for y, name in enumerate(agents):
+        spans = [(t["start_s"] / 60, max((t["end_s"] - t["start_s"]) / 60, end / 400)) for t in timeline
+                 if t["agent"] == name]
+        ax.broken_barh(spans, (y - 0.32, 0.64), color=BLUE)
+    ax.set_yticks(range(len(agents)), agents)
+    ax.invert_yaxis()
+    ax.set_xlim(0, end * 1.01)
+    ax.set_xlabel("minutes since the agents started", fontsize=8, color=INK_2)
+    ax.set_title(f"{stem}: agent turns over time", loc="left", fontsize=9, color=INK)
+    _style(ax)
+    return Chart(fig)
 
 
 def forest_figure(result: dict[str, Any]):

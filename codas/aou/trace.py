@@ -7,7 +7,10 @@ direct child of the root agent, and a new round starts whenever the first agent 
 after another agent of that loop. Nothing here knows which agents or datasets exist.
 
 Outputs: ``<stem>_trace.jsonl`` (one event per line), ``<stem>_trace.md`` (readable, grouped by
-phase and round) and a phase-coverage table showing which agents ran in each phase and round.
+phase and round) and a phase-coverage table showing which agents ran in each phase and round. With the
+runner's execution plugin attached, also ``<stem>_execution.json`` and ``<stem>_execution.md``: each
+agent's model calls, tokens, tool calls, time and estimated cost, and how the agents fed one another
+(``codas.aou.execution``). The plugin's records are saved and restored with the trace.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from codas.aou.execution import execution_markdown, execution_tables
 from codas.aou.privacy import mask_small_counts, mask_small_counts_in_text
 
 _MD_VALUE_LIMIT = 1500  # characters of a tool payload shown in the readable trace (the JSONL keeps all)
@@ -54,6 +58,8 @@ class TraceRecorder:
         self.phase_agents: dict[str, list[str]] = {}
         self._round: dict[str, int] = {}
         self._last_in_loop: dict[str, str] = {}
+        self._plugin: Any = None
+        self.execution: dict[str, Any] = {}  # the execution plugin's records, once restored from a snapshot
         if root_agent is not None:
             self.bind(root_agent)
 
@@ -69,6 +75,17 @@ class TraceRecorder:
                 self.loop_first[loop.name] = names[0]
                 for name in names:
                     self.loop_of[name] = loop.name
+
+    def attach(self, plugin: Any) -> None:
+        """Keep the execution plugin's records with this trace (saved, restored and written together)."""
+        self._plugin = plugin
+
+    def execution_snapshot(self) -> dict[str, Any]:
+        return self._plugin.snapshot() if self._plugin is not None else dict(self.execution)
+
+    def execution_tables(self) -> dict[str, Any]:
+        """Per-agent calls, tokens, tools, time and cost; phases; information flow; design changes."""
+        return execution_tables(self.execution_snapshot())
 
     def _loops(self, node: Any) -> list[Any]:
         found = [node] if _is_loop(node) else []
@@ -150,14 +167,16 @@ class TraceRecorder:
     _STATE = ("events", "phase_of", "loop_of", "loop_first", "phase_agents")
 
     def snapshot(self) -> dict[str, Any]:
-        """The recorded events and graph mapping, to restore the recorder after a later step failed."""
-        return {k: getattr(self, k) for k in self._STATE}
+        """The recorded events, graph mapping and execution records, to restore the recorder after a later
+        step failed."""
+        return {**{k: getattr(self, k) for k in self._STATE}, "execution": self.execution_snapshot()}
 
     @classmethod
     def restore(cls, data: dict[str, Any]) -> "TraceRecorder":
         recorder = cls()
         for k in cls._STATE:
             setattr(recorder, k, data.get(k) or type(getattr(recorder, k))())
+        recorder.execution = data.get("execution") or {}
         return recorder
 
     def write(self, out_dir: Path, stem: str) -> dict[str, str]:
@@ -168,7 +187,15 @@ class TraceRecorder:
                 fh.write(json.dumps(e, default=str) + "\n")
         md = out_dir / f"{stem}_trace.md"
         md.write_text(self.markdown(stem), encoding="utf-8")
-        return {"trace_jsonl": str(jsonl), "trace_md": str(md)}
+        files = {"trace_jsonl": str(jsonl), "trace_md": str(md)}
+        tables = self.execution_tables()
+        if tables["agents"]:
+            execution_json, execution_md = out_dir / f"{stem}_execution.json", out_dir / f"{stem}_execution.md"
+            execution_json.write_text(json.dumps(tables, indent=2, default=str), encoding="utf-8")
+            execution_md.write_text(f"# Agent execution: {stem}\n\n" + execution_markdown(tables).split("\n", 2)[2],
+                                    encoding="utf-8")
+            files.update(execution_json=str(execution_json), execution_md=str(execution_md))
+        return files
 
     def markdown(self, stem: str) -> str:
         lines = [f"# Agent trace: {stem}", "", "Counts of 1-20 are masked. Tool payloads are shortened here; "
