@@ -552,7 +552,10 @@ def main(argv: list[str]) -> int:
             rehearsal.run_once(out, log=on_log, on_tool_call=on_tool, on_agent=on_agent)
         from dataclasses import replace
 
-        spec = replace(CohortSpec.from_json(args["spec"]), discovery_share=str(args.get("discovery_share") or "A"))
+        spec = CohortSpec.from_json(args["spec"])
+        share = str(args.get("discovery_share") or "A")
+        if share != "A":  # the halves swap roles (codas.aou.crossfit)
+            spec = replace(spec, discovery_share=share)
         result = runner.explore(
             args["catalog"], spec, args.get("cdr"), client=client,
             top_k=int(args.get("top_k", 3)), outcome_names=args.get("outcomes") or None,
