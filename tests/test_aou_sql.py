@@ -516,6 +516,6 @@ def test_phenotypes_are_read_once_per_run_and_match_the_inline_extraction(synthe
                 order = list(left.columns)  # row order is up to the database; compare as sets of rows
                 pd.testing.assert_frame_equal(left.sort_values(order).reset_index(drop=True),
                                               right.sort_values(order).reset_index(drop=True), check_dtype=False)
-        assert (pd.read_csv(cached[0])[["stepsday_peak30_mean", "hrmin_resting_hr"]].notna().sum() > 0).all()
+        assert (pd.read_csv(cached[0])[["stepsday_peak30_mean", "hr10h_resting_hr"]].notna().sum() > 0).all()
     finally:
         shutil.rmtree(root, ignore_errors=True)

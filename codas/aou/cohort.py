@@ -38,6 +38,27 @@ to and including the index date; a condition or drug covariate is 1 if a record 
 lookback before the index date, else 0. Which covariates to extract is configuration; whether to
 adjust for one is decided during the analysis.
 
+Quality rules (all optional, all in the spec, all listed in words by ``quality_rules``):
+
+* ``WearableSource.value_bounds`` drops a day whose value lies outside plausible bounds (a main-sleep night
+  under 3 h or over 16 h) from that source's summaries;
+* ``OutcomeSpec.min_occurrences`` makes a condition case need diagnoses on that many distinct dates (2 is a
+  common guard against rule-out codes); people with fewer are left out, not counted as controls, and any
+  diagnosis before follow-up still excludes the person;
+* ``OutcomeSpec.unit_concept_ids`` keeps only lab values recorded in those units. Whatever the setting, the
+  units of the values used are summarised from the discovery share (``unit_mix``), so a lab recorded in two
+  units is visible before anyone analyses it; the same summary (``extraction_qc``, ``<name>.qc.json``) gives
+  each daily feature's split-half reliability: how well its first and second half of the window agree;
+* ``CohortSpec.ehr_lookback_days`` keeps only people with an EHR visit in that many days before the index
+  date, so a missing diagnosis means no diagnosis rather than no records;
+* the phenotype sources' own rules (heart-rate wear days, night length, contributing days; see
+  ``codas.aou.phenotypes``).
+
+Covariate kinds beyond measurements, conditions, drugs and survey answers: ``visits`` counts the distinct
+visit dates in the lookback before the index date (how much health care a person uses, which drives how
+much gets diagnosed), and ``in_table`` is 1 for people listed in a named table (e.g. a sub-study's
+enrolment table), else 0.
+
 The table is participant-level data. It stays inside the Workbench: it carries no person_id or
 dates, it is git-ignored, and CoDaS only ever shows the model aggregates computed from it.
 
@@ -63,8 +84,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from codas.aou.phenotypes import (PhenotypeSource, minute_activity_ctes, minute_heart_rate_ctes, resolve,
-                                  sleep_stage_ctes)
+from codas.aou.phenotypes import (PhenotypeSource, bounds as range_ok, minute_activity_ctes, minute_heart_rate_ctes,
+                                  quality_rules as phenotype_rules, range_text, resolve, select_columns,
+                                  sleep_stage_ctes, whole)
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = ROOT / ".codas_runs" / "aou"
@@ -104,6 +126,9 @@ class WearableSource:
     # An optional source is dropped (columns it lacks are dropped) when the CDR does not have it,
     # instead of stopping the run. The primary (first) source cannot be optional.
     optional: bool = False
+    # Plausible values, {column: [low, high]} (either may be null): a day (row) with the column outside its
+    # range or missing is left out of the source's summaries, e.g. {"minute_asleep": [180, 960]}.
+    value_bounds: dict[str, list[float | None]] | None = None
 
     def validate(self) -> None:
         _ident(self.table, "table")
@@ -117,6 +142,10 @@ class WearableSource:
             _ident(self.filter_column, "filter column")
             if self.filter_value is None:
                 raise ValueError(f"filter_column {self.filter_column!r} needs a filter_value.")
+        for column, limits in (self.value_bounds or {}).items():
+            _ident(column, "value_bounds column")
+            if not range_ok(limits):
+                raise ValueError(f"value_bounds[{column!r}] must be [low, high] (numbers or null), low <= high.")
 
 
 @dataclass
@@ -132,12 +161,23 @@ class OutcomeSpec:
     expect_name: str = ""
     # Public codes ("SNOMED:44054006", "LOINC:4548-4") resolved to this CDR's concept ids before a run.
     codes: list[str] = field(default_factory=list)
+    # Condition: a case needs diagnoses on at least this many distinct dates; people with fewer are left out.
+    min_occurrences: int = 1
+    # Measurement: keep only values recorded in these OMOP unit concepts (empty keeps every unit).
+    unit_concept_ids: list[int] = field(default_factory=list)
 
     def validate(self) -> None:
         if self.kind not in {"measurement", "condition"}:
             raise ValueError(f"outcome.kind must be 'measurement' or 'condition', not {self.kind!r}.")
         _check_concepts(self.concept_ids, self.codes, f"outcome {self.name!r}")
         _ident(self.name, "outcome name")
+        if not whole(self.min_occurrences, 1, 100) or (self.min_occurrences > 1 and self.kind != "condition"):
+            raise ValueError(f"outcome {self.name!r}: min_occurrences is a whole number >= 1, above 1 for "
+                             "conditions only.")
+        if self.unit_concept_ids and (self.kind != "measurement"
+                                      or not all(whole(u, 0, 10**12) for u in self.unit_concept_ids)):
+            raise ValueError(f"outcome {self.name!r}: unit_concept_ids are OMOP unit concept ids, for "
+                             "measurements only.")
 
 
 _COVARIATE_TABLES = {
@@ -148,6 +188,8 @@ _COVARIATE_TABLES = {
     # A survey answer: the question is the source concept, the answer the value's source concept.
     "survey": ("observation", "observation_source_concept_id", "observation_date"),
 }
+# Covariates that name no concept: distinct visit dates in the lookback, and membership of a named table.
+_CONCEPT_FREE = ("visits", "in_table")
 SURVEY_MISSING_ANSWERS = "skip|prefer not|don.?t know|not sure"
 
 
@@ -165,8 +207,8 @@ class CovariateSpec:
     """A clinical covariate extracted alongside the outcome, for adjustment rather than discovery."""
 
     name: str
-    kind: str  # "measurement", "condition" or "drug"
-    concept_ids: list[int]
+    kind: str  # "measurement", "condition", "drug", "survey", "visits" or "in_table"
+    concept_ids: list[int] = field(default_factory=list)
     include_descendants: bool = True
     # Days before the index date to look back; None looks back without limit.
     lookback_days: int | None = 365
@@ -183,14 +225,24 @@ class CovariateSpec:
     positive_answers: str = ""
     missing_answers: str = SURVEY_MISSING_ANSWERS
     any_time: bool = False
+    # in_table: the table whose person_id list defines the flag.
+    table: str = ""
 
     def validate(self) -> None:
         _ident(self.name, "covariate name")
-        if self.kind not in _COVARIATE_TABLES:
-            raise ValueError(f"covariate {self.name!r}: kind must be one of {sorted(_COVARIATE_TABLES)}, "
-                             f"not {self.kind!r}.")
-        _check_concepts(self.concept_ids, self.codes, f"covariate {self.name!r}",
-                        self.question_name if self.kind == "survey" else "")
+        kinds = sorted([*_COVARIATE_TABLES, *_CONCEPT_FREE])
+        if self.kind not in kinds:
+            raise ValueError(f"covariate {self.name!r}: kind must be one of {kinds}, not {self.kind!r}.")
+        if self.kind in _CONCEPT_FREE:
+            if self.concept_ids or self.codes:
+                raise ValueError(f"covariate {self.name!r}: a {self.kind} covariate names no concepts.")
+            if (self.kind == "in_table") != bool(self.table):
+                raise ValueError(f"covariate {self.name!r}: table is required for in_table and only for it.")
+            if self.table:
+                _ident(self.table, f"covariate {self.name!r} table")
+        else:
+            _check_concepts(self.concept_ids, self.codes, f"covariate {self.name!r}",
+                            self.question_name if self.kind == "survey" else "")
         if self.kind == "survey" and not self.positive_answers:
             raise ValueError(f"covariate {self.name!r}: a survey covariate needs positive_answers.")
         if self.lookback_days is not None and self.lookback_days < 0:
@@ -227,6 +279,8 @@ class CohortSpec:
     # after the first period, paired with the wearable summary of the period before it, e.g.
     # {"period_days": 90, "min_days": 30}.
     panel: dict[str, Any] | None = None
+    # Keep only people with an EHR visit in this many days before the index date (None: no such rule).
+    ehr_lookback_days: int | None = None
 
     def validate(self) -> None:
         _ident(self.name, "cohort name")
@@ -287,6 +341,8 @@ class CohortSpec:
             period, least = int(self.panel.get("period_days", 0)), int(self.panel.get("min_days", 1))
             if period < 7 or not 1 <= least <= period:
                 raise ValueError("panel needs period_days >= 7 and 1 <= min_days <= period_days.")
+        if self.ehr_lookback_days is not None and not whole(self.ehr_lookback_days, 1, 100_000):
+            raise ValueError("ehr_lookback_days must be a whole number of days, at least 1 (or null).")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CohortSpec":
@@ -309,6 +365,7 @@ class CohortSpec:
             positive_controls=[str(c) for c in data.get("positive_controls", [])],
             phenotypes=[PhenotypeSource(**p) for p in data.get("phenotypes", [])],
             panel=data.get("panel"),
+            ehr_lookback_days=None if data.get("ehr_lookback_days") is None else int(data["ehr_lookback_days"]),
         )
         spec.validate()
         return spec
@@ -351,6 +408,121 @@ def availability_columns(spec: CohortSpec) -> list[str]:
     """The per-source counts of days with data in the window (``<prefix>_days``): how much a participant
     wore or synced the device, not a physiological measurement. Adjustment-only, never a candidate."""
     return [f"{source.prefix}_days" for source in [*spec.wearables, *spec.phenotypes]]
+
+
+def quality_rules(spec: CohortSpec, *, negative_controls: bool = False) -> list[str]:
+    """Every quality rule the spec applies, in words: what a reader needs to know about which days, nights,
+    values and people count. The negative controls' rules (sealed-table columns the agents never see) are
+    listed only when asked for, for the report."""
+    rules = []
+    if spec.valid_day is not None:
+        limits = [spec.valid_day.get("min"), spec.valid_day.get("max")]
+        if limits != [None, None]:
+            rules.append(f"valid wear day: {spec.wearables[0].table}.{spec.valid_day['column']} "
+                         f"{range_text(limits)}")
+    for source in spec.wearables:
+        for column, limits in sorted((source.value_bounds or {}).items()):
+            if list(limits) != [None, None]:
+                rules.append(f"{source.prefix}: days with {column} outside {range_text(limits)} (or missing) "
+                             "are left out")
+    for source in spec.phenotypes:
+        rules += phenotype_rules(source)
+    rules.append(f"at least {spec.min_wear_days} valid wear days in the {spec.window_days}-day window")
+    outcomes = [("outcome", spec.outcome)] + [(f"negative control {c.name}", c)
+                                              for c in (spec.negative_controls if negative_controls else [])]
+    for what, outcome in outcomes:
+        if outcome.min_occurrences > 1:
+            rules.append(f"{what}: a case needs diagnoses on at least {outcome.min_occurrences} distinct dates; "
+                         "people with fewer are left out")
+    if spec.outcome.kind == "measurement":
+        rules.append("outcome units: " + (f"only unit concepts {', '.join(map(str, spec.outcome.unit_concept_ids))}"
+                                          if spec.outcome.unit_concept_ids else "every unit kept (see the unit summary)"))
+    if spec.ehr_lookback_days:
+        rules.append(f"everyone has an EHR visit in the {spec.ehr_lookback_days} days before the index date")
+    return rules
+
+
+UNIT_COLUMN, UNIT_NAME_COLUMN = "_outcome_unit", "_outcome_unit_name"
+
+
+def unit_mix(frame: Any, value_column: str, *, tail: int = 20, share: float = 0.05) -> dict[str, Any]:
+    """The units of a lab outcome's values in ``frame`` (the discovery share): each unit's share of the
+    people, in whole percent (a unit with 1-20 people is shown only as that, so no small count can be read
+    off), with quartiles when at least ``2 * tail`` people have it; and whether the values are on more than
+    one scale (two or more units each holding at least ``share`` of them)."""
+    import pandas as pd
+
+    from codas.aou.privacy import SMALL_CELL_MAX
+
+    if UNIT_COLUMN not in frame.columns or not len(frame):
+        return {"units": [], "mixed": False}
+    names = frame[UNIT_NAME_COLUMN] if UNIT_NAME_COLUMN in frame.columns else pd.Series(None, index=frame.index)
+    units = pd.DataFrame({"unit": frame[UNIT_COLUMN], "name": names, "value": frame[value_column]})
+    rows, shares = [], []
+    for (unit, name), group in units.groupby(["unit", "name"], dropna=False):
+        n = len(group)
+        shares.append(n / len(units))
+        row = {"unit_concept_id": None if pd.isna(unit) else int(unit),
+               "unit": "not recorded" if pd.isna(name) else str(name),
+               "share": f"{SMALL_CELL_MAX} people or fewer" if n <= SMALL_CELL_MAX else f"{100 * n / len(units):.0f}%",
+               "_n": n}
+        if n >= 2 * tail:
+            q = group["value"].quantile([0.25, 0.5, 0.75])
+            row.update(p25=round(float(q.iloc[0]), 4), median=round(float(q.iloc[1]), 4), p75=round(float(q.iloc[2]), 4))
+        rows.append(row)
+    rows.sort(key=lambda r: -r["_n"])
+    for row in rows:
+        del row["_n"]
+    return {"units": rows, "mixed": sum(1 for x in shares if x >= share) > 1}
+
+
+def half_columns(source: WearableSource) -> list[str]:
+    """Internal columns: each column's mean and SD over the first (h1) and the second (h2) half of the
+    window, inputs of the split-half reliability; never written to a table."""
+    return [f"_{source.prefix}_{column}_{stat}_{half}" for column in source.columns
+            for half in ("h1", "h2") for stat in ("mean", "sd")]
+
+
+def split_half(frame: Any, spec: CohortSpec, *, tail: int = 20) -> dict[str, dict[str, Any]]:
+    """Each daily feature's agreement between the first and the second half of the window across people
+    (Spearman rho), and the reliability of the whole-window value it implies (Spearman-Brown: 2 rho / (1 +
+    rho)). Two halves that barely agree say the value describes those weeks more than the person. Computed
+    only when at least ``2 * tail`` people have both halves."""
+    import pandas as pd
+
+    out: dict[str, dict[str, Any]] = {}
+    for source in spec.wearables:
+        for column in source.columns:
+            for stat in ("mean", "sd"):
+                first, second = (f"_{source.prefix}_{column}_{stat}_{half}" for half in ("h1", "h2"))
+                if first not in frame.columns or second not in frame.columns:
+                    continue
+                both = frame[[first, second]].apply(pd.to_numeric, errors="coerce").dropna()
+                if len(both) < 2 * tail or both[first].nunique() < 2 or both[second].nunique() < 2:
+                    continue
+                rho = float(both[first].rank().corr(both[second].rank()))
+                out[f"{source.prefix}_{column}_{stat}"] = {
+                    "split_half_rho": round(rho, 3), "reliability": round(2 * rho / (1 + rho), 3) if rho > -1 else None}
+    return out
+
+
+def extraction_qc(frame: Any, spec: CohortSpec, *, tail: int = 20) -> dict[str, Any]:
+    """The extraction's quality summary of ``frame`` (give it the discovery share only): the units of a lab
+    outcome's values and each daily feature's split-half reliability. Aggregate, small counts withheld."""
+    units = (unit_mix(frame, spec.outcome.name, tail=tail) if spec.outcome.kind == "measurement"
+             else {"units": [], "mixed": False})
+    return {"units": units, "reliability": split_half(frame, spec, tail=tail)}
+
+
+def _bounds_rule(source: WearableSource, alias: str, tag: str, params: list[QueryParam]) -> str:
+    """The source's value bounds on rows aliased ``alias``, bound as ``<tag>_<column>_low/high``."""
+    rule = ""
+    for column, limits in sorted((source.value_bounds or {}).items()):
+        for bound, op, value in zip(("low", "high"), (">=", "<="), limits):
+            if value is not None:
+                rule += f"\n    AND {alias}.{column} {op} @{tag}_{column}_{bound}"
+                params.append((f"{tag}_{column}_{bound}", "FLOAT64", float(value)))
+    return rule
 
 
 def output_columns(spec: CohortSpec) -> list[str]:
@@ -456,7 +628,9 @@ def _phenotype_parts(spec: CohortSpec, t: Any, valid: str,
         )
     aliases: list[tuple[str, PhenotypeSource]] = []
     steps_min = {ph.prefix: f"q{k}_min" for k, ph in enumerate(spec.phenotypes) if ph.kind == "minute_activity"}
-    # Heart-rate sources come last: they read a minute-activity source's minutes for per_step.
+    sleeps = {ph.prefix: f"z{k}" for k, ph in enumerate(spec.phenotypes) if ph.kind == "sleep_stages"}
+    # Heart-rate sources come last: they read a minute-activity source's minutes (per_step) and a sleep-stage
+    # source's sleep periods (sleep_hr, sedentary_hr).
     order = sorted(enumerate(spec.phenotypes), key=lambda kp: kp[1].kind == "minute_heart_rate")
     for k, phenotype in order:
         if phenotype.kind == "minute_activity":
@@ -464,7 +638,8 @@ def _phenotype_parts(spec: CohortSpec, t: Any, valid: str,
             ctes += minute_activity_ctes(k, phenotype, t(phenotype.tables()[0]))
         elif phenotype.kind == "minute_heart_rate":
             aliases.append((f"h{k}", phenotype))
-            ctes += minute_heart_rate_ctes(k, phenotype, t(phenotype.tables()[0]), steps_min.get(phenotype.steps_from))
+            ctes += minute_heart_rate_ctes(k, phenotype, t(phenotype.tables()[0]), steps_min.get(phenotype.steps_from),
+                                           sleeps.get(phenotype.sleep_from))
         else:
             aliases.append((f"z{k}", phenotype))
             sleep_sql, sleep_params = sleep_stage_ctes(k, phenotype, t(phenotype.tables()[0]))
@@ -494,7 +669,7 @@ def build_phenotype_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryPara
             "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
             "  FROM first_wear\n)"]
     extra, aliases = _phenotype_parts(spec, t, valid, params)
-    select = ["ie.person_id"] + [f"{alias}.{column}" for alias, ph in aliases for column in ph.output_columns()]
+    select = ["ie.person_id"] + [item for alias, ph in aliases for item in select_columns(alias, ph)]
     joins = [f"LEFT JOIN {alias} ON {alias}.person_id = ie.person_id" for alias, _ph in aliases]
     sql = ("WITH " + ",\n".join(ctes + extra) + "\n"
            "SELECT\n  " + ",\n  ".join(select) + "\n"
@@ -502,11 +677,14 @@ def build_phenotype_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryPara
     return sql, params
 
 
-def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> tuple[str, list[QueryParam]]:
+def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
+                     qc: bool = False) -> tuple[str, list[QueryParam]]:
     """Return the extraction SQL and its parameters. Identifiers are validated, values are bound.
 
     With ``phenotypes=False`` the intraday phenotypes are left out and ``person_id`` is selected so that
-    the phenotypes computed once by ``build_phenotype_sql`` can be merged in (then dropped)."""
+    the phenotypes computed once by ``build_phenotype_sql`` can be merged in (then dropped). With ``qc=True``
+    the inputs of ``extraction_qc`` are selected too (a lab outcome's unit, id and name; each daily column's
+    mean and SD over each half of the window); the extraction drops them before writing any table."""
     spec.validate()
     cdr = resolve_cdr(cdr)
     t = lambda name: f"`{cdr}.{name}`"  # noqa: E731 - table reference helper
@@ -532,6 +710,12 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
         if spec.outcome.value_max is not None:
             bounds += "\n    AND m.value_as_number <= @value_max"
             params.append(("value_max", "FLOAT64", float(spec.outcome.value_max)))
+        if spec.outcome.unit_concept_ids:
+            bounds += "\n    AND m.unit_concept_id IN UNNEST(@outcome_units)"
+            params.append(("outcome_units", "ARRAY<INT64>", list(spec.outcome.unit_concept_ids)))
+    # With qc=True a lab outcome's value carries its unit, summarised by the extraction and then dropped.
+    unit = ", m.unit_concept_id AS outcome_unit" if qc and spec.outcome.kind == "measurement" else ""
+    unit_out = ", outcome_unit" if unit else ""
 
     if spec.design == "incident":
         # One index rule for everyone: the end of a baseline window that starts at the first valid
@@ -545,7 +729,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
                 horizon = "\n    AND m.measurement_date < DATE_ADD(f.first_wear, INTERVAL @outcome_until DAY)"
             ctes.append(
                 "outcome_events AS (\n"
-                "  SELECT m.person_id, f.first_wear, m.value_as_number AS outcome_value,\n"
+                f"  SELECT m.person_id, f.first_wear, m.value_as_number AS outcome_value{unit},\n"
                 "    ROW_NUMBER() OVER (PARTITION BY m.person_id ORDER BY m.measurement_date, m.measurement_id) AS rn\n"
                 f"  FROM {t('measurement')} m\n"
                 "  JOIN outcome_concepts oc ON m.measurement_concept_id = oc.concept_id\n"
@@ -555,18 +739,11 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
                 ")"
             )
             ctes.append("index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date,"
-                        " outcome_value\n  FROM outcome_events WHERE rn = 1\n)")
+                        f" outcome_value{unit_out}\n  FROM outcome_events WHERE rn = 1\n)")
             if spec.negative_controls:
                 ctes.append(_LAST_SEEN.format(visits=t("visit_occurrence")))
         else:
-            ctes.append(
-                "cases AS (\n"
-                "  SELECT co.person_id, MIN(co.condition_start_date) AS dx_date\n"
-                f"  FROM {t('condition_occurrence')} co\n"
-                "  JOIN outcome_concepts oc ON co.condition_concept_id = oc.concept_id\n"
-                "  GROUP BY co.person_id\n"
-                ")"
-            )
+            ctes.append(_cases_cte(spec.outcome, t, params))
             ctes.append(_LAST_SEEN.format(visits=t("visit_occurrence")))
             start_fu = "DATE_ADD(f.first_wear, INTERVAL @outcome_from DAY)"
             ctes.append(
@@ -577,14 +754,14 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
                 "  FROM first_wear f\n"
                 "  JOIN last_seen l ON l.person_id = f.person_id\n"
                 "  LEFT JOIN cases c ON c.person_id = f.person_id\n"
-                f"  WHERE (c.dx_date IS NULL OR c.dx_date >= {start_fu})\n"
+                f"  WHERE (c.dx_date IS NULL OR (c.dx_date >= {start_fu}{_enough('c', spec.outcome)}))\n"
                 f"    AND COALESCE(c.dx_date, l.last_seen) > {start_fu}\n"
                 ")"
             )
     elif spec.outcome.kind == "measurement":
         ctes.append(
             "outcome_events AS (\n"
-            "  SELECT m.person_id, m.measurement_date AS index_date, m.value_as_number AS outcome_value,\n"
+            f"  SELECT m.person_id, m.measurement_date AS index_date, m.value_as_number AS outcome_value{unit},\n"
             "    ROW_NUMBER() OVER (PARTITION BY m.person_id ORDER BY m.measurement_date, m.measurement_id) AS rn\n"
             f"  FROM {t('measurement')} m\n"
             "  JOIN outcome_concepts oc ON m.measurement_concept_id = oc.concept_id\n"
@@ -594,16 +771,10 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
             f"      AND DATE(w.{primary.date_column}) < m.measurement_date{valid.format(a='w')})\n"
             ")"
         )
-        ctes.append("index_events AS (\n  SELECT person_id, index_date, outcome_value FROM outcome_events WHERE rn = 1\n)")
+        ctes.append(f"index_events AS (\n  SELECT person_id, index_date, outcome_value{unit_out} FROM outcome_events"
+                    " WHERE rn = 1\n)")
     else:
-        ctes.append(
-            "cases AS (\n"
-            "  SELECT co.person_id, MIN(co.condition_start_date) AS dx_date\n"
-            f"  FROM {t('condition_occurrence')} co\n"
-            "  JOIN outcome_concepts oc ON co.condition_concept_id = oc.concept_id\n"
-            "  GROUP BY co.person_id\n"
-            ")"
-        )
+        ctes.append(_cases_cte(spec.outcome, t, params))
         ctes.append(
             "wear_persons AS (\n"
             f"  SELECT w.person_id, MAX(DATE(w.{primary.date_column})) AS last_wear_date\n"
@@ -617,9 +788,13 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
             "  SELECT w.person_id, COALESCE(c.dx_date, w.last_wear_date) AS index_date,\n"
             "    IF(c.person_id IS NULL, 0, 1) AS outcome_value\n"
             "  FROM wear_persons w LEFT JOIN cases c ON c.person_id = w.person_id\n"
+            + ("  WHERE c.person_id IS NULL OR c.dx_dates >= @min_occurrences\n"
+               if spec.outcome.min_occurrences > 1 else "") +
             ")"
         )
 
+    if qc:
+        params.append(("half_days", "INT64", int(spec.window_days) // 2))
     for i, source in enumerate(spec.wearables):
         aggregates = [f"COUNT(DISTINCT DATE(s.{source.date_column})) AS {source.prefix}_days"]
         for column in source.columns:
@@ -633,6 +808,14 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
             filt += (f"\n    AND LOWER(CAST(s.{source.filter_column} AS STRING))"
                      f" = LOWER(CAST(@{name} AS STRING))")
             params.append((name, _scalar_type(source.filter_value), source.filter_value))
+        filt += _bounds_rule(source, "s", f"w{i}b", params)
+        if qc:  # each column over the first and the second half of the window, for split-half reliability
+            first = f"DATE(s.{source.date_column}) < DATE_SUB(ie.index_date, INTERVAL @half_days DAY)"
+            for column in source.columns:
+                for half in ("h1", "h2"):
+                    inside = first if half == "h1" else f"NOT ({first})"
+                    aggregates += [f"AVG(IF({inside}, s.{column}, NULL)) AS _{source.prefix}_{column}_mean_{half}",
+                                   f"STDDEV_SAMP(IF({inside}, s.{column}, NULL)) AS _{source.prefix}_{column}_sd_{half}"]
         ctes.append(
             f"w{i} AS (\n"
             "  SELECT ie.person_id,\n    " + ",\n    ".join(aggregates) + "\n"
@@ -645,6 +828,9 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
         )
 
     for i, covariate in enumerate(spec.covariates):
+        if covariate.kind in _CONCEPT_FREE:
+            ctes.append(_concept_free_cte(i, covariate, t, params))
+            continue
         table, concept_col, date_col = _COVARIATE_TABLES[covariate.kind]
         ids = f"c{i}_concept_ids"
         params.append((ids, "ARRAY<INT64>", list(covariate.concept_ids)))
@@ -718,11 +904,13 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
         ctes += extra
 
     select = [f"ie.outcome_value AS {spec.outcome.name}"]
+    if unit:  # the value's unit, summarised for the report and then dropped
+        select += [f"ie.outcome_unit AS {UNIT_COLUMN}", f"uc.concept_name AS {UNIT_NAME_COLUMN}"]
     if not phenotypes:  # the caller merges the phenotypes computed once (phenotype_table) by person
         select.insert(0, "ie.person_id")
     if is_survival(spec):
         select.append(f"ie.{FOLLOWUP_COLUMN}")
-    joins = []
+    joins = [f"LEFT JOIN {t('concept')} uc ON uc.concept_id = ie.outcome_unit"] if unit else []
     if spec.include_demographics:
         select += [
             "EXTRACT(YEAR FROM ie.index_date) - p.year_of_birth AS age",
@@ -736,13 +924,17 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
         select.append(f"w{i}.{source.prefix}_days")
         for column in source.columns:
             select += [f"w{i}.{source.prefix}_{column}_mean", f"w{i}.{source.prefix}_{column}_sd"]
+        if qc:
+            select += [f"w{i}.{column}" for column in half_columns(source)]
         joins.append(f"LEFT JOIN w{i} ON w{i}.person_id = ie.person_id")
     for alias, phenotype in phenotype_ctes:
-        select += [f"{alias}.{column}" for column in phenotype.output_columns()]
+        select += select_columns(alias, phenotype)
         joins.append(f"LEFT JOIN {alias} ON {alias}.person_id = ie.person_id")
     for i, covariate in enumerate(spec.covariates):
         if covariate.kind in ("measurement", "survey"):
             select.append(f"c{i}.{covariate.name}")
+        elif covariate.kind == "visits":
+            select.append(f"COALESCE(c{i}.visits, 0) AS {covariate.name}")
         else:
             select.append(f"IF(c{i}.present IS NULL, 0, 1) AS {covariate.name}")
         joins.append(f"LEFT JOIN c{i} ON c{i}.person_id = ie.person_id")
@@ -759,20 +951,34 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
             if control.include_descendants:
                 concepts += (f"\n    UNION DISTINCT\n    SELECT descendant_concept_id FROM {t('concept_ancestor')}"
                              f"\n    WHERE ancestor_concept_id IN UNNEST(@{ids})")
+            dates = ",\n    COUNT(DISTINCT co.condition_start_date) AS dx_dates" if control.min_occurrences > 1 else ""
             ctes.append(
                 f"n{i} AS (\n"
-                "  SELECT co.person_id, MIN(co.condition_start_date) AS dx_date\n"
+                f"  SELECT co.person_id, MIN(co.condition_start_date) AS dx_date{dates}\n"
                 f"  FROM {t('condition_occurrence')} co\n"
                 f"  JOIN (\n    {concepts}\n  ) nc ON co.condition_concept_id = nc.concept_id\n"
                 "  GROUP BY co.person_id\n"
                 ")"
             )
             col = f"{NC_PREFIX}{control.name}"
-            prevalent = f"n{i}.dx_date < {start}"
-            select += [f"CASE WHEN {prevalent} THEN NULL WHEN n{i}.dx_date IS NULL THEN 0 ELSE 1 END AS {col}",
-                       f"CASE WHEN {prevalent} THEN NULL ELSE DATE_DIFF(COALESCE(n{i}.dx_date, ls.last_seen), {start}, DAY)"
+            # Diagnosed before follow-up, or too few diagnosis dates to count as a case: left out.
+            excluded = f"n{i}.dx_date < {start}"
+            if control.min_occurrences > 1:
+                params.append((f"n{i}_min_occurrences", "INT64", int(control.min_occurrences)))
+                excluded += f" OR n{i}.dx_dates < @n{i}_min_occurrences"
+            select += [f"CASE WHEN {excluded} THEN NULL WHEN n{i}.dx_date IS NULL THEN 0 ELSE 1 END AS {col}",
+                       f"CASE WHEN {excluded} THEN NULL ELSE DATE_DIFF(COALESCE(n{i}.dx_date, ls.last_seen), {start}, DAY)"
                        f" END AS {col}_days"]
             joins.append(f"LEFT JOIN n{i} ON n{i}.person_id = ie.person_id")
+    if spec.ehr_lookback_days:
+        params.append(("ehr_lookback_days", "INT64", int(spec.ehr_lookback_days)))
+        ctes.append("ehr_active AS (\n"
+                    "  SELECT DISTINCT ie.person_id FROM index_events ie\n"
+                    f"  JOIN {t('visit_occurrence')} v ON v.person_id = ie.person_id\n"
+                    "    AND v.visit_start_date < ie.index_date\n"
+                    "    AND v.visit_start_date >= DATE_SUB(ie.index_date, INTERVAL @ehr_lookback_days DAY)\n"
+                    ")")
+        joins.append("JOIN ehr_active ea ON ea.person_id = ie.person_id")
     if spec.holdout_fraction > 0:
         # Deterministic, roughly uniform split on the person id, computed apart from the selected
         # columns so the output carries only the flag; extract_cohort drops it before the agents see rows.
@@ -790,6 +996,43 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True) -> 
         f"WHERE w0.{primary.prefix}_days >= @min_wear_days"
     )
     return sql, params
+
+
+def _cases_cte(outcome: OutcomeSpec, t: Any, params: list[QueryParam]) -> str:
+    """Each person's first diagnosis date, and with ``min_occurrences`` how many distinct dates they have."""
+    dates = ""
+    if outcome.min_occurrences > 1:
+        dates = ",\n    COUNT(DISTINCT co.condition_start_date) AS dx_dates"
+        params.append(("min_occurrences", "INT64", int(outcome.min_occurrences)))
+    return ("cases AS (\n"
+            f"  SELECT co.person_id, MIN(co.condition_start_date) AS dx_date{dates}\n"
+            f"  FROM {t('condition_occurrence')} co\n"
+            "  JOIN outcome_concepts oc ON co.condition_concept_id = oc.concept_id\n"
+            "  GROUP BY co.person_id\n"
+            ")")
+
+
+def _enough(alias: str, outcome: OutcomeSpec) -> str:
+    """`` AND <alias>.dx_dates >= @min_occurrences`` when the case rule needs more than one date."""
+    return f" AND {alias}.dx_dates >= @min_occurrences" if outcome.min_occurrences > 1 else ""
+
+
+def _concept_free_cte(i: int, covariate: CovariateSpec, t: Any, params: list[QueryParam]) -> str:
+    """``c{i}``: distinct visit dates in the lookback before the index date (``visits``), or the people in a
+    named table (``in_table``)."""
+    if covariate.kind == "in_table":
+        return f"c{i} AS (\n  SELECT DISTINCT person_id, 1 AS present FROM {t(covariate.table)}\n)"
+    where = "v.visit_start_date < ie.index_date"
+    if covariate.lookback_days is not None:
+        params.append((f"c{i}_lookback", "INT64", int(covariate.lookback_days)))
+        where += f"\n    AND v.visit_start_date >= DATE_SUB(ie.index_date, INTERVAL @c{i}_lookback DAY)"
+    return (f"c{i} AS (\n"
+            "  SELECT ie.person_id, COUNT(DISTINCT v.visit_start_date) AS visits\n"
+            "  FROM index_events ie\n"
+            f"  JOIN {t('visit_occurrence')} v ON v.person_id = ie.person_id\n"
+            f"  WHERE {where}\n"
+            "  GROUP BY ie.person_id\n"
+            ")")
 
 
 def has_panel(spec: CohortSpec) -> bool:
@@ -839,6 +1082,9 @@ def build_panel_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
         if getattr(spec.outcome, bound) is not None:
             bounds += f"\n    AND m.value_as_number {op} @{bound}"
             params.append((bound, "FLOAT64", float(getattr(spec.outcome, bound))))
+    if spec.outcome.unit_concept_ids:
+        bounds += "\n    AND m.unit_concept_id IN UNNEST(@outcome_units)"
+        params.append(("outcome_units", "ARRAY<INT64>", list(spec.outcome.unit_concept_ids)))
     ctes = [f"outcome_concepts AS (\n  {concepts}\n)",
             "first_wear AS (\n"
             f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear\n"
@@ -864,6 +1110,7 @@ def build_panel_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
         if source.filter_column is not None:
             filt += (f"\n    AND LOWER(CAST(s.{source.filter_column} AS STRING)) = LOWER(CAST(@pf{i} AS STRING))")
             params.append((f"pf{i}", _scalar_type(source.filter_value), source.filter_value))
+        filt += _bounds_rule(source, "s", f"pb{i}", params)
         ctes.append(f"v{i} AS (\n  SELECT o.person_id, o.occasion,\n    " + ",\n    ".join(aggregates) + "\n"
                     f"  FROM occasions o\n  JOIN {t(source.table)} s ON s.person_id = o.person_id\n"
                     f"    AND DATE(s.{source.date_column}) >= DATE_SUB(o.occasion, INTERVAL @period_days DAY)\n"
@@ -891,6 +1138,12 @@ def build_panel_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
     return sql, params
 
 
+def qc_path(discovery_csv: str | Path) -> Path:
+    """The extraction's quality summary next to a discovery table (``<name>.qc.json``)."""
+    p = Path(discovery_csv)
+    return p.with_name(p.stem + ".qc.json")
+
+
 def panel_path(discovery_csv: str | Path) -> Path:
     """The repeated-measures panel next to a discovery table (``<name>.panel.csv``)."""
     p = Path(discovery_csv)
@@ -901,8 +1154,8 @@ def schema_check_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]
     """SQL listing the (table, column) pairs the spec needs that exist in the CDR."""
     cdr = resolve_cdr(cdr)
     tables = sorted({s.table for s in spec.wearables} | {t for ph in spec.phenotypes for t in ph.tables()}
-                    | {_COVARIATE_TABLES[c.kind][0] for c in spec.covariates}
-                    | ({"visit_occurrence"} if is_survival(spec) or spec.negative_controls else set())
+                    | {_covariate_table(c) for c in spec.covariates}
+                    | ({"visit_occurrence"} if _needs_visits(spec) else set())
                     | ({"condition_occurrence"} if spec.negative_controls else set()))
     sql = (f"SELECT table_name, column_name FROM `{cdr}.INFORMATION_SCHEMA.COLUMNS`\n"
            "WHERE table_name IN UNNEST(@tables)")
@@ -914,29 +1167,45 @@ def missing_columns(spec: CohortSpec, present: list[tuple[str, str]]) -> list[st
     have = {(str(tbl), str(col)) for tbl, col in present}
     needed = []
     for s in spec.wearables:
-        cols = [s.date_column, "person_id", *s.columns] + ([s.filter_column] if s.filter_column else [])
+        cols = [s.date_column, "person_id", *s.columns, *([s.filter_column] if s.filter_column else []),
+                *sorted(s.value_bounds or {})]
         needed += [(s.table, c) for c in cols]
     for ph in spec.phenotypes:
         needed += [(ph.tables()[0], c) for c in ph.needed()]
     for c in spec.covariates:
+        if c.kind in _CONCEPT_FREE:
+            needed.append((_covariate_table(c), "person_id"))
+            continue
         table, concept_col, date_col = _COVARIATE_TABLES[c.kind]
         needed += [(table, col) for col in ("person_id", concept_col, date_col)]
         if c.kind == "measurement":
             needed += [(table, "value_as_number"), (table, "measurement_id")]
         if c.kind == "survey":
             needed += [(table, "value_source_concept_id"), (table, "observation_id")]
-    if is_survival(spec) or spec.negative_controls:
+    if _needs_visits(spec):
         needed += [("visit_occurrence", "person_id"), ("visit_occurrence", "visit_start_date")]
     if spec.negative_controls:
         needed += [("condition_occurrence", c) for c in ("person_id", "condition_concept_id", "condition_start_date")]
     return [f"{tbl}.{col}" for tbl, col in dict.fromkeys(needed) if (tbl, col) not in have]
 
 
+def _covariate_table(covariate: CovariateSpec) -> str:
+    if covariate.kind == "in_table":
+        return covariate.table
+    return "visit_occurrence" if covariate.kind == "visits" else _COVARIATE_TABLES[covariate.kind][0]
+
+
+def _needs_visits(spec: CohortSpec) -> bool:
+    return bool(is_survival(spec) or spec.negative_controls or spec.ehr_lookback_days
+                or any(c.kind == "visits" for c in spec.covariates))
+
+
 def resolve_sources(spec: CohortSpec, present: list[tuple[str, str]]) -> tuple[CohortSpec, list[str]]:
     """Fit the spec's optional parts to the columns this CDR has: an optional wearable source keeps the
-    value columns it finds (and is dropped without its date, person or filter column or any value
+    value columns it finds (and is dropped without its date, person, filter or bounded column or any value
     column); each phenotype role takes the first acceptable column the table has, and an optional
-    phenotype source that cannot be resolved is dropped. Returns the fitted spec and what was dropped.
+    phenotype source that cannot be resolved is dropped; a table-membership covariate whose table this CDR
+    lacks is dropped. Returns the fitted spec and what was dropped.
     Required parts are left as they are, for ``missing_columns`` to report."""
     from dataclasses import replace
 
@@ -947,7 +1216,8 @@ def resolve_sources(spec: CohortSpec, present: list[tuple[str, str]]) -> tuple[C
         if not source.optional:
             wearables.append(source)
             continue
-        keys = [source.date_column, "person_id"] + ([source.filter_column] if source.filter_column else [])
+        keys = ([source.date_column, "person_id"] + ([source.filter_column] if source.filter_column else [])
+                + sorted(source.value_bounds or {}))
         found = [c for c in source.columns if (source.table, c) in have]
         lacking = [c for c in keys if (source.table, c) not in have]
         if lacking or not found:
@@ -971,10 +1241,20 @@ def resolve_sources(spec: CohortSpec, present: list[tuple[str, str]]) -> tuple[C
     for k, ph in enumerate(phenotypes):
         if ph.steps_from and ph.steps_from not in minute_activity:
             notes.append(f"{ph.prefix}_per_step skipped: its minute-activity source {ph.steps_from} is not available")
-            phenotypes[k] = replace(ph, steps_from="")
-    fitted = replace(spec, wearables=wearables, phenotypes=phenotypes)
+            phenotypes[k] = ph = replace(ph, steps_from="")
+        if ph.sleep_from and ph.sleep_from not in {q.prefix for q in phenotypes if q.kind == "sleep_stages"}:
+            notes.append(f"{ph.prefix}_sleep_hr and _sleep_dip skipped: their sleep-stage source {ph.sleep_from} is "
+                         "not available")
+            phenotypes[k] = replace(ph, sleep_from="")
+    covariates = []
+    for c in spec.covariates:
+        if c.kind == "in_table" and (c.table, "person_id") not in have:
+            notes.append(f"covariate {c.name} skipped: no table {c.table} with person_id in this CDR")
+            continue
+        covariates.append(c)
+    fitted = replace(spec, wearables=wearables, phenotypes=phenotypes, covariates=covariates)
     fitted.positive_controls = [c for c in spec.positive_controls if c in _base_columns(fitted)
-                                or c in {cv.name for cv in spec.covariates}]
+                                or c in {cv.name for cv in covariates}]
     return fitted, notes
 
 
@@ -1115,7 +1395,7 @@ def extract_cohort(
 
     shared = (spec.design == "incident" and bool(spec.phenotypes)
               and os.getenv("CODAS_PHENOTYPE_CACHE", "1") != "0")
-    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared))
+    frame = _query(client, *build_cohort_sql(spec, cdr, phenotypes=not shared, qc=True))
     if shared:  # the minute-level tables are read once per run, not once per outcome
         frame = frame.merge(_phenotype_table(client, spec, cdr, out), on="person_id", how="left",
                             validate="many_to_one").drop(columns="person_id")
@@ -1126,6 +1406,8 @@ def extract_cohort(
         frame.loc[sealed, holdout_columns(spec)].to_csv(holdout_path(path), index=False)
         frame = frame.loc[~sealed]
     frame[output_columns(spec)].to_csv(path, index=False)
+    # Aggregate and masked, from the discovery share only.
+    qc_path(path).write_text(json.dumps(extraction_qc(frame, spec), indent=1), encoding="utf-8")
     if has_panel(spec):
         panel = _query(client, *build_panel_sql(spec, cdr))
         if spec.holdout_fraction > 0:

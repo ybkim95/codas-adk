@@ -396,13 +396,28 @@ def _within_text(fit: dict[str, Any] | None) -> str:
 
 def eda_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
     """The data dossier's per-feature description (read by the agents before registration)."""
-    feats = (_read(_out_dir(result) / f"{stem}_state.json").get("eda") or {}).get("features") or {}
+    dossier = _read(_out_dir(result) / f"{stem}_state.json").get("eda") or {}
+    feats, reliability = dossier.get("features") or {}, dossier.get("reliability") or {}
     if not feats:
         return None
     return pd.DataFrame([{"feature": f, "n": d.get("n"), "missing": d.get("missing"), "mean": d.get("mean"),
                           "SD": d.get("sd"), "skew": d.get("skew"), "beyond 4 SD": d.get("beyond_4sd"),
-                          "natural unit": d.get("natural_unit"), "near-constant": d.get("near_constant")}
+                          "natural unit": d.get("natural_unit"),
+                          "split-half reliability": (reliability.get(f) or {}).get("reliability"),
+                          "near-constant": d.get("near_constant")}
                          for f, d in feats.items()])
+
+
+def quality_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The quality rules the extraction applied and the units of a lab outcome's values (discovery share)."""
+    state = _read(_out_dir(result) / f"{stem}_state.json")
+    rows = [{"check": "quality rule", "detail": rule} for rule in state.get("quality_rules") or []]
+    units = (state.get("extraction_qc") or {}).get("units") or {}
+    for u in units.get("units") or []:
+        spread = (f"; median {u['median']} (IQR {u['p25']}-{u['p75']})" if u.get("median") is not None else "")
+        rows.append({"check": "outcome unit" + (" (mixed scales)" if units.get("mixed") else ""),
+                     "detail": f"{u.get('unit')}: {u.get('share')}{spread}"})
+    return pd.DataFrame(rows) if rows else None
 
 
 def families_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:

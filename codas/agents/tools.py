@@ -271,6 +271,11 @@ def _record_dossier(state: Any, path: Path | None) -> None:
     except Exception as exc:  # noqa: BLE001 - the dossier informs the design; it must never stop it
         state["eda_digest"] = f"The data dossier could not be computed ({type(exc).__name__})."
         return
+    qc = state.get("extraction_qc") or {}  # summarised at extraction, from the discovery share
+    if (qc.get("units") or {}).get("units"):
+        dossier["outcome_units"] = qc["units"]
+    if qc.get("reliability"):
+        dossier["reliability"] = qc["reliability"]
     text = eda.digest(dossier)
     state["eda"] = mask_small_counts(dossier) if aou_mode() else dossier
     state["eda_digest"] = mask_small_counts_in_text(text) if aou_mode() else text

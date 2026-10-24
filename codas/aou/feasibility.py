@@ -51,17 +51,23 @@ class CatalogOutcome:
     value_min: float | None = None
     value_max: float | None = None
     codes: list[str] = field(default_factory=list)
+    min_occurrences: int = 1  # condition: distinct diagnosis dates a case needs
+    unit_concept_ids: list[int] = field(default_factory=list)  # measurement: units to keep (empty: all)
 
     def outcome_spec(self) -> OutcomeSpec:
         return OutcomeSpec(kind=self.kind, concept_ids=list(self.concept_ids), name=self.name,
-                           value_min=self.value_min, value_max=self.value_max)
+                           value_min=self.value_min, value_max=self.value_max,
+                           min_occurrences=self.min_occurrences, unit_concept_ids=list(self.unit_concept_ids))
 
 
 def load_catalog(path: str | Path) -> list[CatalogOutcome]:
+    """The catalog's outcomes; ``defaults`` ({kind: {field: value}}) fill fields an entry leaves out."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    outcomes = [CatalogOutcome(**item) for item in data["outcomes"]]
+    defaults = data.get("defaults") or {}
+    outcomes = [CatalogOutcome(**{**defaults.get(item.get("kind"), {}), **item}) for item in data["outcomes"]]
     for item in outcomes:
-        OutcomeSpec(kind=item.kind, concept_ids=list(item.concept_ids), name=item.name, codes=list(item.codes)).validate()
+        OutcomeSpec(kind=item.kind, concept_ids=list(item.concept_ids), name=item.name, codes=list(item.codes),
+                    min_occurrences=item.min_occurrences, unit_concept_ids=list(item.unit_concept_ids)).validate()
     names = [o.name for o in outcomes]
     if len(names) != len(set(names)):
         raise ValueError("Outcome names in the catalog must be unique.")

@@ -151,7 +151,7 @@ def test_roles_take_the_first_column_the_table_has_and_optional_sources_are_skip
                for c in [w.date_column, "person_id", *w.columns, *([w.filter_column] if w.filter_column else [])]]
     present += [("steps_intraday", c) for c in ("person_id", "datetime", "steps")]
     fitted, notes = cohort.resolve_sources(spec, present)
-    assert [w.prefix for w in fitted.wearables] == ["act", "sleep"]             # optional HR sources dropped
+    assert [w.prefix for w in fitted.wearables] == ["act", "mainsleep"]         # optional HR sources dropped
     assert [p.prefix for p in fitted.phenotypes] == ["stepsday"]                # sleep stages not in this CDR
     assert any("heart_rate_summary" in n for n in notes) and any("sleep_level" in n for n in notes)
     wearable_tables = {"activity_summary", "sleep_daily_summary", "steps_intraday"}
@@ -165,7 +165,7 @@ def test_phenotypes_track_the_latents_that_generated_them():
     con = duckdb.connect()
     build_synthetic_cdr(con)
     spec = CohortSpec.from_json(cohort.ROOT / "scripts" / "aou" / "hba1c_fitbit.example.json")
-    spec = replace(spec, wearables=spec.wearables[:2], holdout_fraction=0.0, negative_controls=[])
+    spec = replace(spec, wearables=spec.wearables[:2], holdout_fraction=0.0, negative_controls=[], ehr_lookback_days=None)
     sql, params = build_cohort_sql(spec, SYNTHETIC_CDR)
     sql = sql.replace("SELECT\n  ie.outcome_value", "SELECT\n  ie.person_id, ie.outcome_value", 1)  # to match latents
     out = duckdb_query(con)(None, sql, params)
@@ -175,7 +175,7 @@ def test_phenotypes_track_the_latents_that_generated_them():
     assert len(out) >= 50
     assert rho(out.stepsday_acrophase_hour, latents["peak_hour"][idx]) > 0.9
     assert rho(out.stepsday_cosinor_rel_amplitude, latents["rhythm"][idx]) > 0.8
-    assert rho(out.sleepstage_onset_sd, latents["onset_sd"][idx]) > 0.8
+    assert rho(out.sleepseg_onset_sd, latents["onset_sd"][idx]) > 0.8
 
 
 def test_minute_heart_rate_phenotypes_match_a_hand_computation():
@@ -202,7 +202,8 @@ def test_minute_heart_rate_phenotypes_match_a_hand_computation():
                          prefix="hrmin", columns={"time": ["date_time", "datetime"], "value": "heart_rate_value"},
                          steps_from="stepsday")
     spec = _replace(base, design="window", lag_days=0, horizon_days=None, holdout_fraction=0.0, valid_day=None,
-                    negative_controls=[], covariates=[], wearables=base.wearables[:1], phenotypes=[steps, hr], panel=None)
+                    negative_controls=[], covariates=[], wearables=base.wearables[:1], phenotypes=[steps, hr], panel=None,
+                    ehr_lookback_days=None)
     present = _dq(con)(None, *_cohort.schema_check_sql(spec, _CDR))
     spec, _notes = _cohort.resolve_sources(spec, list(zip(present.table_name, present.column_name)))
     assert spec.phenotypes[1].table == "heart_rate_minute_level" and spec.phenotypes[1].columns["time"] == "datetime"

@@ -67,6 +67,7 @@ COVARIATE_NOTE = (
 )
 
 
+QUALITY_NOTE = " Quality rules applied before any analysis: {rules}."
 PHENOTYPE_NOTE = (
     " Intraday phenotypes, computed from minute-level data over the same window (each a published "
     "definition; see codas/aou/phenotypes.py): {columns}."
@@ -120,6 +121,9 @@ def goal_for(spec: CohortSpec, label: str | None = None) -> str:
         covariates += ADHERENCE_NOTE.format(columns=", ".join(cohort.availability_columns(spec)))
     if COVARIATE_IMPUTATIONS > 0:
         covariates += IMPUTATION_NOTE.format(m=COVARIATE_IMPUTATIONS)
+    rules = cohort.quality_rules(spec)
+    if rules:
+        covariates += QUALITY_NOTE.format(rules="; ".join(rules))
     if cohort.has_panel(spec):
         covariates += PANEL_NOTE.format(period=spec.panel["period_days"])
     return GOAL_TEMPLATE.format(label=label or spec.outcome.name, name=spec.outcome.name, kind=kind,
@@ -131,6 +135,10 @@ def _describe(covariate: Any) -> str:
     span = f"in the {covariate.lookback_days} days" if covariate.lookback_days is not None else "at any time"
     if covariate.kind == "measurement":
         return f"most recent value {span} up to the index date"
+    if covariate.kind == "visits":
+        return f"distinct EHR visit dates {span} before the index date (how much health care is used)"
+    if covariate.kind == "in_table":
+        return f"1 if listed in {covariate.table}, else 0"
     return f"1 if a {covariate.kind} record starts {span} before the index date"
 
 
@@ -240,7 +248,8 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "confounder_log", "hypotheses", "statistical_interpretation", "ml_interpretation", "critique",
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
               "confirmation", "cohort_table", "analyses", "a_priori_hypotheses", "gap_analysis", "methods_explored",
-              "constraints", "candidate_debates", "lessons", "report_review", "preflight", "eda", "signal_map")
+              "constraints", "candidate_debates", "lessons", "report_review", "preflight", "eda", "signal_map",
+              "quality_rules", "extraction_qc")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -634,6 +643,13 @@ def preflight(csv: str | Path, out_dir: str | Path, *, stem: str, target: str, s
     return {"flags": flags, "fatal": fatal, "duplicates": _duplicate_columns(numeric)}
 
 
+def _extraction_qc(csv: Path) -> dict[str, Any] | None:
+    """The extraction's quality summary (a lab outcome's units, split-half reliability; discovery share,
+    masked), when there is one."""
+    path = cohort.qc_path(csv)
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
 def outcome_identity(spec: CohortSpec) -> dict[str, Any]:
     """What the outcome is, independent of what the run is called: the holdout ledger's outcome key."""
     o = spec.outcome
@@ -695,6 +711,9 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                                   "availability_columns": cohort.availability_columns(spec),
                                   "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
                                   "prior_lessons": list(lessons or []),
+                                  # for the report; the goal states the rules without the sealed controls'
+                                  "quality_rules": cohort.quality_rules(spec, negative_controls=True),
+                                  "extraction_qc": _extraction_qc(csv),
                                   "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()
                                                      else "")})
         if checked is not None:

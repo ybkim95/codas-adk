@@ -5,7 +5,10 @@ reads, with planted associations (more steps -> lower HbA1c and less type 2 diab
 more variable sleep -> more depression) so an end-to-end run has something to find. A separate latent
 body size raises calories burned, BMI and HbA1c and lowers HDL, so calories look like a biomarker
 until BMI is adjusted for. One negative-control condition (impacted cerumen) is diagnosed at random,
-unrelated to anything else, so a confirmation step should find no association with it.
+unrelated to anything else, so a confirmation step should find no association with it. Lab values carry
+their unit; a third of the people are listed in ``wear_study`` (a sub-study enrolment table); minute heart
+rate covers 08:00-17:59 on most days, so the usual 10-hours-of-data rule keeps most days and drops some;
+most diagnoses are recorded on a second date, and most people have a routine visit in the first half-year.
 
 ``duckdb_query`` runs the extractor's BigQuery SQL against this database: it inlines the bound
 parameters and transpiles BigQuery to DuckDB with sqlglot. Install ``duckdb`` and ``sqlglot`` to use
@@ -44,7 +47,13 @@ CONCEPTS = [
     (1585858, "100 Cigs Lifetime: Yes", None, "Answer"),
     (1585859, "100 Cigs Lifetime: No", None, "Answer"),
     (903096, "PMI: Skip", None, "Answer"),
+    # Units (ids as in the OMOP vocabulary to the best of our knowledge; only the names are read here).
+    (8554, "percent", "S", "Unit"),
+    (8840, "milligram per deciliter", "S", "Unit"),
+    (9531, "kilogram per square meter", "S", "Unit"),
 ]
+# The unit each synthetic lab is recorded in.
+MEASUREMENT_UNITS = {3004410: 8554, 3007070: 8840, 3038553: 9531, 990001: 8840}
 # Vocabulary and code of the concepts a spec can name by public code instead of by id.
 CODES = {201826: ("SNOMED", "44054006"), 3004410: ("LOINC", "4548-4"), 3038553: ("LOINC", "39156-5"),
          1503297: ("RxNorm", "6809"), 21600712: ("ATC", "A10"), 1585857: ("PPI", "Smoking_100CigsLifetime"),
@@ -61,8 +70,8 @@ _ANCESTRY = [(201826, 201826), (201826, 4193704), (3004410, 3004410), (3007070, 
 
 def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: int = 0) -> None:
     """Create person, concept, concept_ancestor, measurement, condition_occurrence, drug_exposure,
-    visit_occurrence, activity_summary, sleep_daily_summary, steps_intraday, sleep_level and
-    heart_rate_summary in the DuckDB connection ``con``."""
+    visit_occurrence, observation, activity_summary, sleep_daily_summary, steps_intraday, sleep_level,
+    heart_rate_summary, heart_rate_minute_level and wear_study in the DuckDB connection ``con``."""
     rng = np.random.default_rng(seed)
     # Body size draws from its own stream, so adding it left every other synthetic value unchanged.
     body_rng = np.random.default_rng(seed + 1)
@@ -98,6 +107,16 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
     visit_rng = np.random.default_rng(seed + 2)
     visit_rows = [(pid, start + timedelta(days=int(d)))
                   for pid in people.person_id for d in visit_rng.integers(0, n_days + 400, visit_rng.integers(1, 6))]
+    # A routine visit in the first half-year for most people (own stream), always before the person's last
+    # recorded visit, so everyone's follow-up is unchanged.
+    routine_rng = np.random.default_rng(seed + 14)
+    last: dict[Any, date] = {}
+    for pid, day in visit_rows:
+        last[pid] = max(last.get(pid, day), day)
+    for pid in people.person_id:
+        span = min(180, (last[pid] - start).days)
+        if routine_rng.random() < 0.9 and span > 0:
+            visit_rows.append((pid, start + timedelta(days=int(routine_rng.integers(0, span)))))
     mid = 1
     for i, pid in enumerate(people.person_id):
         for concept, base, slope in ((3004410, 5.7, -0.35), (3007070, 52.0, 6.0)):
@@ -124,18 +143,29 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
         if control_rng.random() < 0.3:
             cond_rows.append((pid, 374375, start + timedelta(days=int(control_rng.integers(0, n_days + 400)))))
 
+    # Most diagnoses are recorded again within months (own stream; every first date is unchanged), so a
+    # two-date case rule keeps most cases and leaves out the rest.
+    repeat_rng = np.random.default_rng(seed + 13)
+    cond_rows += [(pid, concept, day + timedelta(days=int(repeat_rng.integers(14, 180))))
+                  for pid, concept, day in list(cond_rows) if repeat_rng.random() < 0.85]
+
     intraday, stages = _intraday(people.person_id.to_numpy(), act_rows, seed)
     observation = _survey(people.person_id.to_numpy(), start, n_days, seed)
     minute_hr = _minute_heart_rate(people.person_id.to_numpy(), fitness, intraday, seed)
     meas_rows += _repeated_lab(act_rows, start, n_days, mid, seed)
+    measurement = pd.DataFrame(meas_rows, columns=["measurement_id", "person_id", "measurement_concept_id",
+                                                   "measurement_date", "value_as_number"])
+    measurement["unit_concept_id"] = measurement.measurement_concept_id.map(MEASUREMENT_UNITS).astype("int64")
+    # Enrolment in a sub-study (its own stream, unrelated to anything else).
+    wear_rng = np.random.default_rng(seed + 11)
+    wear_study = pd.DataFrame({"person_id": people.person_id[wear_rng.random(n_people) < 1 / 3].to_numpy()})
 
     frames = {
         "person": people,
         "concept": _concepts(),
         "observation": observation,
         "concept_ancestor": pd.DataFrame(_ANCESTRY, columns=["ancestor_concept_id", "descendant_concept_id"]),
-        "measurement": pd.DataFrame(meas_rows, columns=["measurement_id", "person_id", "measurement_concept_id",
-                                                        "measurement_date", "value_as_number"]),
+        "measurement": measurement,
         "condition_occurrence": pd.DataFrame(cond_rows, columns=["person_id", "condition_concept_id",
                                                                  "condition_start_date"]),
         "visit_occurrence": pd.DataFrame(visit_rows, columns=["person_id", "visit_start_date"]),
@@ -150,6 +180,7 @@ def build_synthetic_cdr(con: Any, n_people: int = 600, n_days: int = 240, seed: 
         "sleep_level": stages,
         "heart_rate_summary": _zones(act_rows, seed),
         "heart_rate_minute_level": minute_hr,
+        "wear_study": wear_study,
     }
     for name, frame in frames.items():
         for column in frame.columns:
@@ -285,7 +316,9 @@ def heart_rate_latents(fitness: np.ndarray, seed: int = 0) -> dict[str, np.ndarr
 
 def _minute_heart_rate(person_ids: np.ndarray, fitness: np.ndarray, intraday: pd.DataFrame, seed: int) -> pd.DataFrame:
     """Minute heart rate on the days a person has minute steps: two consecutive night hours (01:00-02:59),
-    a reading every 10 minutes from 10:00 to 19:59, and one at every minute with steps."""
+    a reading every 10 minutes from 10:00 to 19:59, and one at every minute with steps; on about 85% of the
+    days (their own stream) also a reading at each remaining minute from 08:00 to 17:59, so those days
+    have more than 600 minutes of data and the rest about 200."""
     lat = heart_rate_latents(fitness, seed)
     rng = np.random.default_rng(seed + 10)
     who = {int(pid): k for k, pid in enumerate(person_ids[:HR_PEOPLE])}
@@ -307,6 +340,15 @@ def _minute_heart_rate(person_ids: np.ndarray, fitness: np.ndarray, intraday: pd
     frames.append(pd.DataFrame({"person_id": steps.person_id.to_numpy(), "datetime": steps.datetime.to_numpy(),
                                 "heart_rate_value": np.round(lat["rest"][ks] + 10 + lat["per_step"][ks] * steps.steps
                                                              + rng.normal(0, 3, len(steps)))}))
+    fill_rng = np.random.default_rng(seed + 12)
+    dense = days[fill_rng.random(len(days)) < 0.85]
+    worn = np.arange(480, 1080)
+    kd = dense.person_id.map(who).to_numpy()
+    frames.append(pd.DataFrame({  # appended last: where a minute already has a reading, that one is kept
+        "person_id": np.repeat(dense.person_id.to_numpy(), len(worn)),
+        "datetime": np.repeat(dense.day.to_numpy(), len(worn)) + pd.to_timedelta(np.tile(worn, len(dense)), unit="m"),
+        "heart_rate_value": np.round(np.repeat(lat["rest"][kd], len(worn)) + 8.0
+                                     + fill_rng.normal(0, 3, len(dense) * len(worn)))}))
     hr = pd.concat(frames, ignore_index=True).drop_duplicates(["person_id", "datetime"])
     return hr.sort_values(["person_id", "datetime"]).reset_index(drop=True)
 

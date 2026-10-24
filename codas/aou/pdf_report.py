@@ -313,9 +313,20 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
 
     def data_understanding() -> None:
         dossier, signal = phases.get("eda") or {}, phases.get("signal_map") or {}
-        if not dossier and not signal:
+        rules, units = phases.get("quality_rules") or [], (phases.get("extraction_qc") or {}).get("units") or {}
+        if not dossier and not signal and not rules and not units.get("units"):
             return
         doc.heading("Data understanding")
+        if rules:
+            doc.heading("Quality rules applied at extraction", 2)
+            for rule in rules:
+                doc.plain(f"- {rule}", size=8)
+        if units.get("units"):
+            doc.heading("Units of the outcome's values (discovery share)" + (": more than one scale" if units.get("mixed")
+                                                                            else ""), 2)
+            doc.table(["unit", "concept id", "share", "p25", "median", "p75"],
+                      [[u.get("unit"), u.get("unit_concept_id"), u.get("share"), u.get("p25"), u.get("median"), u.get("p75")]
+                       for u in units["units"]], widths=[60, 25, 35, 20, 20, 20])
         if dossier:
             doc.plain("Read by the agents before any hypothesis was registered; it never relates a feature to the "
                       "outcome. Counts of 1-20 and quantiles with fewer than 20 people beyond them are not shown.",
@@ -325,10 +336,13 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                        (isinstance(d.get("skew"), float) and abs(d["skew"]) > 2) or
                        (isinstance(d.get("missing"), float) and d["missing"] > 0.2)}
             doc.heading(f"Candidate features ({len(feats)}; {len(flagged)} need care)", 2)
-            doc.table(["feature", "n", "missing", "mean", "SD", "skew", "beyond 4 SD", "natural unit", "note"],
+            reliability = dossier.get("reliability") or {}
+            doc.table(["feature", "n", "missing", "mean", "SD", "skew", "beyond 4 SD", "natural unit", "split-half",
+                       "note"],
                       [[f, d.get("n"), d.get("missing"), d.get("mean"), d.get("sd"), d.get("skew"), d.get("beyond_4sd"),
-                        d.get("natural_unit"), "near-constant" if d.get("near_constant") else d.get("note", "")]
-                       for f, d in feats.items()], widths=[46, 14, 18, 18, 16, 14, 18, 18, 18])
+                        d.get("natural_unit"), (reliability.get(f) or {}).get("reliability"),
+                        "near-constant" if d.get("near_constant") else d.get("note", "")]
+                       for f, d in feats.items()], widths=[42, 13, 16, 17, 15, 13, 16, 17, 15, 16])
             if dossier.get("families"):
                 doc.heading("Feature families (members correlate at |rho| >= 0.7)", 2)
                 doc.table(["representative", "members", "|rho| range"],

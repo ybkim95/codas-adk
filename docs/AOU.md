@@ -181,6 +181,49 @@ notebook, the PDF ("Data understanding") and `<cohort>_state.json`.
 
 Set `design: "window"` and `holdout_fraction: 0` for the earlier outcome-anchored design.
 
+## Quality rules: which days, nights, cases and participants count
+
+The example spec applies the rules the published All of Us wearable studies share (e.g. Master et al.,
+Nat Med 2022; Zheng et al., Nat Med 2024). Each is a spec setting, so another dataset sets its own:
+* a valid wear day has 100-45,000 steps (`valid_day`);
+* minute heart rate counts only on days with at least 600 heart-rate minutes, 10 h of data
+  (`min_minutes_per_day` on a `minute_heart_rate` source); a day worn for an hour would otherwise give a
+  resting or night value from that hour;
+* a main-sleep night counts only with 3-16 h asleep (`value_bounds` on the daily sleep source,
+  `night_minutes` on the sleep-stage source);
+* an intraday phenotype needs at least 14 contributing days (`min_days`); with fewer it is missing, and
+  `<prefix>_days` still says how many there were;
+* heart rate during sleep comes from each person's main-sleep periods (`sleep_from`: `sleep_hr`, and
+  `sleep_dip` against the 10:00-19:59 mean); `night_hr` stays the clock-hour 00:00-05:59 mean. With a
+  minute-steps source as well (`steps_from`), `sedentary_hr` is the mean in awake minutes without steps
+  (outside every main-sleep period), a daytime resting level that sleep does not dominate;
+* a diagnosis makes a case only on two distinct dates (`min_occurrences`: the catalog's default for every
+  condition, and the example's for the negative controls). People with one date are left out rather than
+  counted as controls, and any diagnosis before follow-up still excludes the person;
+* everyone needs an EHR visit in the 365 days before the index date (`ehr_lookback_days`), so a missing
+  diagnosis means no diagnosis rather than no records;
+* `ehr_visits` (distinct visit dates in the year before the index date; `kind: "visits"`) and `wear_study`
+  (listed in the All of Us WEAR study table, i.e. given a device rather than bringing one; `kind:
+  "in_table"`) are adjustment covariates for health-care contact and device source.
+
+The extraction also writes a quality summary from the discovery share only (`<cohort>.qc.json`):
+* for a lab outcome, the units its values were recorded in: shares in whole percent, a unit with 1-20 people
+  shown only as that, quartiles only with 40 or more people. When two units each hold at least 5% of the
+  values, the dossier tells the agents the outcome is not on one scale, and `unit_concept_ids` on the
+  outcome (or on a catalog entry) keeps one unit;
+* for every daily feature, its split-half reliability: the Spearman correlation across people between its
+  value over the first and over the second half of the window, and the Spearman-Brown reliability of the
+  whole-window value, 2 rho / (1 + rho), computed with at least 40 people. A feature below 0.5 is named in
+  the dossier as unreliable: its two halves barely agree, so it describes those weeks more than the person.
+
+The rules in words (`cohort.quality_rules`) are in the agents' goal, the PDF ("Data understanding") and the
+notebook. The sources whose values these rules change got new prefixes (`mainsleep`, `sleepseg`, `hr10h`,
+replacing `sleep`, `sleepstage`, `hrmin`). `scripts/aou/feature_definitions.json` records what every prefix
+means (a hash of its settings and SQL) and the retired ones; a test fails when a definition changes under an
+existing prefix, so a name in the cumulative ledger always means one thing. The rules read the same tables
+as before; the phenotype cache is rebuilt once because its SQL changed (about 13 TB, roughly $75 at
+on-demand prices).
+
 ## Cohort specs
 
 A spec names an outcome by OMOP concept id and the wearable tables to summarise; see
@@ -194,7 +237,9 @@ A spec names an outcome by OMOP concept id and the wearable tables to summarise;
 * each wearable column becomes `<prefix>_<column>_mean` and `_sd` over the window, plus
   `<prefix>_days`; `filter_column`/`filter_value` selects rows (e.g. `is_main_sleep = true`).
 * `covariates` (optional) adds clinical context columns for confounder adjustment. Each names a
-  `kind` (`measurement`, `condition` or `drug`), OMOP `concept_ids` (descendants included by
+  `kind` (`measurement`, `condition`, `drug`, `survey`; or `visits`, the distinct visit dates in the lookback
+  before the index date, and `in_table`, 1 if the person is listed in `table`, which name no concept), OMOP
+  `concept_ids` (descendants included by
   default) and a `lookback_days` (default 365; `null` for no limit; the example spec uses `null` for
   BMI, since a 365-day lookback left most participants without a value). A measurement covariate is the
   most recent value in the lookback up to and including the index date (`value_min`/`value_max`

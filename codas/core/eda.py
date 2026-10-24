@@ -258,6 +258,18 @@ def digest(dossier: dict[str, Any], limit: int = 40) -> str:
             f"{f} (missing {d['missing']}; " + ", ".join(f"{k[4:]} {v}" for k, v in d.items()
                                                           if k.startswith("smd_") and v is not None) + ")"
             for f, d in list(miss.items())[:limit]) + ".")
+    units = dossier.get("outcome_units") or {}
+    if units.get("units"):
+        listed = ", ".join(f"{u['unit']} ({u['share']})" for u in units["units"])
+        lines.append(("The outcome is recorded in more than one unit, so its values are not all on one scale: "
+                      if units.get("mixed") else "Outcome units: ") + listed + ".")
+    reliability = {f: r["reliability"] for f, r in (dossier.get("reliability") or {}).items()
+                   if isinstance(r.get("reliability"), (int, float))}
+    weak = sorted((f for f, r in reliability.items() if r < 0.5), key=reliability.get)
+    if weak:
+        lines.append("Unreliable over the window (split-half reliability < 0.5: its first and second half barely "
+                     "agree, so the value describes those weeks more than the person): "
+                     + ", ".join(f"{f} ({reliability[f]})" for f in weak[:limit]) + ".")
     outcome = dossier.get("outcome") or {}
     overall = outcome.get("overall") or {}
     if outcome.get("kind") == "time to event":

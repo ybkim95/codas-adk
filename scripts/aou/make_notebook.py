@@ -349,8 +349,9 @@ display(views.timing_figure(result))
 display(Markdown(views.wrap_tables(Path(result["summary_path"]).read_text())))"""),
 md("""## 5. Results per outcome
 
-For each outcome: who is in the cohort (discovery and sealed shares); what the data look like (the
-dossier the agents read before registering anything: each candidate's distribution, feature families,
+For each outcome: who is in the cohort (discovery and sealed shares); the quality rules applied at
+extraction (wear-time days, sleep length, the case rule, EHR activity) and, for a lab outcome, the units
+its values were recorded in; what the data look like (the dossier the agents read before registering anything: each candidate's distribution, feature families,
 wear dependence and who is missing what; it never relates a feature to the outcome); the hypotheses the
 agents registered from the literature before any statistic existed; the signal map they saw once
 registration closed (each candidate's adjusted association and how much the covariates explain); every method and analysis run, by round
@@ -370,6 +371,7 @@ code("""for run in result["runs"]:
         display(Markdown(f"Failed: {run['failed']}. Run All again to retry it."))
         continue
     for title, table in (("Cohort characteristics", views.cohort_table(result, stem)),
+                         ("Quality rules applied at extraction, and the outcome's units", views.quality_table(result, stem)),
                          ("Data understanding: candidate features (read before any hypothesis)",
                           views.eda_table(result, stem)),
                          ("Feature families and features that track wear", views.families_table(result, stem)),

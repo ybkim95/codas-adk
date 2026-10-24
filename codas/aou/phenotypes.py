@@ -30,6 +30,8 @@ organised, which daily totals cannot show. Each has a published, disease-agnosti
   - ``wake_bouts`` and ``transitions_per_hour``: wake segments per night and stage changes per hour
     asleep (sleep fragmentation);
   - ``rem_latency``: minutes from sleep onset to the first REM segment.
+  With ``night_minutes`` ([low, high] minutes asleep) only nights in that range count, e.g. main sleep of
+  3-16 h as in the All of Us wearable studies.
 * minute heart rate (one row per minute: time, beats per minute; plausible values 30-220 only):
   - ``resting_hr``: mean over days of the mean of the day's 30 lowest minutes, a resting heart-rate proxy
     (resting heart rate and mortality/cardiovascular risk: Zhang et al., CMAJ 2016; wearable resting
@@ -41,11 +43,21 @@ organised, which daily totals cannot show. Each has a published, disease-agnosti
   - ``rel_amplitude``: 24-h cosinor amplitude of the hourly profile relative to its mean;
   - ``per_step``: heart-rate rise per step/min over minutes with steps, the slope of heart rate on minute
     steps from a minute-activity source (``steps_from``; a fitness marker, cf. heart rate per step in
-    wearable studies).
+    wearable studies);
+  - ``sleep_hr`` and ``sleep_dip``: mean heart rate within the counted main-sleep nights of a sleep-stage
+    source (``sleep_from``: from sleep onset to the end of the last segment), and 1 - sleep/day. Unlike
+    ``night_hr`` (clock hours 00:00-05:59) this follows when each person actually slept;
+  - ``sedentary_hr``: mean heart rate in awake, inactive minutes: outside every main-sleep period, with no
+    steps recorded (needs both ``steps_from`` and ``sleep_from``), a daytime resting level that sleep does
+    not dominate the way it dominates ``resting_hr``.
+  With ``min_minutes_per_day`` only days with that many heart-rate minutes count (600 = 10 h of data, the
+  usual wear-time rule): a day worn for an hour would otherwise give a "resting" value from that hour.
 
 Only the days the primary wearable counts as valid enter the minute-activity phenotypes, so a day the
 device was barely worn does not flatten the rhythm. ``<prefix>_days`` counts the days that contributed,
-a wear-adherence column like the daily sources' (adjustment-only, never a candidate).
+a wear-adherence column like the daily sources' (adjustment-only, never a candidate). With ``min_days`` a
+person with fewer contributing days (nights) keeps that count but has the source's phenotypes missing: a
+rhythm or variability estimated from a handful of days is mostly noise.
 
 Column names differ between data releases, so each role lists acceptable names; ``resolve`` picks the
 first one the table has. A source marked optional whose columns cannot all be found is skipped.
@@ -54,7 +66,7 @@ first one the table has. A source marked optional whose columns cannot all be fo
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -87,6 +99,9 @@ MINUTE_HEART_RATE = {
     "night_masd": "mean absolute difference of consecutive night minutes (bpm; a variability proxy, not HRV)",
     "rel_amplitude": "24-h cosinor amplitude of the hourly heart-rate profile relative to its mean",
     "per_step": "heart-rate rise per step/min in minutes with steps (slope of heart rate on minute steps)",
+    "sleep_hr": "mean heart rate during the main-sleep periods of the sleep segments (bpm)",
+    "sleep_dip": "heart-rate dip during sleep: 1 - main-sleep mean / day mean (10:00-19:59)",
+    "sedentary_hr": "mean heart rate in awake minutes without steps (outside main sleep, no steps recorded; bpm)",
 }
 KINDS = {
     "minute_activity": {"roles": ("time", "value"), "optional_roles": (), "phenotypes": MINUTE_ACTIVITY},
@@ -111,6 +126,14 @@ class PhenotypeSource:
     rem_levels: list[str] = field(default_factory=lambda: ["rem"])
     # minute_heart_rate: prefix of a minute_activity source to pair minutes with (for per_step).
     steps_from: str = ""
+    # minute_heart_rate: prefix of a sleep_stages source whose main-sleep periods give sleep_hr and sleep_dip.
+    sleep_from: str = ""
+    # minute_heart_rate: a day counts only with at least this many heart-rate minutes (600 = 10 h of data).
+    min_minutes_per_day: int | None = None
+    # sleep_stages: [low, high] minutes asleep for a night to count; either may be null.
+    night_minutes: list[float | None] | None = None
+    # Any kind: with fewer contributing days (nights) than this, the person's phenotypes are missing.
+    min_days: int | None = None
 
     def validate(self) -> None:
         if self.kind not in KINDS:
@@ -118,8 +141,18 @@ class PhenotypeSource:
         for value, what in [*((t, "table") for t in self.tables()), (self.prefix, "prefix")]:
             if not _IDENT.match(str(value)):
                 raise ValueError(f"Invalid phenotype {what}: {value!r}")
-        if self.steps_from and (self.kind != "minute_heart_rate" or not _IDENT.match(self.steps_from)):
-            raise ValueError(f"steps_from applies to minute_heart_rate sources and names a phenotype prefix.")
+        for link in (self.steps_from, self.sleep_from):
+            if link and (self.kind != "minute_heart_rate" or not _IDENT.match(link)):
+                raise ValueError("steps_from and sleep_from apply to minute_heart_rate sources and name a "
+                                 "phenotype prefix.")
+        if self.min_minutes_per_day is not None and (self.kind != "minute_heart_rate"
+                                                     or not whole(self.min_minutes_per_day, 1, 1440)):
+            raise ValueError("min_minutes_per_day applies to minute_heart_rate sources: whole minutes, 1-1440.")
+        if self.night_minutes is not None and (self.kind != "sleep_stages" or not bounds(self.night_minutes)):
+            raise ValueError("night_minutes applies to sleep_stages sources: [low, high] minutes asleep, "
+                             "either may be null.")
+        if self.min_days is not None and not whole(self.min_days, 1, 100_000):
+            raise ValueError("min_days must be a whole number of days, at least 1.")
         spec = KINDS[self.kind]
         for role in spec["roles"]:
             if not self.candidates(role):
@@ -135,8 +168,9 @@ class PhenotypeSource:
         return [self.table] if isinstance(self.table, str) else [str(t) for t in self.table]
 
     def phenotype_names(self) -> list[str]:
-        names = list(KINDS[self.kind]["phenotypes"])
-        return [n for n in names if n != "per_step" or self.steps_from]
+        needs = {"per_step": self.steps_from, "sleep_hr": self.sleep_from, "sleep_dip": self.sleep_from,
+                 "sedentary_hr": self.steps_from and self.sleep_from}
+        return [n for n in KINDS[self.kind]["phenotypes"] if needs.get(n, True)]
 
     def candidates(self, role: str) -> list[str]:
         names = self.columns.get(role) or []
@@ -151,6 +185,56 @@ class PhenotypeSource:
 
     def needed(self) -> list[str]:
         return ["person_id"] + [c for c in (self.column(r) for r in self.columns) if c]
+
+
+def whole(value: Any, low: int, high: int) -> bool:
+    """``value`` is an int (not a bool) in [low, high]."""
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def bounds(value: Any) -> bool:
+    """``value`` is [low, high] of numbers or nulls, with low <= high when both are given."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return False
+    if any(v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))) for v in value):
+        return False
+    return None in value or value[0] <= value[1]
+
+
+def range_text(limits: Any, unit: str = "") -> str:
+    """[low, high] in words: "180-960 min", "at least 180 min", "at most 960 min"."""
+    low, high = limits
+    unit = f" {unit}" if unit else ""
+    if low is not None and high is not None:
+        return f"{low:g}-{high:g}{unit}"
+    return f"at least {low:g}{unit}" if low is not None else f"at most {high:g}{unit}"
+
+
+def quality_rules(source: PhenotypeSource) -> list[str]:
+    """The source's quality rules in words (for the goal text and the report)."""
+    rules = []
+    if source.min_minutes_per_day:
+        rules.append(f"{source.prefix}: only days with at least {source.min_minutes_per_day} heart-rate minutes "
+                     f"({source.min_minutes_per_day / 60:g} h of data) count")
+    if source.night_minutes is not None:
+        rules.append(f"{source.prefix}: only main-sleep nights with {range_text(source.night_minutes, 'min')} "
+                     "asleep count")
+    if source.min_days:
+        rules.append(f"{source.prefix}: phenotypes need at least {source.min_days} contributing days; with fewer "
+                     "they are missing")
+    return rules
+
+
+def select_columns(alias: str, source: PhenotypeSource) -> list[str]:
+    """The source's output columns as SELECT items from its CTE ``alias``. With ``min_days`` a person with
+    fewer contributing days keeps the count but has every phenotype missing."""
+    days = f"{alias}.{source.prefix}_days"
+    items = [days]
+    for name in source.phenotype_names():
+        column = f"{source.prefix}_{name}"
+        items.append(f"IF({days} >= {int(source.min_days)}, {alias}.{column}, NULL) AS {column}"
+                     if source.min_days else f"{alias}.{column}")
+    return items
 
 
 def describe(source: PhenotypeSource) -> list[tuple[str, str]]:
@@ -174,9 +258,8 @@ def resolve(source: PhenotypeSource, present: set[tuple[str, str]]) -> tuple[Phe
             return None, f"{table}: no column for {role} (looked for {', '.join(source.candidates(role))})"
         if found is not None:
             fixed[role] = found
-    return PhenotypeSource(kind=source.kind, table=table, prefix=source.prefix, columns=fixed,
-                           optional=source.optional, wake_levels=list(source.wake_levels),
-                           rem_levels=list(source.rem_levels), steps_from=source.steps_from), None
+    # replace() carries every other setting over, so a new field can never be dropped here.
+    return replace(source, table=table, columns=fixed), None
 
 
 def _window(alias: str, column: str) -> str:
@@ -287,6 +370,12 @@ def sleep_stage_ctes(j: int, source: PhenotypeSource, table: str) -> tuple[list[
     params = [(f"{z}_wake", "ARRAY<STRING>", [s.lower() for s in source.wake_levels]),
               (f"{z}_rem", "ARRAY<STRING>", [s.lower() for s in source.rem_levels])]
     only_main = f"\n  WHERE LOWER(CAST(s.{main} AS STRING)) = 'true'" if main else ""
+    having = []
+    for bound, op, value in zip(("low", "high"), (">=", "<="), source.night_minutes or (None, None)):
+        if value is not None:  # a night counts only with its minutes asleep in range
+            having.append(f"SUM(IF(lvl IN UNNEST(@{z}_wake), 0, dur)) {op} @{z}_night_{bound}")
+            params.append((f"{z}_night_{bound}", "FLOAT64", float(value)))
+    night_rule = ("\n  HAVING " + " AND ".join(having)) if having else ""
     onset = _clock_after_noon("onset")
     midpoint = _clock_after_noon("DATETIME_ADD(onset, INTERVAL DIV(DATETIME_DIFF(wake_time, onset, SECOND), 2) SECOND)")
     # Free nights end on Saturday or Sunday; 1900-01-07 was a Sunday (a dialect-neutral weekday).
@@ -299,13 +388,19 @@ def sleep_stage_ctes(j: int, source: PhenotypeSource, table: str) -> tuple[list[
         f"  JOIN index_events ie ON ie.person_id = s.person_id\n"
         f"    AND {_window('s', date)}{only_main}\n"
         ")",
+        # Every main-sleep period, counted or not (heart rate needs to know when people were in bed).
+        f"{z}_period AS (\n"
+        "  SELECT person_id, d, MIN(st) AS onset,\n"
+        "    MAX(DATETIME_ADD(st, INTERVAL CAST(ROUND(dur * 60) AS INT64) SECOND)) AS wake_time\n"
+        f"  FROM {z}_seg GROUP BY person_id, d\n"
+        ")",
         f"{z}_night AS (\n"
         "  SELECT person_id, d, MIN(st) AS onset,\n"
         "    MAX(DATETIME_ADD(st, INTERVAL CAST(ROUND(dur * 60) AS INT64) SECOND)) AS wake_time,\n"
         f"    COUNT(*) AS segments, SUM(IF(lvl IN UNNEST(@{z}_wake), 1, 0)) AS wake_bouts,\n"
         f"    SUM(IF(lvl IN UNNEST(@{z}_wake), 0, dur)) AS asleep_min,\n"
         f"    MIN(IF(lvl IN UNNEST(@{z}_rem), st, NULL)) AS first_rem\n"
-        f"  FROM {z}_seg GROUP BY person_id, d\n"
+        f"  FROM {z}_seg GROUP BY person_id, d{night_rule}\n"
         ")",
         f"{z}_clock AS (\n"
         f"  SELECT person_id, d, segments, wake_bouts, asleep_min, {onset} AS onset_h, {midpoint} AS mid_h,\n"
@@ -326,13 +421,18 @@ def sleep_stage_ctes(j: int, source: PhenotypeSource, table: str) -> tuple[list[
     return ctes, params
 
 
-def minute_heart_rate_ctes(i: int, source: PhenotypeSource, table: str, steps_cte: str | None = None) -> list[str]:
+def minute_heart_rate_ctes(i: int, source: PhenotypeSource, table: str, steps_cte: str | None = None,
+                           sleep: str | None = None) -> list[str]:
     """CTEs ending in ``h{i}`` (person_id plus the source's output columns). Needs ``valid_days``; with
-    ``steps_cte`` (a minute-activity source's ``q<k>_min``: person_id, d, minute_of_day, v) adds per_step."""
+    ``steps_cte`` (a minute-activity source's ``q<k>_min``: person_id, d, minute_of_day, v) adds per_step;
+    with ``sleep`` (a sleep-stage source's alias ``z<k>``: its ``_period`` CTE holds every main-sleep period,
+    its ``_night`` CTE the counted nights) sleep_hr and sleep_dip; with both, sedentary_hr. With
+    ``min_minutes_per_day`` only days with that many heart-rate minutes count."""
     h, time, value, p = f"h{i}", source.column("time"), source.column("value"), source.prefix
     two_pi = "(2 * ACOS(-1))"
+    minutes = f"{h}_raw" if source.min_minutes_per_day else f"{h}_min"
     ctes = [
-        f"{h}_min AS (\n"
+        f"{minutes} AS (\n"
         f"  SELECT s.person_id, DATE(s.{time}) AS d, EXTRACT(HOUR FROM s.{time}) AS h,\n"
         f"    EXTRACT(HOUR FROM s.{time}) * 60 + EXTRACT(MINUTE FROM s.{time}) AS minute_of_day,\n"
         f"    CAST(s.{value} AS FLOAT64) AS hr\n"
@@ -340,6 +440,18 @@ def minute_heart_rate_ctes(i: int, source: PhenotypeSource, table: str, steps_ct
         f"  JOIN valid_days vd ON vd.person_id = s.person_id AND vd.d = DATE(s.{time})\n"
         f"  WHERE s.{value} BETWEEN 30 AND 220\n"
         ")",
+    ]
+    if source.min_minutes_per_day:
+        ctes += [
+            f"{h}_worn AS (\n"
+            f"  SELECT person_id, d FROM {minutes} GROUP BY person_id, d\n"
+            f"  HAVING COUNT(DISTINCT minute_of_day) >= {int(source.min_minutes_per_day)}\n"
+            ")",
+            f"{h}_min AS (\n"
+            f"  SELECT r.* FROM {minutes} r JOIN {h}_worn w ON w.person_id = r.person_id AND w.d = r.d\n"
+            ")",
+        ]
+    ctes += [
         f"{h}_low AS (\n"
         "  SELECT person_id, d, AVG(hr) AS low30 FROM (\n"
         "    SELECT person_id, d, hr, ROW_NUMBER() OVER (PARTITION BY person_id, d ORDER BY hr) AS rn\n"
@@ -377,15 +489,53 @@ def minute_heart_rate_ctes(i: int, source: PhenotypeSource, table: str, steps_ct
             ")")
         step_col = f",\n    st.per_step AS {p}_per_step"
         step_join = f"\n  LEFT JOIN {h}_step st ON st.person_id = pt.person_id"
+    sleep_col, sleep_join = "", ""
+    if sleep and source.sleep_from:
+        # Each main-sleep period [onset, wake time) meets the minutes of every date it touches (usually two);
+        # a period whose night is not counted (too short or too long) still marks its minutes as in bed.
+        stamp = "DATETIME_ADD(DATETIME(m.d), INTERVAL CAST(m.minute_of_day AS INT64) MINUTE)"
+        period = (f"  FROM {sleep}_period p LEFT JOIN {sleep}_night n ON n.person_id = p.person_id AND n.d = p.d\n")
+        ctes += [
+            f"{h}_win AS (\n"
+            "  SELECT p.person_id, DATE(p.onset) AS d, p.onset, p.wake_time, n.person_id IS NOT NULL AS counted\n"
+            + period +
+            "  UNION ALL\n"
+            "  SELECT p.person_id, DATE(p.wake_time) AS d, p.onset, p.wake_time, n.person_id IS NOT NULL AS counted\n"
+            + period +
+            "  WHERE DATE(p.wake_time) > DATE(p.onset)\n"
+            ")",
+            f"{h}_inbed AS (\n"
+            "  SELECT m.person_id, m.d, m.minute_of_day, m.hr, w.counted\n"
+            f"  FROM {h}_min m JOIN {h}_win w ON w.person_id = m.person_id AND w.d = m.d\n"
+            f"  WHERE {stamp} >= w.onset AND {stamp} < w.wake_time\n"
+            ")",
+            f"{h}_sleep AS (\n  SELECT person_id, AVG(hr) AS sleep_hr FROM {h}_inbed WHERE counted GROUP BY person_id\n)",
+        ]
+        sleep_col = f",\n    sl.sleep_hr AS {p}_sleep_hr, 1 - SAFE_DIVIDE(sl.sleep_hr, pt.dayhr) AS {p}_sleep_dip"
+        sleep_join = f"\n  LEFT JOIN {h}_sleep sl ON sl.person_id = pt.person_id"
+        if steps_cte and source.steps_from:  # awake (outside every main-sleep period) and no steps that minute
+            ctes.append(
+                f"{h}_sed AS (\n"
+                "  SELECT m.person_id, AVG(m.hr) AS sedentary_hr\n"
+                f"  FROM {h}_min m\n"
+                f"  LEFT JOIN (SELECT DISTINCT person_id, d, minute_of_day FROM {steps_cte} WHERE v > 0) s\n"
+                "    ON s.person_id = m.person_id AND s.d = m.d AND s.minute_of_day = m.minute_of_day\n"
+                f"  LEFT JOIN (SELECT DISTINCT person_id, d, minute_of_day FROM {h}_inbed) b\n"
+                "    ON b.person_id = m.person_id AND b.d = m.d AND b.minute_of_day = m.minute_of_day\n"
+                "  WHERE s.person_id IS NULL AND b.person_id IS NULL\n"
+                "  GROUP BY m.person_id\n"
+                ")")
+            sleep_col += f",\n    sd.sedentary_hr AS {p}_sedentary_hr"
+            sleep_join += f"\n  LEFT JOIN {h}_sed sd ON sd.person_id = pt.person_id"
     ctes.append(
         f"{h} AS (\n"
         f"  SELECT pt.person_id, pt.ndays AS {p}_days, lw.resting AS {p}_resting_hr,\n"
         f"    pt.night AS {p}_night_hr, pt.dayhr AS {p}_day_hr, 1 - SAFE_DIVIDE(pt.night, pt.dayhr) AS {p}_night_dip,\n"
         f"    md.masd AS {p}_night_masd,\n"
-        f"    SAFE_DIVIDE(SQRT(c.a * c.a + c.b * c.b), c.mesor) AS {p}_rel_amplitude{step_col}\n"
+        f"    SAFE_DIVIDE(SQRT(c.a * c.a + c.b * c.b), c.mesor) AS {p}_rel_amplitude{step_col}{sleep_col}\n"
         f"  FROM {h}_part pt\n"
         f"  JOIN (SELECT person_id, AVG(low30) AS resting FROM {h}_low GROUP BY person_id) lw ON lw.person_id = pt.person_id\n"
         f"  LEFT JOIN {h}_masd md ON md.person_id = pt.person_id\n"
-        f"  LEFT JOIN {h}_cos c ON c.person_id = pt.person_id{step_join}\n"
+        f"  LEFT JOIN {h}_cos c ON c.person_id = pt.person_id{step_join}{sleep_join}\n"
         ")")
     return ctes

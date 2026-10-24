@@ -1,6 +1,6 @@
 {
   "name": "hba1c_fitbit",
-  "notes": "Example spec. Prospective (incident) design: everyone is indexed 180 days after their first valid wear day (100-45,000 steps), features summarise that baseline, outcomes are counted from 90 days after the index (earlier diagnoses exclude the person; lab outcomes use the first value within 730 days), and half the participants are sealed for one-shot replication of the pre-registered candidates. Set design to window for the earlier outcome-anchored design. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically. Negative controls are conditions the wearable measures should not cause (from the OHDSI negative-control outcome lists); they are extracted into the sealed table only and every pre-registered candidate is tested against them, so an association flags confounding or differences in health-care contact. Positive controls are columns with a known association with the outcome, tested the same way to show the holdout can detect a real effect. Covariates named by public code (LOINC, ATC) and survey questions named by text are resolved against this CDR's vocabulary before a run; any that cannot be resolved unambiguously is skipped with the reason.",
+  "notes": "Example spec. Prospective (incident) design: everyone is indexed 180 days after their first valid wear day (100-45,000 steps), features summarise that baseline, outcomes are counted from 90 days after the index (earlier diagnoses exclude the person; lab outcomes use the first value within 730 days), and half the participants are sealed for one-shot replication of the pre-registered candidates. Set design to window for the earlier outcome-anchored design. Column names follow the All of Us Fitbit tables as documented for earlier CDRs; the extractor checks them against INFORMATION_SCHEMA before running, so edit them if your CDR differs. Covariates are extracted for confounder adjustment only (never screened as biomarkers); the agents decide whether to adjust for each, and one that is the outcome itself is left out automatically. Negative controls are conditions the wearable measures should not cause (from the OHDSI negative-control outcome lists); they are extracted into the sealed table only and every pre-registered candidate is tested against them, so an association flags confounding or differences in health-care contact. Positive controls are columns with a known association with the outcome, tested the same way to show the holdout can detect a real effect. Covariates named by public code (LOINC, ATC) and survey questions named by text are resolved against this CDR's vocabulary before a run; any that cannot be resolved unambiguously is skipped with the reason. Quality rules follow the published All of Us wearable studies: a valid day has 100-45,000 steps; minute heart rate counts only on days with at least 600 heart-rate minutes (10 h of data); main-sleep nights count only with 3-16 h asleep; an intraday phenotype needs at least 14 contributing days; a diagnosis counts as a case only on two distinct dates (one date leaves the person out); everyone needs an EHR visit in the year before the index date. Sources whose values these rules change carry new prefixes (mainsleep, sleepseg, hr10h), so a column name never means two things across runs. ehr_visits (visits in the year before the index date) and wear_study (enrolled in the All of Us WEAR study, i.e. given a device rather than bringing one) are adjustment covariates for health-care contact and device source.",
   "outcome": {
     "kind": "measurement",
     "name": "hba1c",
@@ -21,6 +21,7 @@
     "min": 100,
     "max": 45000
   },
+  "ehr_lookback_days": 365,
   "holdout_fraction": 0.5,
   "include_demographics": true,
   "covariates": [
@@ -151,6 +152,16 @@
       "positive_answers": "75k 100k|100k 150k|150k 200k|more 200k",
       "lookback_days": null,
       "any_time": true
+    },
+    {
+      "name": "ehr_visits",
+      "kind": "visits",
+      "lookback_days": 365
+    },
+    {
+      "name": "wear_study",
+      "kind": "in_table",
+      "table": "wear_study"
     }
   ],
   "negative_controls": [
@@ -159,21 +170,24 @@
       "concept_ids": [
         374375
       ],
-      "expect_name": "cerumen"
+      "expect_name": "cerumen",
+      "min_occurrences": 2
     },
     {
       "name": "regular_astigmatism",
       "concept_ids": [
         380706
       ],
-      "expect_name": "astigmatism"
+      "expect_name": "astigmatism",
+      "min_occurrences": 2
     },
     {
       "name": "verruca_vulgaris",
       "concept_ids": [
         140641
       ],
-      "expect_name": "verruca"
+      "expect_name": "verruca",
+      "min_occurrences": 2
     }
   ],
   "positive_controls": [
@@ -197,7 +211,7 @@
     {
       "table": "sleep_daily_summary",
       "date_column": "sleep_date",
-      "prefix": "sleep",
+      "prefix": "mainsleep",
       "columns": [
         "minute_asleep",
         "minute_in_bed",
@@ -207,7 +221,13 @@
         "minute_awake"
       ],
       "filter_column": "is_main_sleep",
-      "filter_value": true
+      "filter_value": true,
+      "value_bounds": {
+        "minute_asleep": [
+          180,
+          960
+        ]
+      }
     },
     {
       "table": "heart_rate_summary",
@@ -247,12 +267,13 @@
           "steps",
           "step_count"
         ]
-      }
+      },
+      "min_days": 14
     },
     {
       "kind": "sleep_stages",
       "table": "sleep_level",
-      "prefix": "sleepstage",
+      "prefix": "sleepseg",
       "columns": {
         "date": [
           "sleep_date"
@@ -281,7 +302,12 @@
       ],
       "rem_levels": [
         "rem"
-      ]
+      ],
+      "night_minutes": [
+        180,
+        960
+      ],
+      "min_days": 14
     },
     {
       "kind": "minute_heart_rate",
@@ -291,7 +317,7 @@
         "heart_rate_intra_day",
         "heart_rate_minute"
       ],
-      "prefix": "hrmin",
+      "prefix": "hr10h",
       "columns": {
         "time": [
           "datetime",
@@ -305,7 +331,10 @@
           "heart_rate"
         ]
       },
-      "steps_from": "stepsday"
+      "steps_from": "stepsday",
+      "min_minutes_per_day": 600,
+      "sleep_from": "sleepseg",
+      "min_days": 14
     }
   ],
   "panel": {

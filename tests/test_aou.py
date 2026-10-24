@@ -1,5 +1,6 @@
 """All of Us integration: the privacy guard, the backend check, and the cohort extractor (offline)."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -147,7 +148,8 @@ def test_example_spec_loads():
     assert spec.phenotypes[2].steps_from == spec.phenotypes[0].prefix
     full = CohortSpec.from_json(SPEC).covariates
     assert {"measurement", "drug", "survey"} <= {c.kind for c in full}
-    assert all(c.concept_ids or c.codes or c.question_name for c in full)  # resolved against the CDR before a run
+    # resolved against the CDR before a run; visit counts and table membership name no concept
+    assert all(c.concept_ids or c.codes or c.question_name or c.kind in ("visits", "in_table") for c in full)
 
 
 def test_measurement_sql_binds_values_and_omits_identifiers():
@@ -217,7 +219,8 @@ def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
         [(s.table, c) for s in spec.wearables
          for c in ["person_id", s.date_column, *s.columns, *([s.filter_column] if s.filter_column else [])]]
         + [("measurement", c) for c in ("person_id", "measurement_concept_id", "measurement_date",
-                                        "value_as_number", "measurement_id")],
+                                        "value_as_number", "measurement_id")]
+        + [("visit_occurrence", c) for c in ("person_id", "visit_start_date")],
         columns=["table_name", "column_name"])
     calls = []
 
@@ -236,9 +239,12 @@ def test_extract_writes_table_under_codas_runs(monkeypatch, tmp_path):
         assert not fitted.phenotypes                       # intraday tables absent from this schema: skipped
         assert list(written.columns) == output_columns(fitted) and len(calls) == 3  # schema, cohort, panel
         assert list(pd.read_csv(cohort.panel_path(path)).columns) == cohort.panel_columns(spec)
+        assert json.loads(cohort.qc_path(path).read_text()) == {"units": {"units": [], "mixed": False},
+                                                                  "reliability": {}}  # the fake table has no inputs
     finally:
         path.unlink()
         cohort.panel_path(path).unlink(missing_ok=True)
+        cohort.qc_path(path).unlink(missing_ok=True)
         out_dir.rmdir()
     with pytest.raises(ValueError):
         cohort.extract_cohort(spec, CDR, tmp_path, client=object())

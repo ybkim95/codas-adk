@@ -1,0 +1,38 @@
+{
+  "notes": "What each column prefix of the example spec means, as a hash of its settings and SQL (tests/test_feature_definitions.py). A changed definition takes a new prefix; a retired prefix is never used again, so a name read in the cumulative holdout ledger always means one thing.",
+  "sources": {
+    "act": {
+      "definition": "bb04924c48c8fcbd",
+      "note": "activity_summary: daily means and SDs over the valid wear days (100-45,000 steps) of the window"
+    },
+    "mainsleep": {
+      "definition": "0e7c7f6de363f06b",
+      "note": "sleep_daily_summary, main sleep with 3-16 h asleep (replaces 'sleep', which had no bounds)"
+    },
+    "hrfatburn": {
+      "definition": "79350720eedaad05",
+      "note": "heart_rate_summary, Fat Burn zone minutes per day"
+    },
+    "hrcardio": {
+      "definition": "221a54e9a9e2ad0c",
+      "note": "heart_rate_summary, Cardio zone minutes per day"
+    },
+    "stepsday": {
+      "definition": "6a2a24cdbee3725c",
+      "note": "steps_intraday minute phenotypes on valid wear days; at least 14 contributing days (a coverage rule added in Phase 35: values are unchanged wherever present)"
+    },
+    "sleepseg": {
+      "definition": "c2293af2eb8cbcaf",
+      "note": "sleep_level main-sleep segments, nights with 3-16 h asleep, at least 14 nights (replaces 'sleepstage')"
+    },
+    "hr10h": {
+      "definition": "0b7c5661a89000ac",
+      "note": "minute heart rate on valid wear days with at least 600 heart-rate minutes, at least 14 such days; heart rate in main sleep and awake inactive heart rate from sleepseg and stepsday (replaces 'hrmin')"
+    }
+  },
+  "retired": {
+    "sleep": "main sleep without the 3-16 h bounds (until Phase 35)",
+    "sleepstage": "sleep segments without night-length bounds or a minimum of nights (until Phase 35)",
+    "hrmin": "minute heart rate on every valid wear day, however few minutes it had (until Phase 35)"
+  }
+}

@@ -1,5 +1,10 @@
 {
-  "notes": "Candidate outcomes for free exploration on the All of Us Registered Tier. Concept ids are standard OMOP ids as best known; verify_catalog() checks each against the CDR concept table (exists, domain, name contains expect_name) and skips any that fail, so a wrong id is reported rather than analysed. Newer entries name their concept by public code (SNOMED, LOINC); resolve_codes() looks the code up in the CDR vocabulary, and the same concept check then applies.",
+  "notes": "Candidate outcomes for free exploration on the All of Us Registered Tier. Concept ids are standard OMOP ids as best known; verify_catalog() checks each against the CDR concept table (exists, domain, name contains expect_name) and skips any that fail, so a wrong id is reported rather than analysed. Newer entries name their concept by public code (SNOMED, LOINC); resolve_codes() looks the code up in the CDR vocabulary, and the same concept check then applies. Defaults apply to every entry of a kind unless the entry sets the field: a condition case needs diagnoses on two distinct dates (min_occurrences), the usual guard against rule-out codes.",
+  "defaults": {
+    "condition": {
+      "min_occurrences": 2
+    }
+  },
   "outcomes": [
     {
       "name": "hba1c",
