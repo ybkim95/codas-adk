@@ -19,7 +19,8 @@ The Orchestrator coordinates state transitions across six phases, with all agent
     │    └─ gapcheck_agent ......... check_convergence -> escalate ends the loop
     └─ Phase D/E/F  reporting  (SequentialAgent)
          ├─ candidate_debate ....... per-candidate critic -> defender, recorded keep / caveat / concede
-         ├─ mechanism_agent / novelty_agent ... literature-grounded deep research (search_literature)
+         ├─ mechanism_agent / novelty_agent ... literature-grounded deep research (search_papers for citable
+         │                                       papers by key, search_literature for web context)
          ├─ strategy_agent / artifact_agent
          ├─ report_agent -> report_reviewer -> report_reviser (numeric audit on the final text)
          └─ lessons_agent .......... lessons about the cohort's features for later outcomes
@@ -84,6 +85,7 @@ from codas.agents.tools import (
     record_lessons,
     run_method,
     search_literature,
+    search_papers,
     set_target,
 )
 from codas.agents.runners import CandidateDebate, MethodRunner
@@ -294,7 +296,7 @@ hypotheses_agent = _agent(
     prompts.HYPOTHESES,
     tier="reasoning",
     thinking="HIGH",  # designing falsifiable hypotheses is the step that most rewards deliberation
-    tools=[search_literature, data_detail, declare_confounders, exclude_features, propose_feature,
+    tools=[search_literature, search_papers, data_detail, declare_confounders, exclude_features, propose_feature,
            register_hypotheses],
     output_key="hypotheses",
 )
@@ -404,7 +406,7 @@ mechanism_agent = _agent(
     "Links surviving candidates to literature-grounded mechanisms and interpretation boundaries.",
     prompts.MECHANISM,
     tier="reasoning",
-    tools=[search_literature],
+    tools=[search_literature, search_papers],
     output_key="mechanisms",
 )
 novelty_agent = _agent(
@@ -412,7 +414,7 @@ novelty_agent = _agent(
     "Classifies candidates as established, supported, emerging, or unverified against the literature.",
     prompts.NOVELTY,
     tier="reasoning",
-    tools=[search_literature],
+    tools=[search_literature, search_papers],
     output_key="novelty",
 )
 strategy_agent = _agent(

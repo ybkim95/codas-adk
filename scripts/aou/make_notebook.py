@@ -310,6 +310,23 @@ code("""from codas.core import gemini, literature
 
 display(views.fit(views.pd.DataFrame(literature.probe(grounding=gemini.generate_grounded_reply))))
 print("literature traffic so far:", literature.EGRESS)"""),
+md("""### The research basis, checked
+
+`docs/research/` holds the papers CoDaS's design rests on (wearable-biomarker studies, biomarker methods),
+compiled from abstracts. This looks every DOI in them up in Crossref from here (answers are cached, so a
+second Run All asks nothing) and shows which are registered and how well each entry matches its record."""),
+code("""import json, os
+
+papers = literature.references_in("\\n".join(p.read_text() for p in sorted((REPO / "docs" / "research").glob("*.md"))))
+checked = literature.verify_references(papers, cache=literature.Cache(REPO / ".codas_runs" / "aou" / "literature_cache.jsonl"))
+reports = Path(os.getenv("CODAS_REPORTS_DIR") or REPO / "codas_reports") / "aou"
+reports.mkdir(parents=True, exist_ok=True)
+(reports / "references.json").write_text(json.dumps(checked, indent=1))
+display(views.fit(views.references_summary(checked)))
+doubtful = views.references_doubtful(checked)
+if doubtful is not None:
+    display(Markdown("**Not found, or the entry matches little of the registered title**"))
+    display(views.fit(doubtful))"""),
 md("## 3. Feasibility screen (counts only; 1-20 masked)"),
 code("""screen = runner.explore(CATALOG, BASE, CDR, client=client, top_k=TOP_K, outcome_names=OUTCOMES or None,
                         max_outcomes=MAX_OUTCOMES or None, screen_only=True, log=lambda *_: None)
@@ -352,7 +369,9 @@ md("""## 5. Results per outcome
 For each outcome: who is in the cohort (discovery and sealed shares); the quality rules applied at
 extraction (wear-time days, sleep length, the case rule, EHR activity) and, for a lab outcome, the units
 its values were recorded in; what the data look like (the dossier the agents read before registering anything: each candidate's distribution, feature families,
-wear dependence and who is missing what; it never relates a feature to the outcome); the hypotheses the
+wear dependence and who is missing what; it never relates a feature to the outcome); how much has been
+published on each measured construct with the outcome (counted in Europe PMC before the agents started; this
+count, not the agents' opinion, decides whether a hypothesis is established); the hypotheses the
 agents registered from the literature before any statistic existed; the signal map they saw once
 registration closed (each candidate's adjusted association and how much the covariates explain); every method and analysis run, by round
 (the statistical and ML method pools chosen by the gap finder, and the agents' own analyses: survival
@@ -375,6 +394,8 @@ code("""for run in result["runs"]:
                          ("Data understanding: candidate features (read before any hypothesis)",
                           views.eda_table(result, stem)),
                          ("Feature families and features that track wear", views.families_table(result, stem)),
+                         ("Literature evidence, counted before the agents started (the class comes from counts)",
+                          views.literature_evidence_table(result, stem)),
                          ("Hypotheses registered from the literature before any statistic",
                           views.hypotheses_table(result, stem)),
                          ("Signal map: adjusted associations once registration closed", views.signal_table(result, stem)),

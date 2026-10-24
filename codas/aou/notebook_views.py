@@ -449,8 +449,25 @@ def hypotheses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
     if not registered:
         return None
     return pd.DataFrame([{"feature": h.get("feature"), "predicted": "positive" if h.get("direction", 0) > 0 else "negative",
-                          "knownness": h.get("knownness"), "construct": h.get("construct"),
-                          "mechanism": h.get("mechanism"), "citation": h.get("citation")} for h in registered])
+                          "knownness (evidence)": h.get("knownness"), "declared": h.get("declared_knownness"),
+                          "construct": h.get("construct"), "mechanism": h.get("mechanism"),
+                          "citation": h.get("citation")} for h in registered])
+
+
+def literature_evidence_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """How established each measured construct is for the outcome, counted in the literature before the agents
+    started, with the most cited papers' keys."""
+    state = _read(_out_dir(result) / f"{stem}_state.json")
+    matrix = state.get("literature_evidence") or {}
+    if not matrix:
+        return None
+    columns_of: dict[str, list[str]] = {}
+    for column, construct in (state.get("construct_of") or {}).items():
+        columns_of.setdefault(construct, []).append(column)
+    return pd.DataFrame([{"construct": c, "columns": ", ".join(columns_of.get(c, [])), "class": e.get("novelty"),
+                          "papers": e.get("papers"), "reviews": e.get("reviews"), "earliest": e.get("earliest_year"),
+                          "most cited": "; ".join(f"{p['key']} ({p.get('year')})" for p in (e.get("top_cited") or [])[:2]),
+                          "note": e.get("error") or ""} for c, e in matrix.items()])
 
 
 def analyses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
@@ -637,3 +654,19 @@ def heartbeat_figure(log_path: str | Path):
                  color=INK)
     _style(ax)
     return Chart(fig)
+
+
+def references_summary(checked: list[dict[str, Any]]) -> pd.DataFrame:
+    """How many DOIs of the research basis Crossref knows, and how many it was not asked about."""
+    counts = pd.Series([r["status"] for r in checked], dtype=object).value_counts()
+    return pd.DataFrame({"DOIs": counts}).rename_axis("status").reset_index()
+
+
+def references_doubtful(checked: list[dict[str, Any]], below: float = 0.5) -> pd.DataFrame | None:
+    """DOIs Crossref does not know, and found ones whose registered title the entry barely contains."""
+    rows = [r for r in checked if r["status"] == "not found"
+            or (r["status"] == "found" and (r.get("title_in_citation") or 0) < below)]
+    if not rows:
+        return None
+    return pd.DataFrame([{"doi": r["doi"], "status": r["status"], "registered title": r.get("title"),
+                          "share of it in the entry": r.get("title_in_citation"), "entry": r["cited_as"]} for r in rows])

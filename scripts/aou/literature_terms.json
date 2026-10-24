@@ -1,0 +1,392 @@
+{
+  "version": 2,
+  "notes": "The search terms of the literature evidence: each wearable construct with its usual names in the literature and what measures it (an intraday phenotype by its source kind and name, any column by a shell-style pattern of names; the first construct that names a column wins), and each catalog outcome's names. Fixed here, versioned and reviewed, so a novelty count can never be made smaller by choosing an obscure phrasing. A construct no column measures is not searched; an outcome missing here is searched by its catalog label.",
+  "constructs": {
+    "heart rate during sleep": {
+      "synonyms": [
+        "nocturnal heart rate",
+        "nighttime heart rate",
+        "sleeping heart rate",
+        "heart rate dipping"
+      ],
+      "phenotypes": {
+        "minute_heart_rate": [
+          "night_hr",
+          "night_dip",
+          "sleep_hr",
+          "sleep_dip"
+        ]
+      }
+    },
+    "resting heart rate": {
+      "synonyms": [
+        "resting heart rate"
+      ],
+      "phenotypes": {
+        "minute_heart_rate": [
+          "resting_hr",
+          "sedentary_hr"
+        ]
+      }
+    },
+    "daytime heart rate": {
+      "synonyms": [
+        "daytime heart rate",
+        "ambulatory heart rate"
+      ],
+      "phenotypes": {
+        "minute_heart_rate": [
+          "day_hr"
+        ]
+      }
+    },
+    "heart rate variability": {
+      "synonyms": [
+        "heart rate variability"
+      ],
+      "phenotypes": {
+        "minute_heart_rate": [
+          "night_masd"
+        ]
+      }
+    },
+    "circadian heart rate rhythm": {
+      "synonyms": [
+        "circadian heart rate",
+        "diurnal variation in heart rate",
+        "heart rate rhythm"
+      ],
+      "phenotypes": {
+        "minute_heart_rate": [
+          "rel_amplitude"
+        ]
+      }
+    },
+    "heart rate response to activity": {
+      "synonyms": [
+        "heart rate per step",
+        "heart rate response to physical activity",
+        "chronotropic response",
+        "cardiorespiratory fitness"
+      ],
+      "phenotypes": {
+        "minute_heart_rate": [
+          "per_step"
+        ]
+      }
+    },
+    "rest-activity rhythm": {
+      "synonyms": [
+        "rest-activity rhythm",
+        "circadian rhythm",
+        "interdaily stability",
+        "intradaily variability",
+        "relative amplitude"
+      ],
+      "phenotypes": {
+        "minute_activity": [
+          "rel_amplitude",
+          "interdaily_stability",
+          "intradaily_variability",
+          "cosinor_rel_amplitude",
+          "acrophase_hour",
+          "l5_onset_hour"
+        ]
+      }
+    },
+    "peak cadence": {
+      "synonyms": [
+        "peak cadence",
+        "stepping cadence",
+        "walking intensity"
+      ],
+      "phenotypes": {
+        "minute_activity": [
+          "peak1_mean",
+          "peak30_mean"
+        ]
+      }
+    },
+    "activity fragmentation": {
+      "synonyms": [
+        "activity fragmentation",
+        "physical activity accumulation",
+        "activity bouts"
+      ],
+      "phenotypes": {
+        "minute_activity": [
+          "fragmentation"
+        ]
+      }
+    },
+    "sleep regularity": {
+      "synonyms": [
+        "sleep regularity",
+        "sleep irregularity",
+        "sleep timing variability",
+        "social jetlag"
+      ],
+      "phenotypes": {
+        "sleep_stages": [
+          "midpoint_sd",
+          "onset_sd",
+          "social_jetlag"
+        ]
+      }
+    },
+    "sleep timing": {
+      "synonyms": [
+        "sleep timing",
+        "chronotype",
+        "sleep midpoint"
+      ],
+      "phenotypes": {
+        "sleep_stages": [
+          "midpoint_hour"
+        ]
+      }
+    },
+    "sleep fragmentation": {
+      "synonyms": [
+        "wake after sleep onset",
+        "sleep fragmentation",
+        "sleep efficiency",
+        "nocturnal awakenings"
+      ],
+      "phenotypes": {
+        "sleep_stages": [
+          "wake_bouts",
+          "transitions_per_hour"
+        ]
+      },
+      "columns": [
+        "*_minute_awake_*"
+      ]
+    },
+    "REM latency": {
+      "synonyms": [
+        "REM latency",
+        "REM sleep latency"
+      ],
+      "phenotypes": {
+        "sleep_stages": [
+          "rem_latency"
+        ]
+      }
+    },
+    "sleep stages": {
+      "synonyms": [
+        "deep sleep",
+        "slow-wave sleep",
+        "REM sleep",
+        "light sleep",
+        "sleep architecture"
+      ],
+      "columns": [
+        "*_minute_deep_*",
+        "*_minute_light_*",
+        "*_minute_rem_*"
+      ]
+    },
+    "night-to-night variability of sleep": {
+      "synonyms": [
+        "sleep duration variability",
+        "night-to-night variability in sleep",
+        "sleep variability"
+      ],
+      "columns": [
+        "*_minute_asleep_sd",
+        "*_minute_in_bed_sd"
+      ]
+    },
+    "sleep duration": {
+      "synonyms": [
+        "sleep duration",
+        "total sleep time",
+        "time in bed"
+      ],
+      "columns": [
+        "*_minute_asleep_mean",
+        "*_minute_in_bed_mean"
+      ]
+    },
+    "day-to-day variability of physical activity": {
+      "synonyms": [
+        "physical activity variability",
+        "day-to-day variability in physical activity",
+        "step count variability"
+      ],
+      "columns": [
+        "*_steps_sd",
+        "*_active_minutes_sd",
+        "*_sedentary_minutes_sd"
+      ]
+    },
+    "daily step count": {
+      "synonyms": [
+        "step count",
+        "daily steps",
+        "steps per day"
+      ],
+      "columns": [
+        "*_steps_mean"
+      ]
+    },
+    "moderate-to-vigorous physical activity": {
+      "synonyms": [
+        "moderate to vigorous physical activity",
+        "MVPA",
+        "vigorous physical activity"
+      ],
+      "columns": [
+        "*_very_active_minutes_mean",
+        "*_fairly_active_minutes_mean"
+      ]
+    },
+    "light physical activity": {
+      "synonyms": [
+        "light-intensity physical activity",
+        "light physical activity"
+      ],
+      "columns": [
+        "*_lightly_active_minutes_mean"
+      ]
+    },
+    "sedentary time": {
+      "synonyms": [
+        "sedentary behavior",
+        "sedentary behaviour",
+        "sitting time"
+      ],
+      "columns": [
+        "*_sedentary_minutes_mean"
+      ]
+    },
+    "energy expenditure": {
+      "synonyms": [
+        "energy expenditure",
+        "calories burned"
+      ],
+      "columns": [
+        "*_calories_out_*"
+      ]
+    },
+    "time in heart rate zones": {
+      "synonyms": [
+        "heart rate zones",
+        "exercise intensity",
+        "time in target heart rate zone"
+      ],
+      "columns": [
+        "*_minute_in_zone_*"
+      ]
+    }
+  },
+  "outcomes": {
+    "hba1c": [
+      "HbA1c",
+      "glycated hemoglobin",
+      "glycemic control"
+    ],
+    "ldl": [
+      "LDL cholesterol",
+      "low-density lipoprotein"
+    ],
+    "hdl": [
+      "HDL cholesterol",
+      "high-density lipoprotein"
+    ],
+    "triglycerides": [
+      "triglycerides"
+    ],
+    "crp": [
+      "C-reactive protein",
+      "systemic inflammation"
+    ],
+    "bmi": [
+      "body mass index"
+    ],
+    "sbp": [
+      "systolic blood pressure"
+    ],
+    "dbp": [
+      "diastolic blood pressure"
+    ],
+    "t2d": [
+      "type 2 diabetes"
+    ],
+    "hypertension": [
+      "hypertension"
+    ],
+    "depression": [
+      "depression",
+      "depressive disorder"
+    ],
+    "anxiety": [
+      "anxiety disorder",
+      "anxiety"
+    ],
+    "sleep_apnea": [
+      "sleep apnea",
+      "obstructive sleep apnoea"
+    ],
+    "afib": [
+      "atrial fibrillation"
+    ],
+    "obesity": [
+      "obesity"
+    ],
+    "insomnia": [
+      "insomnia"
+    ],
+    "egfr": [
+      "glomerular filtration rate",
+      "kidney function"
+    ],
+    "alt": [
+      "alanine aminotransferase",
+      "liver enzymes"
+    ],
+    "total_cholesterol": [
+      "total cholesterol"
+    ],
+    "heart_failure": [
+      "heart failure"
+    ],
+    "cad": [
+      "coronary artery disease",
+      "coronary heart disease"
+    ],
+    "stroke": [
+      "stroke",
+      "cerebral infarction"
+    ],
+    "ckd": [
+      "chronic kidney disease"
+    ],
+    "copd": [
+      "chronic obstructive pulmonary disease",
+      "COPD"
+    ],
+    "gerd": [
+      "gastroesophageal reflux"
+    ],
+    "migraine": [
+      "migraine"
+    ],
+    "osteoarthritis": [
+      "osteoarthritis"
+    ],
+    "hyperlipidemia": [
+      "hyperlipidemia",
+      "dyslipidemia"
+    ],
+    "nafld": [
+      "fatty liver disease",
+      "NAFLD"
+    ],
+    "gout": [
+      "gout"
+    ]
+  }
+}

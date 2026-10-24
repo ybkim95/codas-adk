@@ -30,7 +30,7 @@ from google.adk.tools import ToolContext
 
 from codas.aou.privacy import (MASK, SMALL_CELL_MAX, aou_mode, literature_search_enabled, mask_small_counts,
                                mask_small_counts_in_text)
-from codas.core import eda, gemini
+from codas.core import eda, gemini, literature
 from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
 from codas.core.statistics import safe_spearman
@@ -178,6 +178,40 @@ def _record_model_usage(tool_context: Any, usage: dict[str, Any] | None) -> None
 def take_model_usage(call_id: str | None) -> list[dict[str, Any]]:
     """The model calls the tool call ``call_id`` made on its own, removed from the record."""
     return MODEL_USAGE.pop(call_id, []) if call_id else []
+
+
+def _literature_cache(state: Any) -> literature.Cache | None:
+    path = str(state.get("literature_cache_path") or "") if state is not None else ""
+    return literature.Cache(path) if path else None
+
+
+def search_papers(query: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Search the published literature (Europe PMC) for papers you may cite. Each comes with its key (write
+    it in your text as [PMID:...] or [DOI:...]), title, journal, year, publication types, how often it is
+    cited and the start of its abstract. Only papers retrieved in this run, by this tool or in the evidence
+    counted before you started, can be cited: any other key is not a citation. Only the query leaves the
+    machine, so write a short phrase about constructs and outcomes, never a number from the data."""
+    state = tool_context.state
+    if not query or not query.strip():
+        return {"papers": [], "note": "empty query"}
+    if not literature_search_enabled():
+        return {"papers": [], "note": "Literature search is turned off for this run; cite nothing."}
+    text = literature.sanitize(query)
+    try:
+        hits, papers = literature.europe_pmc(text, page_size=8, abstracts=True, cache=_literature_cache(state))
+    except literature.Unreachable as exc:
+        return {"papers": [], "note": f"The literature service did not answer ({exc}); cite nothing you did not "
+                                      "retrieve."}
+    store = dict(state.get("literature_store") or {})
+    found = []
+    for paper in papers:
+        if not paper.key:
+            continue
+        record = {**paper.as_dict(), "abstract": (paper.abstract or "")[:400] or None}
+        store[paper.key] = record
+        found.append({k: record[k] for k in ("key", "title", "journal", "year", "pub_types", "cited_by", "abstract")})
+    state["literature_store"] = store
+    return _json_safe({"query": text, "hits": hits, "papers": found})
 
 
 def search_literature(query: str, tool_context: ToolContext | None = None) -> dict[str, Any]:
@@ -692,11 +726,14 @@ def register_hypotheses(hypotheses_json: str, tool_context: ToolContext) -> dict
     """Register falsifiable hypotheses BEFORE any discovery statistic exists. ``hypotheses_json`` is a
     JSON list of objects with: ``feature`` (an existing column, or a feature you registered with
     propose_feature), ``direction`` (positive/negative or 1/-1: the association you predict),
-    ``construct`` (what the feature measures), ``mechanism``, ``citation`` (from search_literature), and
-    ``knownness``: established (the literature already reports it), emerging (indirect or preliminary
-    evidence) or unexplored (no evidence found). Each is pre-registered and tested on the sealed holdout
-    whatever discovery finds, in its own family, so a hypothesis fixed before the data could steer it
-    does not pay for the exploratory search. Registration closes when the first discovery round runs."""
+    ``construct`` (what the feature measures), ``mechanism``, ``citation`` and ``knownness``: established
+    (the literature already reports it), emerging (indirect or preliminary evidence) or unexplored (no
+    evidence found). When papers were retrieved in this run, ``citation`` must name at least one of them by
+    its key, [PMID:...] or [DOI:...], and no other key. The knownness that counts is the one the literature
+    evidence gives the feature's construct (counted, not judged; ``not assessed`` without evidence); yours is
+    kept beside it. Each is pre-registered and tested on the sealed holdout whatever discovery finds, in its
+    own family, so a hypothesis fixed before the data could steer it does not pay for the exploratory
+    search. Registration closes when the first discovery round runs."""
     state = tool_context.state
     if state.get("rounds"):
         return {"error": "Registration is closed: a discovery round has already run, so new hypotheses would "
@@ -713,6 +750,8 @@ def register_hypotheses(hypotheses_json: str, tool_context: ToolContext) -> dict
     blocked = {str(state.get("target_column") or ""), *(state.get("excluded_columns") or []),
                *(state.get("context_columns") or []), *(state.get("confounder_columns") or [])}
     registered = list(state.get("a_priori_hypotheses") or [])
+    store = state.get("literature_store") or {}
+    matrix, construct_of = state.get("literature_evidence") or {}, state.get("construct_of") or {}
     accepted, rejected = [], []
     for item in items:
         item = item if isinstance(item, dict) else {}
@@ -720,22 +759,35 @@ def register_hypotheses(hypotheses_json: str, tool_context: ToolContext) -> dict
         raw = str(item.get("direction", "")).strip().lower()
         direction = 1 if raw in {"1", "+1", "positive", "+"} else -1 if raw in {"-1", "negative", "-"} else 0
         knownness = str(item.get("knownness") or "").strip().lower()
+        cited = literature.tokens(str(item.get("citation") or ""))
+        unknown = [k for k in cited if k not in store]
         problem = ("it is the target, excluded, or adjustment-only" if feature in blocked
                    else "not a column or a proposed feature" if feature not in columns | proposals
                    else "direction must be positive or negative" if not direction
                    else f"knownness must be one of {', '.join(_KNOWNNESS)}" if knownness not in _KNOWNNESS
                    else "already registered" if any(h["feature"] == feature for h in registered)
-                   else f"at most {_MAX_A_PRIORI} hypotheses" if len(registered) >= _MAX_A_PRIORI else None)
+                   else f"at most {_MAX_A_PRIORI} hypotheses" if len(registered) >= _MAX_A_PRIORI
+                   else (f"{', '.join(unknown)} was not retrieved in this run; cite only papers from the evidence "
+                         "or from search_papers") if unknown
+                   else ("cite at least one retrieved paper by its key, [PMID:...] or [DOI:...] (from the evidence "
+                         "or from search_papers)") if store and not cited else None)
         if problem:
             rejected.append({"feature": feature, "reason": problem})
             continue
-        entry = {"feature": feature, "direction": direction, "knownness": knownness,
+        evidence = matrix.get(construct_of.get(feature, ""), {})
+        entry = {"feature": feature, "direction": direction,
+                 # what the counted evidence says, which decides the family; the agent's own label beside it
+                 "knownness": evidence.get("novelty") or literature.NOT_ASSESSED, "declared_knownness": knownness,
+                 "evidence": ({k: evidence.get(k) for k in ("construct", "papers", "reviews", "earliest_year")}
+                              if evidence.get("novelty") not in (None, literature.NOT_ASSESSED) else None),
+                 "citations": cited,
                  **{k: str(item.get(k) or "")[:300] for k in ("construct", "mechanism", "citation")}}
         registered.append(entry)
         accepted.append(entry)
     state["a_priori_hypotheses"] = registered
     return _json_safe({"registered": accepted, "rejected": rejected, "total_registered": len(registered),
-                       "note": "Each registered hypothesis is tested once on the sealed holdout in the a-priori family."})
+                       "note": "Each registered hypothesis is tested once on the sealed holdout in the a-priori family; "
+                               "its knownness is the one the literature evidence gives its construct."})
 
 
 # --- analysis tools: deeper, deterministic analyses an agent chooses (codas.core.analyses) ---------

@@ -23,8 +23,9 @@ export of participant-level data. In AoU mode:
 * every tool response, and the `fact_sheet` / `rounds` memory the prompts interpolate, has
   participant counts of 1-20 replaced by `<=20` (Data and Statistics Dissemination Policy);
 * the final report is masked the same way;
-* literature grounding sends only LLM-written literature queries (masked) to Google Search;
-  `CODAS_AOU_LITERATURE_SEARCH=0` turns it off.
+* literature search sends only query text: the catalog's construct and outcome names before the agents
+  start, and the agents' short queries (masked, long digit runs removed) to Europe PMC and Google Search;
+  `CODAS_AOU_LITERATURE_SEARCH=0` turns both off.
 
 The guard only covers what CoDaS produces. You remain responsible for what you copy out of the
 Workbench, and for confirming that the program accepts this configuration (see below).
@@ -472,12 +473,13 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   them; each call is recorded (`analyses` in the state file, a table in the notebook and the PDF).
   Round summaries now give each candidate's q, confounder-adjusted rho, failed checks, and the
   engine's warnings.
-* **Hypotheses registered before the data** (`register_hypotheses`). After searching the literature
-  and before the first round, the Researcher registers falsifiable hypotheses (feature, predicted
-  direction, construct, mechanism, citation, and whether the association is established, emerging or
-  unexplored). They are tested on the holdout whatever discovery finds, as an `a_priori` family judged
-  by BH within the family; discovery's candidates are the `exploratory` family, judged on the
-  cumulative ledger. Registration closes when the first round runs.
+* **Hypotheses registered before the data** (`register_hypotheses`). After reading the literature
+  evidence and before the first round, the Researcher registers falsifiable hypotheses (feature, predicted
+  direction, construct, mechanism, a citation by key). They are tested on the holdout whatever discovery
+  finds, as the `a_priori` family: one the counted literature classes as established is a reference
+  (tested at alpha on its own), the rest join discovery's `exploratory` candidates in the novel family,
+  under online false-discovery-rate control across the cumulative ledger. Registration closes when the
+  first round runs.
 * **Within-person mixed models** (spec key `panel`, measurement outcomes): every later outcome value is
   paired with the wearable summary of the `period_days` before it (`<name>.panel.csv`, same holdout
   split, a pseudonymous person index). `run_mixed_model` fits a random-intercept model with the
@@ -595,6 +597,35 @@ monitors outbound traffic. The sources:
   when `SPRINGER_NATURE_API_KEY` is set as a workspace secret.
 - Google Search grounding: web context for the agents' reasoning; its links are not citations.
 - Google Scholar: not used, because it has no API and its terms forbid automated queries.
+
+**Literature evidence and citations** (`codas/core/literature.py`, `scripts/aou/literature_terms.json`).
+Before the agents start, the runner maps each wearable feature to the construct it measures (a versioned
+catalog: an intraday phenotype by its source kind and name, a daily column by a name pattern) and counts in
+Europe PMC, for each construct and the outcome, the papers naming both in the title or abstract, the reviews
+and meta-analyses among them, and the earliest year; the most cited papers come with their keys. The class
+is counted, not judged: established (at least one review or meta-analysis, or ten papers;
+`CODAS_NOVELTY_ESTABLISHED_REVIEWS`, `CODAS_NOVELTY_ESTABLISHED_PAPERS`), emerging (fewer), unexplored (none),
+not assessed (the service did not answer; after the first such answer the rest are not asked). The synonyms
+are fixed in the catalog, so no phrasing chosen during a run can make a construct look newer than it is.
+* The Researcher, the Mechanism and the Novelty agents read this evidence and can call `search_papers`
+  (Europe PMC, with abstracts) for more. A paper is cited only by its key, `[PMID:...]` or `[DOI:...]`, and
+  only if it was retrieved in this run; web context from Google Search grounding is not a citation.
+* `register_hypotheses` refuses a hypothesis that cites no retrieved paper when papers were retrieved, or
+  that cites a key nobody retrieved. Its knownness is the evidence class of the feature's construct (`not
+  assessed` when the construct was not counted); the agent's own label is kept as `declared_knownness`. An
+  established hypothesis is a reference (tested at alpha on its own, never a discovery); any other joins
+  the novel family under online false-discovery-rate control.
+* After the report, every key in the registered hypotheses, mechanisms, novelty and report is checked
+  against what the run retrieved. The report gets a numbered reference list of the retrieved papers it
+  cites, and a note naming any other key as not a citation (`citations` in `<cohort>_state.json`).
+* Responses are cached in `.codas_runs/aou/literature_cache.jsonl` (these APIs allow it), so a repeated
+  query is not sent again; each request is counted and capped as above.
+
+**The research basis** (`docs/research/`). The papers CoDaS's design rests on: 51 wearable-biomarker studies
+and 77 biomarker methods papers and exemplars, compiled from abstracts, with a table of each recipe step and
+where CoDaS implements it. The checks cell looks every DOI in them up in Crossref from the workspace and
+writes the result to `codas_reports/aou/references.json` (registered or not, the registered title, journal
+and year, and how much of that title the entry contains).
 
 **Data inventory** (checks cell):
 - Every table with its columns, the participants each person-level table covers, and how many of them

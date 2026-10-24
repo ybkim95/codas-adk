@@ -430,8 +430,14 @@ def test_full_trace_and_phase_outputs_are_saved_and_masked(aou_env):
     assert "Phase coverage" in Path(summary["files"]["trace_md"]).read_text()
 
 
-def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch):
-    """Incident cohorts, a sealed holdout, pre-registration and confirmation, through explore()."""
+STEPS_PAPER = {"pmid": "30000001", "doi": "10.1000/steps.1", "title": "Daily step count and glycaemic control",
+               "journalTitle": "A Journal", "pubYear": "2019", "citedByCount": 210, "pubType": "research-article"}
+
+
+def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch, europe_pmc):
+    """Incident cohorts, a sealed holdout, pre-registration and confirmation, through explore(); the
+    literature evidence (recorded answers) decides that the registered step-count hypothesis is established,
+    and the registration cites the paper it retrieved by its key."""
     from dataclasses import replace
 
     pytest.importorskip("duckdb")
@@ -440,6 +446,15 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
 
     from codas.aou import cohort
     from codas.aou.synthetic import SYNTHETIC_CDR, build_synthetic_cdr, duckdb_query
+    from codas.core import gemini
+
+    monkeypatch.setenv("CODAS_AOU_LITERATURE_SEARCH", "1")  # the paper search; web grounding is stubbed out
+    monkeypatch.setattr(gemini, "generate_grounded_reply", lambda *a, **k: gemini.GroundedResponse(
+        text=None, model="none", configured=False, sources=[], queries=[]))
+    asked = europe_pmc({"step count": (120, 4, [STEPS_PAPER])})
+    monkeypatch.setitem(SCRIPTS, "hypotheses_agent", [_call("register_hypotheses", hypotheses_json=json.dumps(
+        [{"feature": "act_steps_mean", "direction": "negative", "construct": "activity volume",
+          "mechanism": "insulin sensitivity", "citation": "[PMID:30000001]", "knownness": "unexplored"}]))])
 
     con = duckdb.connect()
     build_synthetic_cdr(con)
@@ -480,7 +495,12 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
         assert [pc["control"] for pc in confirmation["positive_controls"]] == ["age", "bmi_cov"]
         first = confirmation["hypotheses"][0]  # registered before any statistic: tested in its own family
         assert first["feature"] == "act_steps_mean" and first["family"] == "a_priori"
+        # Established by the counted evidence although the agent declared it unexplored: a reference.
         assert first["knownness"] == "established" and first["role"] in {"reference", "non_confirmatory"}
+        state = json.loads((RUN_DIR / f"{stem}_state.json").read_text())
+        assert state["literature_evidence"]["daily step count"]["papers"] == 120
+        assert state["a_priori_hypotheses"][0]["declared_knownness"] == "unexplored"
+        assert state["citations"]["verified"] == ["PMID:30000001"] and "## References" in report
         assert confirmation["ledger"]["registrations"] >= 1
         kinds[stem] = prereg["survival_time"]
     # One measurement (value outcome) and one condition (time to event, tested with Cox).
@@ -489,6 +509,8 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch)
     assert "prospective design" in sent and "sealed share" in sent
     assert "Holdout replication" not in sent  # confirmation results are never shown to an agent
     assert "cerumen" not in sent  # nor are the negative controls
+    # Only catalog terms went out to the literature service: no number from the data.
+    assert asked and not any(re.search(r"\d{5,}", url) for url in asked)
     # Every outcome's hypotheses share one ledger, since the same participants are sealed for all of them.
     ledger = [json.loads(line) for line in (RUN_DIR / "holdout_ledger.jsonl").read_text().splitlines()]
     assert {e["stem"] for e in ledger} <= set(kinds) and len({e["key"] for e in ledger}) == 1

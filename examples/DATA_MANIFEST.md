@@ -20,6 +20,8 @@ git ls-files | grep -Ei '\.(csv|tsv|parquet|json|xlsx|pkl|npy)$'
 | `scripts/aou/outcomes_catalog.json` | config | Candidate All of Us outcomes (OMOP concept ids, value bounds) for the free-exploration screen | **None** |
 | `workbench/claude/settings.json` | config | Claude Code settings template for an All of Us workspace (Vertex AI, deny rules, guard hook) | **None** |
 | `scripts/aou/hba1c_fitbit.example.json` | config | Example All of Us cohort spec (outcome concept ids, Fitbit tables and columns) for `scripts/aou/run_codas_aou.py` | **None** |
+| `scripts/aou/feature_definitions.json` | config | Hash of each feature-column prefix's definition (settings and SQL), so a changed definition must take a new prefix | **None** |
+| `scripts/aou/literature_terms.json` | config | Versioned catalog of the constructs wearable features measure and the outcomes' names, with the synonyms the literature counts search | **None** |
 | `scripts/paper_cohorts.example.json` | config | Example cohort config with placeholder paths and the published reference effect sizes | **None** |
 | `paper_artifacts/dwb/validated_candidates.json` | 33 candidates | Candidates with verdicts, reasons and per-test results, Digital Wellbeing run | **None**, per-candidate |
 | `paper_artifacts/dwb/biomarker_proofs.json` | 33 candidates | Per-candidate evidence behind each verdict | **None**, per-candidate |

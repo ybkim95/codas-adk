@@ -173,7 +173,8 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         row = {"feature": h["feature"], "definition": definition(h["feature"]),
                "direction": 1 if int(h["direction"]) > 0 else -1, **seen(h["feature"]),
                "family": "a_priori", "knownness": h.get("knownness"), "construct": h.get("construct"),
-               "citation": h.get("citation")}
+               "citation": h.get("citation"), "citations": list(h.get("citations") or []),
+               "declared_knownness": h.get("declared_knownness")}
         row.update(frozen(row))
         row.update({k: v for k, v in hazard(row).items() if k != "sign"})
         hypotheses.append(row)

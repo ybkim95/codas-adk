@@ -378,6 +378,30 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                       [[r["feature"], r["measure"], r.get("t0"), r.get("t2"), r.get("q_t2"), r.get("attenuation"),
                         r.get("missing_effect")] for r in rows[:40]], widths=[50, 30, 18, 18, 18, 22, 24])
 
+    def literature() -> None:
+        matrix, audit = phases.get("literature_evidence") or {}, phases.get("citations") or {}
+        if not matrix and not audit.get("used"):
+            return
+        doc.heading("Literature evidence")
+        status = phases.get("literature_status") or "status not recorded"
+        doc.plain(f"Counted in Europe PMC before the agents started ({status}): papers naming the construct and the "
+                  "outcome in the title or abstract, the reviews and "
+                  "meta-analyses among them, and the earliest year. The class is counted, not judged: established (at "
+                  "least one review or ten papers), emerging (fewer), unexplored (none), not assessed (no answer).",
+                  size=8, style="I")
+        columns_of: dict[str, list[str]] = {}
+        for column, construct in (phases.get("construct_of") or {}).items():
+            columns_of.setdefault(construct, []).append(column)
+        doc.table(["construct", "columns", "class", "papers", "reviews", "earliest", "most cited"],
+                  [[c, ", ".join(columns_of.get(c, [])[:4]), e.get("novelty"), e.get("papers"), e.get("reviews"),
+                    e.get("earliest_year"), "; ".join(p["key"] for p in (e.get("top_cited") or [])[:2])]
+                   for c, e in matrix.items()], widths=[40, 42, 20, 14, 14, 14, 36])
+        if audit.get("used"):
+            doc.plain(f"Citation keys in the agents' text: {len(audit['used'])}; {len(audit.get('verified') or [])} among the "
+                      f"{audit.get('retrieved')} papers retrieved in this run"
+                      + (f"; not citations: {', '.join(audit['unverified'])}" if audit.get("unverified") else "") + ".",
+                      size=8)
+
     def phase_a() -> None:
         doc.heading("Phase A: data understanding and design")
         design = [["target", phases.get("target_column")],
@@ -397,9 +421,10 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
         registered = phases.get("a_priori_hypotheses") or []
         if registered:
             doc.heading("Hypotheses registered before any statistic (tested on the sealed holdout)", 3)
-            doc.table(["feature", "predicted", "knownness", "construct", "citation"],
+            doc.table(["feature", "predicted", "knownness (evidence)", "declared", "construct", "citation"],
                       [[h.get("feature"), "positive" if h.get("direction", 0) > 0 else "negative", h.get("knownness"),
-                        h.get("construct"), h.get("citation")] for h in registered], widths=[50, 20, 22, 44, 44])
+                        h.get("declared_knownness"), h.get("construct"), h.get("citation")] for h in registered],
+                      widths=[44, 18, 22, 18, 38, 40])
 
     def phases_bc() -> None:
         doc.heading("Phases B-C: discovery loop and adversarial validation")
@@ -526,7 +551,8 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
 
     # (section, starts on a new page)
     sections = [(cover, True), (cohort, False), (final_report, True),
-                (data_understanding, bool(phases.get("eda") or phases.get("signal_map"))), (phase_a, True),
+                (data_understanding, bool(phases.get("eda") or phases.get("signal_map"))),
+                (literature, bool(phases.get("literature_evidence"))), (phase_a, True),
                 (phases_bc, True),
                 (phase_d, True), (phases_ef, True),
                 (agent_execution, bool((execution or {}).get("agents"))), (appendix, True)]

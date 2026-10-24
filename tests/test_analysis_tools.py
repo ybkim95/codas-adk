@@ -99,8 +99,9 @@ def test_register_hypotheses_validates_and_stores_a_priori_hypotheses(tmp_path):
     assert [h["feature"] for h in out["registered"]] == ["a_per_b", "noise"]
     assert len(out["rejected"]) == 3
     stored = ctx.state["a_priori_hypotheses"]
-    assert [(h["feature"], h["direction"], h["knownness"]) for h in stored] == [("a_per_b", 1, "emerging"),
-                                                                               ("noise", -1, "established")]
+    # No literature evidence in this run, so the knownness that counts is "not assessed"; the label is kept.
+    assert [(h["feature"], h["direction"], h["knownness"], h["declared_knownness"]) for h in stored] == [
+        ("a_per_b", 1, "not assessed", "emerging"), ("noise", -1, "not assessed", "established")]
     assert "error" in tools.register_hypotheses("not json", ctx)
     # Registration closes once a discovery round has run: the hypotheses must precede the statistics.
     ctx.state["rounds"] = [{"round": 0}]

@@ -33,7 +33,8 @@ from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extr
 from codas.aou.phenotypes import describe as describe_phenotypes
 from codas.aou.confirm import (confirm, confirmation_markdown, ledger_summary, preregister,
                               reconciliation_markdown)
-from codas.aou.privacy import check_llm_backend, mask_identifiers, mask_small_counts, mask_small_counts_in_text
+from codas.aou.privacy import (check_llm_backend, literature_search_enabled, mask_identifiers, mask_small_counts,
+                                mask_small_counts_in_text)
 from codas.aou.table1 import cohort_table
 from codas.core import model_tiers
 from codas.aou.execution import totals_text
@@ -249,7 +250,8 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "defense", "mechanisms", "novelty", "strategy", "artifacts", "report", "rounds", "fact_sheet",
               "confirmation", "cohort_table", "analyses", "a_priori_hypotheses", "gap_analysis", "methods_explored",
               "constraints", "candidate_debates", "lessons", "report_review", "preflight", "eda", "signal_map",
-              "quality_rules", "extraction_qc")
+              "quality_rules", "extraction_qc", "literature_evidence", "literature_status", "literature_store",
+              "construct_of", "citations")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -643,6 +645,75 @@ def preflight(csv: str | Path, out_dir: str | Path, *, stem: str, target: str, s
     return {"flags": flags, "fatal": fatal, "duplicates": _duplicate_columns(numeric)}
 
 
+LITERATURE_TERMS = cohort.ROOT / "scripts" / "aou" / "literature_terms.json"
+
+
+def _candidate_columns(spec: CohortSpec) -> list[str]:
+    """The table's wearable features: not the outcome, demographics, covariates or wear-adherence counts."""
+    skip = {spec.outcome.name, FOLLOWUP_COLUMN, "age", "female", *cohort.availability_columns(spec),
+            *(c.name for c in spec.covariates)}
+    return [c for c in cohort.output_columns(spec) if c not in skip]
+
+
+def literature_evidence(spec: CohortSpec, label: str | None, out: Path) -> dict[str, Any]:
+    """Before the agents: how established each construct the features measure is for this outcome, counted
+    in Europe PMC (``codas.core.literature.evidence``), and the papers that may be cited. Only query text
+    leaves the Workbench: the catalog's construct and outcome names. Novelty is "not assessed" when the
+    service does not answer."""
+    from codas.core import literature
+
+    state: dict[str, Any] = {"literature_cache_path": str(out / "literature_cache.jsonl"), "literature_evidence": {},
+                             "literature_store": {}, "construct_of": {}, "literature_digest": "",
+                             "literature_status": "off"}
+    if not literature_search_enabled() or not LITERATURE_TERMS.exists():
+        return state
+    terms = literature.load_terms(LITERATURE_TERMS)
+    construct_of = literature.constructs_of(_candidate_columns(spec), terms,
+                                            {p.prefix: p.kind for p in spec.phenotypes})
+    columns_of: dict[str, list[str]] = {}
+    for column, construct in construct_of.items():
+        columns_of.setdefault(construct, []).append(column)
+    outcome_terms = (terms.get("outcomes") or {}).get(spec.outcome.name) or [label or spec.outcome.name]
+    matrix = literature.evidence_matrix(list(columns_of), outcome_terms, terms,
+                                        cache=literature.Cache(state["literature_cache_path"]))
+    assessed = [e for e in matrix.values() if e.get("novelty") != literature.NOT_ASSESSED]
+    first_error = next(iter(matrix.values()), {}).get("error") or "no construct to search"
+    state.update(construct_of=construct_of, literature_evidence=matrix,
+                 literature_store={p["key"]: p for e in assessed for p in e.get("top_cited") or []},
+                 literature_digest=literature.evidence_digest(matrix, columns_of),
+                 literature_status="available" if assessed else f"unavailable: {first_error}")
+    return state
+
+
+def citation_audit(state: dict[str, Any]) -> dict[str, Any]:
+    """Every citation key the agents wrote (registered hypotheses, mechanisms, novelty, report): which were
+    retrieved in this run, and which were not and so are not citations."""
+    from codas.core import literature
+
+    store = state.get("literature_store") or {}
+    # The report first, so the reference list is numbered in the order the report cites.
+    texts = [str(state.get("report") or "")] + [str(h.get("citation") or "") for h in state.get("a_priori_hypotheses") or []]
+    texts += [str(state.get(k) or "") for k in ("mechanisms", "novelty")]
+    used = list(dict.fromkeys(k for text in texts for k in literature.tokens(text)))
+    return {"used": used, "verified": [k for k in used if k in store],
+            "unverified": [k for k in used if k not in store], "retrieved": len(store)}
+
+
+def _with_references(state: dict[str, Any]) -> None:
+    """Append the reference list (the retrieved papers the text cites) and a note on unretrieved keys."""
+    from codas.core import literature
+
+    audit = state["citations"] = citation_audit(state)
+    if not audit["used"]:
+        return
+    block = "\n\n## References\n\n" + (literature.references_markdown(audit["verified"], state.get("literature_store") or {})
+                                       or "_None of the cited keys was among the papers retrieved in this run._")
+    if audit["unverified"]:
+        block += (f"\n\n_Not citations: {', '.join(audit['unverified'])} were not among the {audit['retrieved']} "
+                  "papers retrieved in this run._")
+    state["report"] = f"{state.get('report') or ''}{block}"
+
+
 def _extraction_qc(csv: Path) -> dict[str, Any] | None:
     """The extraction's quality summary (a lab outcome's units, split-half reliability; discovery share,
     masked), when there is one."""
@@ -703,6 +774,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                 goal += ("\nThese columns hold identical values in this cohort; adjust for at most one of each "
                          "group: " + "; ".join(" = ".join(g) for g in checked["duplicates"]) + ".")
         recorder = TraceRecorder(stream_path=out / f"{spec.name}_trace.jsonl")
+        evidence = literature_evidence(spec, label, out)  # counted from the literature, before any statistic
         context = ([c.name for c in spec.covariates] + cohort.availability_columns(spec)
                    + ([FOLLOWUP_COLUMN] if is_survival(spec) else []))
         state = run_agents(csv, goal, on_tool_call, context, recorder=recorder,
@@ -713,7 +785,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                                   "prior_lessons": list(lessons or []),
                                   # for the report; the goal states the rules without the sealed controls'
                                   "quality_rules": cohort.quality_rules(spec, negative_controls=True),
-                                  "extraction_qc": _extraction_qc(csv),
+                                  "extraction_qc": _extraction_qc(csv), **evidence,
                                   "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()
                                                      else "")})
         if checked is not None:
@@ -749,6 +821,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         engine = {c.get("feature"): c.get("verdict") for c in (state.get("latest_report") or {}).get("candidates") or []}
         state["report"] = (f"{reconciliation_markdown(result, engine)}\n{state.get('report') or ''}\n\n"
                            f"{confirmation_markdown(result)}")
+    _with_references(state)
     summary = {**save_outputs(state, spec.name, out_dir, recorder), "holdout_tested": tested}
     _agents_checkpoint(out, spec.name).unlink(missing_ok=True)
     return summary
