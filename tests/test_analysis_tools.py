@@ -88,13 +88,19 @@ def test_register_hypotheses_validates_and_stores_a_priori_hypotheses(tmp_path):
 
     ctx = _ctx(tmp_path)
     tools.propose_feature("ratio", "a", "b", ctx, name="a_per_b")
+
+    def complete(feature, direction, low, high, **change):
+        return {"feature": feature, "direction": direction, "construct": "c", "incumbent": "none",
+                "shape": "monotone", "magnitude": {"measure": "rho", "low": low, "high": high, "source": "analogy"},
+                "mechanism": ["step one", "step two"], "alternatives": ["confounding"], "knownness": "emerging",
+                **change}
+
     out = tools.register_hypotheses(json.dumps([
-        {"feature": "a_per_b", "direction": "positive", "construct": "relative load", "mechanism": "m",
-         "knownness": "emerging", "citation": "doi:1"},
-        {"feature": "noise", "direction": -1, "construct": "c", "knownness": "established"},
-        {"feature": "leak", "direction": 1, "knownness": "unexplored"},          # excluded column
-        {"feature": "nothing_here", "direction": 1, "knownness": "unexplored"},  # not a column or proposal
-        {"feature": "a", "direction": "up", "knownness": "unexplored"},          # bad direction
+        complete("a_per_b", "positive", 0.05, 0.3, construct="relative load", citation="doi:1"),
+        complete("noise", -1, -0.2, -0.01, knownness="established"),
+        complete("leak", 1, 0.1, 0.2),                       # excluded column
+        complete("nothing_here", 1, 0.1, 0.2),               # not a column or proposal
+        complete("a", "up", 0.1, 0.2),                       # bad direction
     ]), ctx)
     assert [h["feature"] for h in out["registered"]] == ["a_per_b", "noise"]
     assert len(out["rejected"]) == 3
@@ -102,6 +108,7 @@ def test_register_hypotheses_validates_and_stores_a_priori_hypotheses(tmp_path):
     # No literature evidence in this run, so the knownness that counts is "not assessed"; the label is kept.
     assert [(h["feature"], h["direction"], h["knownness"], h["declared_knownness"]) for h in stored] == [
         ("a_per_b", 1, "not assessed", "emerging"), ("noise", -1, "not assessed", "established")]
+    assert stored[0]["predictions"] == ["negative_controls_null"] and stored[0]["mechanism"] == "step one -> step two"
     assert "error" in tools.register_hypotheses("not json", ctx)
     # Registration closes once a discovery round has run: the hypotheses must precede the statistics.
     ctx.state["rounds"] = [{"round": 0}]

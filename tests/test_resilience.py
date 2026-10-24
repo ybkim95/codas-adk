@@ -412,7 +412,8 @@ def test_agents_run_on_the_current_model_tiers_with_a_thinking_level():
         assert a.model.model == model_tiers.model(tier), a.name
         assert not superseded & {m.model for m in a.model.models}, a.name
         level = a.generate_content_config.thinking_config.thinking_level
-        expected = "HIGH" if a.name == "hypotheses_agent" else model_tiers.THINKING[tier]
+        expected = ("HIGH" if a.name in {"hypotheses_agent", "hypothesis_reviewer"}
+                    else model_tiers.THINKING[tier])
         assert str(getattr(level, "value", level)) == expected, a.name
 
 

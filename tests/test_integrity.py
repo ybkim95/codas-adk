@@ -24,7 +24,7 @@ from codas.aou.cohort import holdout_path
 from codas.core import eda
 
 from test_aou_e2e import (RECORDS, RUN_DIR, SCRIPTS, ScriptedLlm, _call, _cohort_table, _llm_agents,  # noqa: F401
-                          _serialize, _window_spec, aou_env)
+                          _serialize, _steps_hypothesis, _window_spec, aou_env)
 
 # Every pre-registration tool, as a hypotheses agent might use them before registering.
 _PRE_REGISTRATION = [
@@ -32,9 +32,7 @@ _PRE_REGISTRATION = [
     _call("propose_feature", operation="ratio", feature_a="act_steps_mean", feature_b="act_days"),
     _call("declare_confounders", confounder_columns_csv="age", reason="ages both"),
     _call("exclude_features", columns_csv="act_calories_out_mean", reason="derived from the outcome here"),
-    _call("register_hypotheses", hypotheses_json=json.dumps(
-        [{"feature": "act_steps_mean", "direction": "negative", "construct": "activity volume",
-          "mechanism": "insulin sensitivity", "citation": "", "knownness": "established"}])),
+    _call("register_hypotheses", hypotheses_json=json.dumps([_steps_hypothesis()])),
 ]
 
 

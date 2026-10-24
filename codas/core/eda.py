@@ -16,6 +16,10 @@ read before hypotheses are registered:
 * the outcome on its own: its distribution, or for a time-to-event outcome the events, person-years,
   incidence per 1,000 person-years and censoring, overall and by sex and age band (``strata``).
 
+``audit_memo`` checks an analyst's memo on the dossier: each claim cites dossier entries, and every number it
+states must be a value of those entries; ``issues`` lists the problems the dossier flags, so a memo's
+coverage of them can be counted.
+
 ``signal_map`` relates every candidate feature to the outcome on the discovery share, for after registration:
 its association adjusted for age and sex (T0) and additionally for every adjustment covariate (T2), how much
 of it the covariates explain (attenuation), whether being missing the feature is itself associated with the
@@ -29,6 +33,8 @@ Nothing here knows which dataset, outcome or feature it describes.
 from __future__ import annotations
 
 import math
+import re
+from collections import Counter
 from typing import Any, Iterable
 
 import numpy as np
@@ -42,6 +48,12 @@ MIN_TAIL = 20  # people that must lie beyond a quantile, or behind a count, for 
 FAMILY_RHO = 0.7
 AGE_BANDS = (40, 60)  # age < 40, 40-59, >= 60
 _QUANTILES = (0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99)
+# What the digest flags (and a memo is expected to notice).
+SKEW_LIMIT = 2.0        # |skew| above this: strongly skewed
+EXTREME_SHARE = 0.005   # more than this share of values beyond 4 SD
+WEAR_RHO = 0.3          # |rho| with a days-worn column at or above this: tracks wear
+MISSING_SMD = 0.2       # |standardised mean difference| between those missing a feature and the rest
+RELIABILITY_FLAG = 0.5  # split-half reliability below this: unreliable over the window
 
 
 def _round(value: float, digits: int = 4) -> float | None:
@@ -232,29 +244,31 @@ def digest(dossier: dict[str, Any], limit: int = 40) -> str:
     """A compact text of the dossier for the agents' instructions: the problems first."""
     feats = dossier.get("features") or {}
     lines = [f"Participants: {dossier.get('participants')}. Candidate features: {len(feats)}."]
-    skewed = [f for f, d in feats.items() if isinstance(d.get("skew"), float) and abs(d["skew"]) > 2]
+    skewed = [f for f, d in feats.items() if isinstance(d.get("skew"), float) and abs(d["skew"]) > SKEW_LIMIT]
     constant = [f for f, d in feats.items() if d.get("near_constant")]
-    extreme = [f for f, d in feats.items() if isinstance(d.get("beyond_4sd"), float) and d["beyond_4sd"] > 0.005]
+    extreme = [f for f, d in feats.items()
+               if isinstance(d.get("beyond_4sd"), float) and d["beyond_4sd"] > EXTREME_SHARE]
     if constant:
         lines.append("Near-constant (little to learn from): " + ", ".join(constant[:limit]) + ".")
     if skewed:
-        lines.append("Strongly skewed (|skew| > 2; consider a log or rank scale): " + ", ".join(skewed[:limit]) + ".")
+        lines.append(f"Strongly skewed (|skew| > {SKEW_LIMIT:g}; consider a log or rank scale): "
+                     + ", ".join(skewed[:limit]) + ".")
     if extreme:
-        lines.append("More than 0.5% of values beyond 4 SD: " + ", ".join(extreme[:limit]) + ".")
+        lines.append(f"More than {100 * EXTREME_SHARE:g}% of values beyond 4 SD: " + ", ".join(extreme[:limit]) + ".")
     fams = dossier.get("families") or []
     if fams:
         lines.append("Feature families (|rho| >= %.1f; each measures much the same thing): " % FAMILY_RHO + "; ".join(
             f"{g['representative']} ~ {', '.join(m for m in g['members'] if m != g['representative'])}"
             for g in fams[:limit]) + ".")
-    wear = {f: d for f, d in (dossier.get("wear_dependence") or {}).items() if d["max_abs_rho"] >= 0.3}
+    wear = {f: d for f, d in (dossier.get("wear_dependence") or {}).items() if d["max_abs_rho"] >= WEAR_RHO}
     if wear:
-        lines.append("Track how much the device was worn (|rho| >= 0.3 with a days-worn column): " + ", ".join(
+        lines.append(f"Track how much the device was worn (|rho| >= {WEAR_RHO:g} with a days-worn column): " + ", ".join(
             f"{f} ({d['max_abs_rho']})" for f, d in sorted(wear.items(), key=lambda kv: -kv[1]["max_abs_rho"])[:limit])
             + ".")
     miss = {f: d for f, d in (dossier.get("missingness") or {}).items()
-            if any(isinstance(v, float) and abs(v) >= 0.2 for k, v in d.items() if k.startswith("smd_"))}
+            if any(isinstance(v, float) and abs(v) >= MISSING_SMD for k, v in d.items() if k.startswith("smd_"))}
     if miss:
-        lines.append("Missing not at random (those missing it differ by |SMD| >= 0.2): " + "; ".join(
+        lines.append(f"Missing not at random (those missing it differ by |SMD| >= {MISSING_SMD:g}): " + "; ".join(
             f"{f} (missing {d['missing']}; " + ", ".join(f"{k[4:]} {v}" for k, v in d.items()
                                                           if k.startswith("smd_") and v is not None) + ")"
             for f, d in list(miss.items())[:limit]) + ".")
@@ -265,9 +279,9 @@ def digest(dossier: dict[str, Any], limit: int = 40) -> str:
                       if units.get("mixed") else "Outcome units: ") + listed + ".")
     reliability = {f: r["reliability"] for f, r in (dossier.get("reliability") or {}).items()
                    if isinstance(r.get("reliability"), (int, float))}
-    weak = sorted((f for f, r in reliability.items() if r < 0.5), key=reliability.get)
+    weak = sorted((f for f, r in reliability.items() if r < RELIABILITY_FLAG), key=reliability.get)
     if weak:
-        lines.append("Unreliable over the window (split-half reliability < 0.5: its first and second half barely "
+        lines.append(f"Unreliable over the window (split-half reliability < {RELIABILITY_FLAG:g}: its first and second half barely "
                      "agree, so the value describes those weeks more than the person): "
                      + ", ".join(f"{f} ({reliability[f]})" for f in weak[:limit]) + ".")
     outcome = dossier.get("outcome") or {}
@@ -280,6 +294,167 @@ def digest(dossier: dict[str, Any], limit: int = 40) -> str:
         lines.append(f"Outcome: mean {overall.get('mean')}, SD {overall.get('sd')}, skew {overall.get('skew')}, "
                      f"quantiles {overall.get('quantiles')}.")
     return "\n".join(lines)
+
+
+# --- the analyst's memo: every claim cites the dossier, and the numbers it states are checked -------------
+
+# A number as a sentence states it (8,100 or 0.62 or 12%), not a digit inside a name such as p99 or hr10h.
+_STATED = re.compile(r"(?<![\w.])(-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(%?)(?!\w)")
+_ABSENT = object()
+
+
+def _lookup(dossier: dict[str, Any], path: str) -> Any:
+    """The dossier entry at a dotted ``path`` (``features.<column>.skew``, ``families.<column>`` for the family
+    holding that column, ``outcome.overall.events``), or ``_ABSENT``."""
+    node: Any = dossier
+    rest = [t for t in str(path or "").strip().split(".") if t]
+    if not rest:
+        return _ABSENT
+    while rest:
+        if isinstance(node, dict):
+            for k in range(len(rest), 0, -1):  # a column name may itself hold a dot
+                key = ".".join(rest[:k])
+                if key in node:
+                    node, rest = node[key], rest[k:]
+                    break
+            else:
+                return _ABSENT
+        elif isinstance(node, list):
+            token = rest[0]
+            hits = ([node[int(token)]] if token.isdigit() and int(token) < len(node) else
+                    [g for g in node if isinstance(g, dict)
+                     and (g.get("representative") == token or token in (g.get("members") or []))])
+            if not hits:
+                return _ABSENT
+            node, rest = hits[0], rest[1:]
+        else:
+            return _ABSENT
+    return node
+
+
+def _canonical(dossier: dict[str, Any], path: str) -> str:
+    """A cited path in the form ``issues`` uses: a family named by any member becomes its representative's."""
+    parts = str(path or "").strip().split(".")
+    if len(parts) >= 2 and parts[0] == "families":
+        family = _lookup(dossier, ".".join(parts[:2]))
+        if isinstance(family, dict) and family.get("representative"):
+            parts[1] = family["representative"]
+    return ".".join(parts)
+
+
+def _values(node: Any) -> list[float]:
+    """Every number in a dossier entry."""
+    if isinstance(node, bool) or node is None:
+        return []
+    if isinstance(node, (int, float)):
+        return [float(node)] if math.isfinite(node) else []
+    if isinstance(node, dict):
+        return [v for x in node.values() for v in _values(x)]
+    if isinstance(node, (list, tuple)):
+        return [v for x in node for v in _values(x)]
+    return []
+
+
+def _holds(text: str, percent: bool, values: list[float]) -> bool:
+    """Whether a stated number is one of ``values`` to its stated precision (or within 2%); a percentage may
+    also state a share."""
+    x = float(text.replace(",", ""))
+    tol = 0.5 * 10 ** -(len(text.split(".")[1]) if "." in text else 0)
+    for target, t in [(x, tol)] + ([(x / 100, tol / 100)] if percent else []):
+        if any(abs(target - v) <= t + 1e-9 or (v and abs(target - v) <= 0.02 * abs(v)) for v in values):
+            return True
+    return False
+
+
+def check_claim(dossier: dict[str, Any], statement: str, fields: list[str]) -> tuple[str, str]:
+    """``verified`` when every number in ``statement`` is a value of the cited ``fields`` (or the count of a
+    cited list or table), ``cited`` when it states no number, else ``wrong value`` or ``unknown field``, with
+    what did not check out."""
+    if not fields:
+        return "unknown field", "cite at least one entry of the data summary"
+    values, missing = [], []
+    for f in fields:
+        node = _lookup(dossier, f)
+        if node is _ABSENT:
+            missing.append(f)
+            continue
+        values += _values(node)
+        if isinstance(node, (list, dict)):
+            values.append(float(len(node)))
+    if missing:
+        return "unknown field", "not in the data summary: " + ", ".join(missing)
+    stated = _STATED.findall(statement)
+    if not stated:
+        return "cited", ""
+    wrong = [n + p for n, p in stated if not _holds(n, bool(p), values)]
+    if wrong:
+        return "wrong value", ("the cited entries do not hold " + ", ".join(wrong) + " (write thresholds and "
+                               "percentile names in words, and every other number as the summary gives it)")
+    return "verified", ""
+
+
+def issues(dossier: dict[str, Any]) -> list[dict[str, str]]:
+    """The problems the dossier flags (those its digest lists), each with the entry that shows it."""
+    out: list[dict[str, str]] = []
+
+    def add(problem: str, subject: str, field: str) -> None:
+        out.append({"problem": problem, "subject": subject, "field": field})
+
+    for f, d in (dossier.get("features") or {}).items():
+        if d.get("near_constant"):
+            add("near-constant", f, f"features.{f}.near_constant")
+        if isinstance(d.get("skew"), float) and abs(d["skew"]) > SKEW_LIMIT:
+            add("strongly skewed", f, f"features.{f}.skew")
+        if isinstance(d.get("beyond_4sd"), float) and d["beyond_4sd"] > EXTREME_SHARE:
+            add("extreme values", f, f"features.{f}.beyond_4sd")
+    for g in dossier.get("families") or []:
+        add("one construct under several names", g["representative"], f"families.{g['representative']}")
+    for f, d in (dossier.get("wear_dependence") or {}).items():
+        if d.get("max_abs_rho", 0) >= WEAR_RHO:
+            add("tracks wear", f, f"wear_dependence.{f}")
+    for f, d in (dossier.get("missingness") or {}).items():
+        if any(isinstance(v, float) and abs(v) >= MISSING_SMD for k, v in d.items() if k.startswith("smd_")):
+            add("missing not at random", f, f"missingness.{f}")
+    for f, r in (dossier.get("reliability") or {}).items():
+        if isinstance(r.get("reliability"), (int, float)) and r["reliability"] < RELIABILITY_FLAG:
+            add("unreliable over the window", f, f"reliability.{f}")
+    if (dossier.get("outcome_units") or {}).get("mixed"):
+        add("outcome in more than one unit", "outcome", "outcome_units")
+    return out
+
+
+def _covers(cited: str, field: str) -> bool:
+    return cited == field or field.startswith(cited + ".") or cited.startswith(field + ".")
+
+
+def audit_memo(dossier: dict[str, Any], memo: dict[str, Any], limit: int = 15) -> dict[str, Any]:
+    """Each claim of ``memo`` ({"summary", "claims": [{"statement", "fields", "implication"}]}) checked
+    against ``dossier``, with how many of the dossier's flagged problems the confirmed claims address."""
+    rows = []
+    for claim in memo.get("claims") or []:
+        claim = claim if isinstance(claim, dict) else {"statement": str(claim)}
+        given = claim.get("fields") if claim.get("fields") is not None else claim.get("field")
+        fields = [str(f).strip() for f in (given if isinstance(given, list) else [given]) if f and str(f).strip()]
+        statement = str(claim.get("statement") or "").strip()
+        status, detail = check_claim(dossier, statement, fields)
+        rows.append({"statement": statement[:400], "fields": fields,
+                     "implication": str(claim.get("implication") or "")[:300], "status": status, "detail": detail})
+    found = issues(dossier)
+    cited = [_canonical(dossier, f) for r in rows if r["status"] in ("verified", "cited") for f in r["fields"]]
+    missed = [i for i in found if not any(_covers(c, i["field"]) for c in cited)]
+    return {"summary": str(memo.get("summary") or "")[:800], "claims": rows,
+            "checked": dict(Counter(r["status"] for r in rows)), "issues": len(found),
+            "noticed": len(found) - len(missed),
+            "missed": [f"{i['problem']}: {i['subject']}" for i in missed[:limit]]}
+
+
+def memo_text(audit: dict[str, Any]) -> str:
+    """The memo as the hypothesis designer reads it: the summary and the claims the data summary confirms."""
+    kept = [r for r in audit.get("claims") or [] if r["status"] in ("verified", "cited")]
+    lines = [audit.get("summary") or ""] + [
+        f"- {r['statement']} [{', '.join(r['fields'])}]" + (f" Implication: {r['implication']}" if r["implication"] else "")
+        for r in kept]
+    return "\n".join(line for line in lines if line)
 
 
 # --- after registration: the outcome-linked signal map --------------------------------------------------

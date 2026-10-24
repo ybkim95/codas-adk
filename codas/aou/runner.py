@@ -251,7 +251,8 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "confirmation", "cohort_table", "analyses", "a_priori_hypotheses", "gap_analysis", "methods_explored",
               "constraints", "candidate_debates", "lessons", "report_review", "preflight", "eda", "signal_map",
               "quality_rules", "extraction_qc", "literature_evidence", "literature_status", "literature_store",
-              "construct_of", "citations")
+              "construct_of", "citations", "data_memo", "data_memo_audit", "hypothesis_attempts",
+              "hypothesis_review", "hypothesis_quality")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -714,6 +715,38 @@ def _with_references(state: dict[str, Any]) -> None:
     state["report"] = f"{state.get('report') or ''}{block}"
 
 
+def _with_quality(state: dict[str, Any]) -> None:
+    """How good the hypothesis design was (``codas.core.hypotheses.quality``), measured from what the run
+    recorded, and with the holdout's verdict on the registered predictions once it was tested; appended to the
+    report."""
+    from codas.core import hypotheses as design
+
+    if not (state.get("hypothesis_attempts") or state.get("a_priori_hypotheses")):
+        return
+    quality = state["hypothesis_quality"] = design.quality(
+        state.get("hypothesis_attempts") or [], state.get("a_priori_hypotheses") or [],
+        review=state.get("hypothesis_review"), memo=state.get("data_memo_audit"),
+        confirmation=state.get("confirmation"),
+        proposed={p.get("name") for p in state.get("proposed_features") or []})
+    state["report"] = f"{state.get('report') or ''}\n\n{design.quality_markdown(quality)}"
+
+
+def testable_predictions(spec: CohortSpec) -> list[str]:
+    """The predictions of a hypothesis (``codas.core.hypotheses.PREDICTIONS``) the sealed-holdout confirmation
+    of this spec can score: an incumbent's attenuation always, negative controls when the spec has them, a lag
+    for a time to event, wear adherence when there are days-worn columns, within-person changes with a panel."""
+    out = ["attenuation_below_half_after_incumbent"]
+    if spec.negative_controls:
+        out.append("negative_controls_null")
+    if is_survival(spec):
+        out.append("survives_lag")
+    if cohort.availability_columns(spec):
+        out.append("adherence_robust")
+    if cohort.has_panel(spec):
+        out.append("within_person_same_sign")
+    return out
+
+
 def _extraction_qc(csv: Path) -> dict[str, Any] | None:
     """The extraction's quality summary (a lab outcome's units, split-half reliability; discovery share,
     masked), when there is one."""
@@ -785,6 +818,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                                   "prior_lessons": list(lessons or []),
                                   # for the report; the goal states the rules without the sealed controls'
                                   "quality_rules": cohort.quality_rules(spec, negative_controls=True),
+                                  "testable_predictions": testable_predictions(spec),
                                   "extraction_qc": _extraction_qc(csv), **evidence,
                                   "panel_csv_path": (str(cohort.panel_path(csv)) if cohort.panel_path(csv).exists()
                                                      else "")})
@@ -821,6 +855,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         engine = {c.get("feature"): c.get("verdict") for c in (state.get("latest_report") or {}).get("candidates") or []}
         state["report"] = (f"{reconciliation_markdown(result, engine)}\n{state.get('report') or ''}\n\n"
                            f"{confirmation_markdown(result)}")
+    _with_quality(state)
     _with_references(state)
     summary = {**save_outputs(state, spec.name, out_dir, recorder), "holdout_tested": tested}
     _agents_checkpoint(out, spec.name).unlink(missing_ok=True)

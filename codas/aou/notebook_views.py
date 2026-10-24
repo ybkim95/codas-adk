@@ -443,15 +443,77 @@ def signal_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
                           "missing-indicator effect": r.get("missing_effect")} for r in rows])
 
 
+def _magnitude(m: dict[str, Any] | None) -> str:
+    if not m or not isinstance(m.get("low"), (int, float)) or not isinstance(m.get("high"), (int, float)):
+        return ""
+    return f"{m.get('measure')} {m['low']:g} to {m['high']:g} ({m.get('source') or 'no source'})"
+
+
 def hypotheses_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
-    """The hypotheses the agents registered from the literature before any statistic existed."""
+    """The hypotheses the agents registered before any statistic existed, each as designed: what it must beat,
+    its shape and magnitude, the predictions the holdout scores, its mechanism and citations."""
     registered = _read(_out_dir(result) / f"{stem}_state.json").get("a_priori_hypotheses") or []
     if not registered:
         return None
     return pd.DataFrame([{"feature": h.get("feature"), "predicted": "positive" if h.get("direction", 0) > 0 else "negative",
                           "knownness (evidence)": h.get("knownness"), "declared": h.get("declared_knownness"),
-                          "construct": h.get("construct"), "mechanism": h.get("mechanism"),
+                          "construct": h.get("construct"), "incumbent": h.get("incumbent") or "-",
+                          "shape": h.get("shape"), "magnitude": _magnitude(h.get("magnitude")),
+                          "predictions": ", ".join(h.get("predictions") or []), "mechanism": h.get("mechanism"),
                           "citation": h.get("citation")} for h in registered])
+
+
+def data_memo_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The data analyst's memo, claim by claim, with what the check against the data summary found (only
+    confirmed claims reached the hypothesis designer)."""
+    audit = _read(_out_dir(result) / f"{stem}_state.json").get("data_memo_audit") or {}
+    if not audit.get("claims"):
+        return None
+    return pd.DataFrame([{"claim": c["statement"], "rests on": ", ".join(c.get("fields") or []),
+                          "check": c["status"] + (f": {c['detail']}" if c.get("detail") else ""),
+                          "implication": c.get("implication") or ""} for c in audit["claims"]])
+
+
+def refusals_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Every submission register_hypotheses refused, with the template parts and the reasons."""
+    attempts = _read(_out_dir(result) / f"{stem}_state.json").get("hypothesis_attempts") or []
+    refused = [a for a in attempts if not a.get("accepted")]
+    if not refused:
+        return None
+    return pd.DataFrame([{"feature": a.get("feature"), "parts": ", ".join(dict.fromkeys(a.get("parts") or [])),
+                          "reasons": "; ".join(a.get("problems") or [])} for a in refused])
+
+
+def hypothesis_review_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The independent reviewer's rubric scores (1-5), secondary to the measured quality."""
+    from codas.core.hypotheses import RUBRIC
+
+    review = _read(_out_dir(result) / f"{stem}_state.json").get("hypothesis_review") or []
+    if not review:
+        return None
+    return pd.DataFrame([{"feature": r["feature"], **{k.replace("_", " "): r["scores"].get(k) for k in RUBRIC},
+                          "comment": r.get("comment") or ""} for r in review])
+
+
+def hypothesis_quality_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The quality of the hypothesis design, measured (``codas.core.hypotheses.quality``): one row per measure."""
+    quality = _read(_out_dir(result) / f"{stem}_state.json").get("hypothesis_quality") or {}
+    rows = []
+    for part, measures in quality.items():
+        for name, value in (measures or {}).items():
+            if isinstance(value, dict):
+                value = ", ".join(f"{k} {v['met']}/{v['testable']}" if isinstance(v, dict) else f"{k} {v}"
+                                  for k, v in value.items()) or "-"
+            rows.append({"part": part.replace("_", " "), "measure": name.replace("_", " "), "value": value})
+    return pd.DataFrame(rows) if rows else None
+
+
+def scorecard_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Each registered prediction scored on the sealed holdout: magnitude, shape and every falsification test."""
+    conf = _read(_out_dir(result) / f"{stem}_state.json").get("confirmation") or {}
+    rows = [{"feature": h["feature"], "prediction": i["prediction"], "result": i["result"], "seen": i["seen"]}
+            for h in conf.get("hypotheses") or [] for i in (h.get("scorecard") or {}).get("items", [])]
+    return pd.DataFrame(rows) if rows else None
 
 
 def literature_evidence_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:

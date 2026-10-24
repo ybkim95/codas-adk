@@ -6,7 +6,9 @@ The Orchestrator coordinates state transitions across six phases, with all agent
     root_agent  (SequentialAgent, the Orchestrator)
     ├─ Phase A  data_understanding  (SequentialAgent)
     │    ├─ scout_agent ............ profiles, chooses target/roles, set_target -> memory
-    │    └─ hypotheses_agent ....... literature anchoring; registers a-priori hypotheses before any statistic
+    │    ├─ data_analyst_agent ..... data-understanding memo, each claim checked against the data summary
+    │    ├─ hypotheses_agent ....... literature anchoring; registers a-priori hypotheses before any statistic
+    │    └─ hypothesis_reviewer .... an independent referee's rubric scores (reported, change nothing)
     ├─ Phase B&C  discovery_loop  (LoopAgent, up to CODAS_MAX_DISCOVERY_ROUNDS)
     │    ├─ search_agent ........... run_discovery_round -> appends a round to memory
     │    ├─ method_runner .......... deterministic: next statistical + ML pool methods on the candidates
@@ -80,8 +82,10 @@ from codas.agents.tools import (
     run_nonlinear_model,
     run_subgroup_analysis,
     run_survival_screen,
+    record_data_memo,
     record_debate,
     record_gap_analysis,
+    record_hypothesis_review,
     record_lessons,
     run_method,
     search_literature,
@@ -290,6 +294,13 @@ scout_agent = _agent(
     before_agent=remember_goal,
     include_contents="default",  # the first agent reads the user's task directly
 )
+data_analyst_agent = _agent(
+    "data_analyst_agent",
+    "Reads the outcome-blind data summary and writes the data-understanding memo, every claim checked against it.",
+    prompts.DATA_ANALYST,
+    tier="reasoning",
+    tools=[data_detail, record_data_memo],
+)
 hypotheses_agent = _agent(
     "hypotheses_agent",
     "Grounds prior expectations in the scientific literature to orient the search (biological anchoring).",
@@ -300,10 +311,18 @@ hypotheses_agent = _agent(
            register_hypotheses],
     output_key="hypotheses",
 )
+hypothesis_reviewer = _agent(
+    "hypothesis_reviewer",
+    "Scores the registered hypotheses as an independent referee would (reported beside the objective measures).",
+    prompts.HYPOTHESIS_REVIEWER,
+    tier="reasoning",
+    thinking="HIGH",
+    tools=[record_hypothesis_review],
+)
 data_understanding = SequentialAgent(
     name="data_understanding",
-    description="Phase A: profile the dataset, fix the analysis design, and frame the hypotheses.",
-    sub_agents=[scout_agent, hypotheses_agent],
+    description="Phase A: profile the dataset, read it as an analyst, fix the design, and frame the hypotheses.",
+    sub_agents=[scout_agent, data_analyst_agent, hypotheses_agent, hypothesis_reviewer],
 )
 
 # --- Phase B&C: Parallel Agentic Search + Adversarial Validation (iterative loop) ---------------

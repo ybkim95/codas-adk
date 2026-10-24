@@ -81,6 +81,11 @@ _MIN_ROWS = 30
 _MIN_CONTROL_EVENTS = 10  # a negative control with fewer events cannot show an association
 _QUANTILES = 5
 _MONOTONE_RHO = 0.8  # rank correlation between quantile and effect that counts as monotone
+# A registered hypothesis's own predictions (codas.core.hypotheses), scored on the holdout.
+_TEMPLATE_FIELDS = ("incumbent", "shape", "magnitude", "predictions", "mechanism_steps", "alternatives", "mediators")
+_THRESHOLD_SHARE = 0.6  # a threshold: one step between adjacent quantiles carries this share of the change
+_U_SHARE = 0.25  # a U shape: both end quantiles sit this share of the range beyond the middle ones
+_ATTENUATION_LIMIT = 0.5
 _SEED = 17
 
 
@@ -174,7 +179,8 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                "direction": 1 if int(h["direction"]) > 0 else -1, **seen(h["feature"]),
                "family": "a_priori", "knownness": h.get("knownness"), "construct": h.get("construct"),
                "citation": h.get("citation"), "citations": list(h.get("citations") or []),
-               "declared_knownness": h.get("declared_knownness")}
+               "declared_knownness": h.get("declared_knownness"),
+               **{k: h[k] for k in _TEMPLATE_FIELDS if h.get(k)}}
         row.update(frozen(row))
         row.update({k: v for k, v in hazard(row).items() if k != "sign"})
         hypotheses.append(row)
@@ -416,6 +422,23 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
             same = bool(adj["sign"] == h["direction"])
             row["adherence_adjusted"] = {**{k: v for k, v in adj.items() if k not in ("sign", "e_value")},
                                          "same_direction": same, "holds": same and _excludes_null(adj)}
+    incumbent = h.get("incumbent")
+    if incumbent and incumbent in frame.columns and incumbent != h["feature"]:
+        # How much of the effect the incumbent explains, given the other confounders: the effect without it
+        # against the effect with it. When the agents already adjust for it, the main estimate is the latter.
+        already = cov is not None and incumbent in cov.columns
+        others = cov.drop(columns=[incumbent]) if already else cov
+        others = others if others is not None and others.shape[1] else None
+        added = _num(frame, incumbent).rename(incumbent).to_frame()
+        without = (_guarded(errors, "incumbent_removed", _effect, frame, x, target, time_col, others, m, scale)
+                   if already else res)
+        adj = res if already else _guarded(errors, "incumbent_adjusted", _effect, frame, x, target, time_col,
+                                           added if others is None else pd.concat([others, added], axis=1), m, scale)
+        if without is not None and adj is not None:
+            row["incumbent_adjusted"] = {**{k: v for k, v in adj.items() if k not in ("sign", "e_value")},
+                                         "incumbent": incumbent, "same_direction": bool(adj["sign"] == h["direction"]),
+                                         "attenuation": _attenuation(without, adj), "already_adjusted": already,
+                                         "effect_without_excludes_null": _excludes_null(without)}
     row["dose_response"] = _guarded(errors, "dose_response", _dose_response, frame, raw, target, time_col, cov,
                                     h["direction"])
     if time_col:
@@ -426,6 +449,110 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
     if errors:
         row["errors"] = errors
     return row
+
+
+def _attenuation(main: dict[str, Any], adjusted: dict[str, Any]) -> float | None:
+    """The share of the effect that adding a covariate removes, on the log-hazard (or correlation) scale:
+    0 nothing, 1 all of it, above 1 a reversed sign."""
+    key = "hr_per_sd" if "hr_per_sd" in main else "rho"
+    a, b = main.get(key), adjusted.get(key)
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return None
+    if key == "hr_per_sd":
+        if a <= 0 or b <= 0:
+            return None
+        a, b = float(np.log(a)), float(np.log(b))
+    return round(1 - b / a, 3) if a and np.isfinite(a) and np.isfinite(b) else None
+
+
+def _shape_holds(shape: str, dose: dict[str, Any] | None, direction: int) -> tuple[str, str]:
+    """Whether the quantile pattern of the effect has the registered shape (an approximation from five
+    quantiles: a spline would be finer)."""
+    if not dose:
+        return "not testable", "too few people for quantiles"
+    e = list(dose["estimates"])
+    seen = "quantiles " + ", ".join(f"{v:.3g}" for v in e)
+    change = e[-1] - e[0]
+    if shape == "monotone":
+        return ("met" if dose["monotone"] else "failed"), seen
+    if shape == "threshold":
+        steps = [abs(b - a) for a, b in zip(e, e[1:])]
+        ok = bool(change * direction > 0 and max(steps) >= _THRESHOLD_SHARE * abs(change) > 0)
+        return ("met" if ok else "failed"), seen
+    spread = max(e) - min(e)
+    middle = e[1:-1]
+    ends_high = min(e[0], e[-1]) - max(middle) >= _U_SHARE * spread > 0
+    ends_low = min(middle) - max(e[0], e[-1]) >= _U_SHARE * spread > 0
+    return ("met" if ends_high or ends_low else "failed"), seen
+
+
+def _prediction(code: str, row: dict[str, Any]) -> tuple[str, str]:
+    """(met / failed / not testable, what was seen) for one falsification prediction."""
+    if code == "negative_controls_null":
+        tested = [nc for nc in row.get("negative_controls") or [] if nc.get("status") in ("associated", "no association")]
+        if not tested:
+            return "not testable", "no negative control could be tested"
+        hit = [nc["control"] for nc in tested if nc["status"] == "associated"]
+        return ("failed", "associated: " + ", ".join(hit)) if hit else ("met", f"{len(tested)} controls null")
+    if code == "survives_lag":
+        lag = row.get("lag_sensitivity")
+        if not lag or not _finite(lag):
+            return "not testable", "too few people still at risk after the lag"
+        ok = bool(lag["same_direction"] and _excludes_null(lag))
+        return ("met" if ok else "failed"), f"after {lag['lag_days']} days: HR {lag.get('hr_per_sd', float('nan')):.3g}"
+    if code == "adherence_robust":
+        adh = row.get("adherence_adjusted")
+        if not adh or not np.isfinite(adh.get("p", np.nan)):
+            return "not testable", "wear adherence was not adjusted for separately"
+        return ("met" if adh["holds"] else "failed"), "holds" if adh["holds"] else "lost after adjusting for wear"
+    if code == "attenuation_below_half_after_incumbent":
+        inc = row.get("incumbent_adjusted")
+        if not inc or inc.get("attenuation") is None:
+            return "not testable", "the incumbent-adjusted effect could not be estimated"
+        if not inc.get("effect_without_excludes_null"):  # a share of an effect indistinguishable from none is noise
+            return "not testable", "no effect on the holdout for the incumbent to attenuate"
+        ok = bool(inc["same_direction"] and inc["attenuation"] < _ATTENUATION_LIMIT)
+        return ("met" if ok else "failed"), f"{inc['incumbent']} removes {100 * inc['attenuation']:.0f}% of the effect"
+    if code == "within_person_same_sign":
+        wp = row.get("within_person")
+        if not wp or "error" in wp:
+            return "not testable", "no within-person estimate"
+        return ("met" if wp.get("same_direction") else "failed"), f"within-person {wp['within']['estimate']:.3g}"
+    return "not testable", "unknown prediction"
+
+
+def _scorecard(h: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
+    """The registered predictions of ``h`` scored on its holdout row: the magnitude (does the 95% CI meet
+    the predicted range), the shape, and each falsification prediction."""
+    if "same_direction" not in row or not (h.get("magnitude") or h.get("shape") or h.get("predictions")):
+        return None
+    items = []
+    mag = h.get("magnitude")
+    if mag:
+        lo, hi = row.get("ci95") or [np.nan, np.nan]
+        if np.isfinite(lo) and np.isfinite(hi):
+            result = "met" if lo <= mag["high"] and hi >= mag["low"] and row.get("same_direction") else "failed"
+            items.append({"prediction": "magnitude", "result": result,
+                          "seen": f"predicted {mag['low']:g}-{mag['high']:g}, holdout 95% CI {lo:.3g}-{hi:.3g}"})
+        else:
+            items.append({"prediction": "magnitude", "result": "not testable", "seen": "no finite estimate"})
+    if h.get("shape"):
+        result, seen = _shape_holds(h["shape"], row.get("dose_response"), int(h["direction"]))
+        items.append({"prediction": f"shape: {h['shape']}", "result": result, "seen": seen})
+    for code in h.get("predictions") or []:
+        result, seen = _prediction(code, row)
+        items.append({"prediction": code, "result": result, "seen": seen})
+    tested = [i for i in items if i["result"] != "not testable"]
+    return {"items": items, "met": sum(1 for i in tested if i["result"] == "met"), "testable": len(tested)}
+
+
+def _shrinkage(row: dict[str, Any]) -> float | None:
+    """Holdout over discovery effect on the log-hazard scale (1: as large as in discovery, 0: gone). For a
+    candidate the discovery chose, the winner's curse makes it expected to fall below 1."""
+    a, b = row.get("discovery_hr"), row.get("hr_per_sd")
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)) or a <= 0 or b <= 0 or a == 1:
+        return None
+    return round(float(np.log(b) / np.log(a)), 3)
 
 
 def _falsification(row: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -549,6 +676,13 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
                 row["within_person"] = _within_person(panel, h, target)
             except Exception as exc:  # noqa: BLE001 - evidence only; reported as not computed
                 row["within_person"] = {"error": _error(exc)}
+    for row, h in zip(rows, prereg["hypotheses"]):
+        card = _scorecard(h, row)
+        if card is not None:
+            row["scorecard"] = card
+        shrink = _shrinkage(row)
+        if shrink is not None:
+            row["shrinkage"] = shrink
     # Which looks count, and how each is judged, is the ledger's decision (codas.aou.ledger): repeats and
     # outcomes already opened on this holdout are non-confirmatory, established associations are a reference
     # family, and novel hypotheses are judged by online FDR in ledger order with verdicts frozen when made.
@@ -617,7 +751,9 @@ def confirm(prereg: dict[str, Any], holdout_csv: Path, out_dir: Path, *, ledger_
         "reference": {"tested": sum(1 for r in rows if r.get("role") == ledger_book.REFERENCE),
                       "reproduced": sum(1 for r in rows if r.get("reproduced")),
                       "robust": sum(1 for r in rows if r.get("robust") and r.get("role") == ledger_book.REFERENCE)},
-        "non_confirmatory": sum(1 for r in rows if r.get("role") == ledger_book.NON_CONFIRMATORY)})
+        "non_confirmatory": sum(1 for r in rows if r.get("role") == ledger_book.NON_CONFIRMATORY),
+        "predictions": {"met": sum(r["scorecard"]["met"] for r in rows if r.get("scorecard")),
+                        "testable": sum(r["scorecard"]["testable"] for r in rows if r.get("scorecard"))}})
     result["audit"] = audit(result)
     (out_dir / f"{prereg['stem']}_confirmation.json").write_text(json.dumps(result, indent=2, default=str),
                                                                  encoding="utf-8")
@@ -739,6 +875,22 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
                          f"{effect} | {ci} | {_test_text(r)} | {ev} | {status} | {dose_text} | "
                          f"{', '.join(r.get('falsification_failed') or []) or '-'} |")
         lines.append("")
+    cards = [r for r in result["hypotheses"] if r.get("scorecard")]
+    if cards:
+        total = result.get("predictions") or {}
+        lines += [f"**Registered predictions on the holdout**: {total.get('met', 0)} of {total.get('testable', 0)} "
+                  "predictions that could be tested were met (magnitude: the 95% CI meets the predicted range; "
+                  "shape: from the effect by quantile; the falsification predictions from the checks below).", "",
+                  "| feature | prediction | result | seen |", "|---|---|---|---|"]
+        for r in cards:
+            for item in r["scorecard"]["items"]:
+                lines.append(f"| {r['feature']} | {item['prediction']} | {item['result']} | {item['seen']} |")
+        lines.append("")
+    shrunk = [r for r in result["hypotheses"] if r.get("shrinkage") is not None and r.get("family") == "exploratory"]
+    if shrunk:
+        lines += ["Shrinkage of the discovery candidates (holdout over discovery log hazard ratio; below 1 is "
+                  "expected, since the search picked the largest effects): "
+                  + "; ".join(f"{r['feature']} {r['shrinkage']:.2f}" for r in shrunk) + ".", ""]
     failed_checks = [f"{r['feature']}: {', '.join(f'{k} ({v})' for k, v in r['errors'].items())}"
                      for r in result["hypotheses"] if r.get("errors")]
     if failed_checks:

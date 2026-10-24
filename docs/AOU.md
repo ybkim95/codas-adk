@@ -152,8 +152,9 @@ The example spec uses `design: "incident"`, the design of the landmark All of Us
 ## Data understanding before hypotheses
 
 Before the agents register anything, `set_target` computes a data dossier (`codas/core/eda.py`). It never
-relates a feature to the outcome, so it is safe to read before registration. The hypotheses agent reads
-its digest and can look up any column with the `data_detail` tool. It holds:
+relates a feature to the outcome, so it is safe to read before registration. The data analyst reads it
+first and writes a memo (below); the hypotheses agent reads both and can look up any column with the
+`data_detail` tool. It holds:
 * each candidate feature: coverage, mean and SD, quantiles, skew and excess kurtosis, shares of zeros and of
   extreme values (beyond 4 SD; beyond 3 IQR from the quartiles), whether it is near-constant, and a
   natural unit (its interquartile range, rounded);
@@ -180,7 +181,64 @@ Once the first discovery round closes registration, the signal map follows. For 
 The interpreters, critic, defender and gap finder read it. The dossier and the signal map are in the
 notebook, the PDF ("Data understanding") and `<cohort>_state.json`.
 
+**The data analyst's memo** (`data_analyst_agent`, `record_data_memo`). Between the scout and the
+hypotheses agent, the data analyst reads the dossier and writes what it implies for the design: which
+features are skewed, extreme or nearly constant, which measure the same thing and which to keep, which
+track wear, whose missingness differs by age, sex or wear, which are unreliable over the window, whether
+the outcome's units are mixed. Each claim cites the dossier entries it rests on (`features.<column>.skew`,
+`families.<column>`, `wear_dependence.<column>`, `reliability.<column>`, `outcome.overall.events`, ...), and
+every number in it must be a value of those entries to its stated precision (`eda.check_claim`); a claim the
+dossier does not confirm goes back to the analyst and never reaches the hypotheses agent. The audit also
+counts how many of the problems the dossier flags the confirmed claims address. Both are reported as data
+understanding (`data_memo_audit`).
+
 Set `design: "window"` and `holdout_fraction: 0` for the earlier outcome-anchored design.
+
+## Hypothesis design: the template, its checks, and the scorecard
+
+A hypothesis is the sentence strong biomarker papers state, one field per part (`codas/core/hypotheses.py`):
+in people without the outcome at baseline, the *feature* (measuring a *construct*) predicts the outcome in
+a *direction*, beyond the *incumbent* (the established marker it has to beat, or none), with a *shape*
+(monotone, threshold, U-shaped) and a *magnitude* (a low-high range in the measure the outcome is tested
+with: hazard ratio per SD for a time to event, rho for a value; its source a retrieved paper's key or
+"analogy"), through a *mechanism* of at least two steps, with *confounders* and *mediators* (a mediator is
+not adjusted for), and *alternative explanations* (wear, reverse causation, confounding, ascertainment, the
+incumbent, between-person confounding), each bringing the *prediction* that tests it: negative controls
+null, survives the lag, robust to wear adherence, the incumbent removes less than half of the effect,
+within-person effect of the same sign.
+
+`register_hypotheses` refuses, with every reason, a hypothesis that:
+* misses a part, gives the magnitude on the wrong side of the null, outside a plausible range or in the
+  wrong measure, or sources it from a paper nobody retrieved;
+* predicts what this design cannot score (`testable_predictions`: a lag only for a time to event, wear only
+  with days-worn columns, within-person only with a panel, negative controls only when the spec has them);
+* makes a mediator a confounder, or a prediction about an incumbent it does not name;
+* rests on a feature the outcome-blind dossier shows cannot be tested well: nearly constant, split-half
+  reliability below 0.5, a correlation of |rho| >= 0.9 with its own incumbent (the incumbent measured
+  again), or wear dependence (|rho| >= 0.3 with a days-worn column) without the wear alternative.
+The agent corrects and resubmits within its turn; every submission and its reasons are kept
+(`hypothesis_attempts`).
+
+After registration, `hypothesis_reviewer` scores each hypothesis 1-5 on specificity, falsifiability,
+plausibility, novelty, testability and artefact risk, with its weakest part (`hypothesis_review`). The
+scores change nothing and are reported as secondary evidence: a model rates its own kind unreliably.
+
+On the sealed holdout each registered prediction is scored (`scorecard` per hypothesis in the
+confirmation): the magnitude is met when the 95% CI meets the predicted range in the predicted direction;
+the shape is read from the effect by quantile; each falsification prediction from its check (the
+incumbent's share is the effect without the incumbent against the effect with it, given the other
+confounders, also when the agents already adjust for the incumbent). A prediction
+that cannot be checked (too few people after the lag, no negative control testable, no holdout effect for
+the incumbent to attenuate) is "not testable" and counts neither way. For discovery's own candidates the
+discovery estimate is not a prediction (the search picked the largest effects), so their shrinkage, the
+holdout over the discovery log hazard ratio, is reported instead.
+
+**Hypothesis quality** (`hypothesis_quality` in the state file, a section of the report, a notebook table).
+Measured, not asserted: submissions and how many were complete the first time, refusals by template part,
+the share of registered hypotheses with an incumbent, with a magnitude from a paper, citing retrieved
+papers, novel by the counted evidence; distinct constructs; mechanism steps and predictions per
+hypothesis; the memo's confirmed claims and the problems it noticed; the review's means; and, after the
+holdout, replication and the registered predictions met, by kind.
 
 ## Quality rules: which days, nights, cases and participants count
 
@@ -474,12 +532,11 @@ entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell,
   Round summaries now give each candidate's q, confounder-adjusted rho, failed checks, and the
   engine's warnings.
 * **Hypotheses registered before the data** (`register_hypotheses`). After reading the literature
-  evidence and before the first round, the Researcher registers falsifiable hypotheses (feature, predicted
-  direction, construct, mechanism, a citation by key). They are tested on the holdout whatever discovery
-  finds, as the `a_priori` family: one the counted literature classes as established is a reference
-  (tested at alpha on its own), the rest join discovery's `exploratory` candidates in the novel family,
-  under online false-discovery-rate control across the cumulative ledger. Registration closes when the
-  first round runs.
+  evidence and before the first round, the Researcher registers falsifiable hypotheses in the template
+  below. They are tested on the holdout whatever discovery finds, as the `a_priori` family: one the counted
+  literature classes as established is a reference (tested at alpha on its own), the rest join discovery's
+  `exploratory` candidates in the novel family, under online false-discovery-rate control across the
+  cumulative ledger. Registration closes when the first round runs.
 * **Within-person mixed models** (spec key `panel`, measurement outcomes): every later outcome value is
   paired with the wearable summary of the `period_days` before it (`<name>.panel.csv`, same holdout
   split, a pseudonymous person index). `run_mixed_model` fits a random-intercept model with the
@@ -649,6 +706,7 @@ and year, and how much of that title the entry contains).
 | LaTeX report | fpdf2 PDF with phase outputs, method and gap tables, debates, lessons, forest / subgroup / dose-response / importance figures; no LaTeX in the Workbench |
 | 80/20 row split | sealed 50% participant split, pre-registration hash, cumulative ledger, falsification battery (stricter) |
 | cost table | per-agent execution report (calls, tokens, tools, time, estimated cost, models served), with the agents' information flow and design changes |
+| hypothesis generation | a data analyst's memo checked against the data summary, a template validator with objective refusals, one independent review (scores only; no revision loop or tournament), and a holdout scorecard per prediction |
 | not ported | causal-model (DAG) generator, reinvestigation planner as a separate agent (the gap finder covers re-running methods on candidates), literature updater inside the loop, section-wise parallel writers |
 
 ## Testing outside the Workbench

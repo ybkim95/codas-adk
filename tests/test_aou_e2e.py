@@ -45,14 +45,33 @@ def _call(name: str, **args: Any) -> types.Part:
     return types.Part(function_call=types.FunctionCall(name=name, args=args))
 
 
+def _steps_hypothesis(citation: str = "", knownness: str = "established") -> dict[str, Any]:
+    """A complete registered hypothesis (codas.core.hypotheses): fewer daily steps, higher outcome, beyond BMI;
+    the magnitude is given as rho and turned into a hazard ratio for a time to event. (The very-active minutes
+    would not do as the incumbent: in the synthetic data they are the step count measured again.)"""
+    return {"feature": "act_steps_mean", "direction": "negative", "construct": "activity volume",
+            "incumbent": "bmi_cov", "shape": "monotone",
+            "magnitude": {"measure": "rho", "low": -0.3, "high": -0.02, "source": "analogy"},
+            "mechanism": ["more daily steps raise insulin sensitivity", "insulin sensitivity lowers glycaemia"],
+            "alternatives": ["incumbent", "wear"], "predictions": [], "citation": citation, "knownness": knownness,
+            "relevance": "a modifiable target"}
+
+
 # What each agent does: a sequence of tool calls, then a text answer.
 SCRIPTS: dict[str, list[types.Part]] = {
     "scout_agent": [_call("profile_dataset"), _call("preview_columns"),
                     _call("set_target", target_column="hba1c", confounder_columns_csv="age,female")],
+    # One claim the data summary confirms, one whose number it does not hold.
+    "data_analyst_agent": [_call("record_data_memo", memo_json=json.dumps({
+        "summary": "Wearable summaries over the baseline window, and the outcome on its own.",
+        "claims": [{"statement": "act_steps_mean is summarised for the cohort", "fields": ["features.act_steps_mean"],
+                    "implication": "usable as the activity-volume feature"},
+                   {"statement": "act_steps_mean has skew 999.5", "fields": ["features.act_steps_mean.skew"]}]}))],
     "hypotheses_agent": [_call("search_literature", query="daily steps and HbA1c in n = 12 participants"),
-                         _call("register_hypotheses", hypotheses_json=json.dumps(
-                             [{"feature": "act_steps_mean", "direction": "negative", "construct": "activity volume",
-                               "mechanism": "insulin sensitivity", "citation": "", "knownness": "established"}]))],
+                         _call("register_hypotheses", hypotheses_json=json.dumps([_steps_hypothesis()]))],
+    "hypothesis_reviewer": [_call("record_hypothesis_review", reviews_json=json.dumps(
+        [{"feature": "act_steps_mean", "specificity": 4, "falsifiability": 4, "plausibility": 4, "novelty": 2,
+          "testability": 4, "artefact_risk": 3, "comment": "an established association, kept as a reference"}]))],
     "search_agent": [_call("run_discovery_round")],
     "statistical_interpreter": [_call("propose_feature", operation="ratio", feature_a="act_steps_mean",
                                       feature_b="sleep_rare_mean"),
@@ -109,6 +128,14 @@ class ScriptedLlm(BaseLlm):
                 found = re.search(r"'feature': '([^']+)'", instruction)
                 part = _call("record_debate", **{**dict(part.function_call.args),
                                                  "feature": found.group(1) if found else ""})
+            if part.function_call.name == "register_hypotheses":  # in the measure this outcome is tested with
+                instruction = str(getattr(llm_request.config, "system_instruction", "") or "")
+                items = json.loads(part.function_call.args["hypotheses_json"])
+                if "survives_lag" in instruction:  # a time to event: the scorable predictions include the lag
+                    for item in items:
+                        if isinstance(item.get("magnitude"), dict) and item["magnitude"].get("measure") == "rho":
+                            item["magnitude"] = {**item["magnitude"], "measure": "hr_per_sd", "low": 0.6, "high": 0.97}
+                part = _call("register_hypotheses", hypotheses_json=json.dumps(items))
             if part.function_call.name == "set_target":  # target named in the goal ("The target column is x")
                 goal = " ".join(p.text or "" for c in llm_request.contents or [] for p in c.parts or [])
                 found = re.search(r"target column is (\w+)", goal)
@@ -453,8 +480,7 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
         text=None, model="none", configured=False, sources=[], queries=[]))
     asked = europe_pmc({"step count": (120, 4, [STEPS_PAPER])})
     monkeypatch.setitem(SCRIPTS, "hypotheses_agent", [_call("register_hypotheses", hypotheses_json=json.dumps(
-        [{"feature": "act_steps_mean", "direction": "negative", "construct": "activity volume",
-          "mechanism": "insulin sensitivity", "citation": "[PMID:30000001]", "knownness": "unexplored"}]))])
+        [_steps_hypothesis("[PMID:30000001]", "unexplored")]))])
 
     con = duckdb.connect()
     build_synthetic_cdr(con)
@@ -501,6 +527,24 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
         assert state["literature_evidence"]["daily step count"]["papers"] == 120
         assert state["a_priori_hypotheses"][0]["declared_knownness"] == "unexplored"
         assert state["citations"]["verified"] == ["PMID:30000001"] and "## References" in report
+        # Its own predictions are scored on the holdout: magnitude, shape, and the incumbent's attenuation.
+        scored = {i["prediction"]: i["result"] for i in first["scorecard"]["items"]}
+        assert set(scored) == {"magnitude", "shape: monotone", "attenuation_below_half_after_incumbent",
+                               "adherence_robust"}
+        assert first["incumbent_adjusted"]["incumbent"] == "bmi_cov"
+        assert "Registered predictions on the holdout" in report
+        # The design's quality is measured: the memo's claims checked, the review, the holdout's verdict.
+        assert state["data_memo_audit"]["checked"] == {"cited": 1, "wrong value": 1}
+        assert "skew 999.5" not in state["data_memo"] and "activity-volume feature" in state["data_memo"]
+        quality = state["hypothesis_quality"]
+        assert quality["design"]["registered"] == 1 and quality["review"]["novelty"] == 2
+        assert quality["holdout"]["a_priori_tested"] == 1 and "## Hypothesis quality" in report
+        from codas.aou import notebook_views as views
+
+        for table in (views.data_memo_table, views.hypothesis_review_table, views.hypothesis_quality_table,
+                      views.scorecard_table, views.hypotheses_table):
+            assert table(result, stem) is not None, table.__name__
+        assert views.hypotheses_table(result, stem)["incumbent"].tolist() == ["bmi_cov"]
         assert confirmation["ledger"]["registrations"] >= 1
         kinds[stem] = prereg["survival_time"]
     # One measurement (value outcome) and one condition (time to event, tested with Cox).

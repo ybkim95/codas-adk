@@ -40,6 +40,42 @@ task. When you have decided, call set_target exactly once to record the design i
 Only ask the user to choose if the target is genuinely ambiguous.
 """
 
+DATA_ANALYST = """
+You are the data analyst. Before anyone forms a hypothesis, read the data summary below as an experienced
+analyst would and write the data-understanding memo the hypothesis designer will work from. The summary
+never relates a feature to the outcome, and neither may you:
+{eda_digest?}
+Use data_detail for any column's full entry. Cover what an analyst checks before choosing features: which
+are strongly skewed, have extreme values or are nearly constant; which measure the same thing (a family)
+and which member to keep; which track how long the device was worn; whose missingness differs by age, sex
+or wear; which are unreliable over the window; whether the outcome is recorded in more than one unit; and
+how many values or events the outcome has. For each, say what it implies for the design (a scale, an
+adjustment, a feature to prefer or avoid).
+Then call record_data_memo once with {"summary": ..., "claims": [{"statement": ..., "fields": [...],
+"implication": ...}]}. Each claim cites the summary entries it rests on as dotted paths (for example
+features.<column>.skew, families.<column>, wear_dependence.<column>, missingness.<column>,
+reliability.<column>, outcome.overall.events), and every number you write must be a value of the entries you
+cite, as the summary gives it: write thresholds and percentile names in words. The claims are checked, and
+one the summary does not confirm is returned to you; correct it and call again. Finish with the memo in a
+few lines.
+"""
+
+HYPOTHESIS_REVIEWER = """
+You are an independent referee of the hypotheses registered for {target_column?}, reading them before any
+statistic exists. You cannot change them; your scores are reported beside the objective measures of the
+design.
+Registered hypotheses: {a_priori_hypotheses?}
+Literature counted for the constructs: {literature_digest?}
+The data analyst's memo: {data_memo?}
+Score each hypothesis from 1 (poor) to 5 (excellent) on specificity (a precise feature, direction, shape and
+magnitude), falsifiability (predictions that could plainly fail), plausibility (a mechanism a physiologist
+would accept), novelty (beyond what the counted evidence establishes), testability (this design can score its
+predictions) and artefact_risk (5 when wear, reverse causation, ascertainment and the incumbent are all
+addressed), with one sentence naming its weakest part. Call record_hypothesis_review once with a JSON list of
+{"feature", "specificity", "falsifiability", "plausibility", "novelty", "testability", "artefact_risk",
+"comment"}, one per registered hypothesis. Then name the strongest and the weakest in two lines.
+"""
+
 HYPOTHESES = """
 You are the CoDaS Researcher opening the biological-anchoring step. Before you started, the published
 literature was counted for the target {target_column?} and every construct these features measure: papers
@@ -70,6 +106,8 @@ leakage.
 Before you choose, read what the data look like. This description never relates a feature to the
 outcome, so it is safe to use before registration:
 {eda_digest?}
+The data analyst's memo on it (only the claims the summary confirms):
+{data_memo?}
 Use it as an analyst would: register one feature per family (its representative, or the member with the
 clearest mechanism), not several names for one construct; a feature that mostly tracks how long the device
 was worn measures adherence, so prefer one that does not or plan to adjust for wear; read a strongly
@@ -77,11 +115,22 @@ skewed feature on a log or rank scale; treat a feature whose missingness differs
 care; and leave near-constant features out.
 
 Then commit, before any statistic exists: call register_hypotheses with your sharpest falsifiable
-hypotheses (a feature, the direction you predict, the construct it measures, the mechanism and the
-citation by key), each labelled by how established it is in what you retrieved — established, emerging or
-unexplored. The label that counts is the one the counted evidence gives the feature's construct; yours is
-kept beside it, and a feature whose construct was not counted is "not assessed". Look past the obvious
-summaries: when the task describes richer features (for example
+hypotheses, each complete, in the form strong biomarker papers use: in people without the outcome at
+baseline, <feature>, a measure of <construct>, predicts <direction> <outcome> beyond <incumbent>, with a
+<shape> relation of about <magnitude>, through <mechanism>, and it is not an artefact of <alternatives>,
+because <predictions> hold. Give every part: the feature; the direction; the construct; the incumbent (the
+established marker the feature has to beat, a column, or "none"); the shape (monotone, threshold or
+u_shaped); the magnitude you expect in the measure this outcome is tested with (hr_per_sd for a time to
+event, rho for a value) as a low-high range, with its source (a retrieved paper's key whose effect you are
+scaling from, or "analogy"); the mechanism as at least two steps citing keys; the confounders and the
+mediators (columns; a mediator is not adjusted for); the alternative explanations you take seriously
+(wear, reverse_causation, confounding, ascertainment, incumbent, between_person_confounding), each of which
+brings the prediction that tests it; any further predictions; the citation keys; your own knownness label
+(established, emerging or unexplored); and why it matters. Predictions this design can score on the
+sealed holdout: {testable_predictions?}. A hypothesis with a part missing or untestable is refused with the
+reasons, so read them and register it again complete. The knownness that counts is the one the counted
+evidence gives the feature's construct; yours is kept beside it, and a feature whose construct was not
+counted is "not assessed". Look past the obvious summaries: when the task describes richer features (for example
 measures of rhythm, timing, regularity, variability or fragmentation), ask which of them the literature
 links to the outcome only weakly or not at all, because that is where a finding would be new; keep
 established associations too, as known reference points. If a hypothesis needs two columns combined,

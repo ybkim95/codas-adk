@@ -30,7 +30,7 @@ from google.adk.tools import ToolContext
 
 from codas.aou.privacy import (MASK, SMALL_CELL_MAX, aou_mode, literature_search_enabled, mask_small_counts,
                                mask_small_counts_in_text)
-from codas.core import eda, gemini, literature
+from codas.core import eda, gemini, hypotheses as design, literature
 from codas.core.data import InsufficientDataError, profile_dataframe, read_csv_dataset
 from codas.core.discovery import DiscoveryRequest, run_discovery_from_csv
 from codas.core.statistics import safe_spearman
@@ -723,17 +723,25 @@ _MAX_A_PRIORI = int(os.getenv("CODAS_MAX_A_PRIORI_HYPOTHESES", "8"))
 
 
 def register_hypotheses(hypotheses_json: str, tool_context: ToolContext) -> dict[str, Any]:
-    """Register falsifiable hypotheses BEFORE any discovery statistic exists. ``hypotheses_json`` is a
-    JSON list of objects with: ``feature`` (an existing column, or a feature you registered with
-    propose_feature), ``direction`` (positive/negative or 1/-1: the association you predict),
-    ``construct`` (what the feature measures), ``mechanism``, ``citation`` and ``knownness``: established
-    (the literature already reports it), emerging (indirect or preliminary evidence) or unexplored (no
-    evidence found). When papers were retrieved in this run, ``citation`` must name at least one of them by
-    its key, [PMID:...] or [DOI:...], and no other key. The knownness that counts is the one the literature
-    evidence gives the feature's construct (counted, not judged; ``not assessed`` without evidence); yours is
-    kept beside it. Each is pre-registered and tested on the sealed holdout whatever discovery finds, in its
-    own family, so a hypothesis fixed before the data could steer it does not pay for the exploratory
-    search. Registration closes when the first discovery round runs."""
+    """Register falsifiable hypotheses BEFORE any discovery statistic exists. ``hypotheses_json`` is a JSON
+    list of objects, each a complete hypothesis:
+    ``feature`` (an existing column, or a feature you registered with propose_feature); ``direction``
+    (positive/negative); ``construct`` (what the feature measures); ``incumbent`` (the established marker the
+    feature has to beat, a column, or "none"); ``shape`` (monotone, threshold or u_shaped); ``magnitude``
+    ({"measure", "low", "high", "source"}: the effect you expect, in the measure this outcome is tested with,
+    hr_per_sd for a time to event and rho for a value, and where the range comes from, a retrieved paper's
+    key or "analogy"); ``mechanism`` (at least two steps, feature -> intermediate -> outcome, citing keys);
+    ``confounders`` and ``mediators`` (columns; a mediator is not adjusted for); ``alternatives`` (wear,
+    reverse_causation, confounding, ascertainment, incumbent, between_person_confounding: each brings the
+    prediction that tests it); ``predictions`` (negative_controls_null, survives_lag, adherence_robust,
+    attenuation_below_half_after_incumbent, within_person_same_sign); ``citation`` (keys); ``knownness``
+    (your own label: established, emerging or unexplored); ``relevance``.
+    Every part is checked and a hypothesis with any part missing or untestable is refused with the reasons.
+    When papers were retrieved in this run, the hypothesis must cite at least one of them by its key,
+    [PMID:...] or [DOI:...], and no other key. The knownness that counts is the one the literature evidence
+    gives the feature's construct; yours is kept beside it. Each is pre-registered and tested on the sealed
+    holdout whatever discovery finds, where each prediction is scored. Registration closes when the first
+    discovery round runs."""
     state = tool_context.state
     if state.get("rounds"):
         return {"error": "Registration is closed: a discovery round has already run, so new hypotheses would "
@@ -745,49 +753,140 @@ def register_hypotheses(hypotheses_json: str, tool_context: ToolContext) -> dict
     if not isinstance(items, list):
         return {"error": "hypotheses_json must be a JSON list of hypothesis objects."}
     path = _resolve_csv_path(state.get("csv_path"), "")
-    columns = set(read_csv_dataset(path).columns) if path is not None else set()
+    frame = read_csv_dataset(path) if path is not None else None
+    columns = set(frame.columns) if frame is not None else set()
+    candidates = set(_candidate_columns(frame, state)) if frame is not None else set()
     proposals = {p.get("name") for p in state.get("proposed_features") or []}
     blocked = {str(state.get("target_column") or ""), *(state.get("excluded_columns") or []),
                *(state.get("context_columns") or []), *(state.get("confounder_columns") or [])}
     registered = list(state.get("a_priori_hypotheses") or [])
     store = state.get("literature_store") or {}
     matrix, construct_of = state.get("literature_evidence") or {}, state.get("construct_of") or {}
+    measure = "hr_per_sd" if str(state.get("survival_time_column") or "").strip() else "rho"
+    testable = set(state.get("testable_predictions") or design.PREDICTIONS)
+    usable = columns - {str(state.get("target_column") or ""), *(state.get("excluded_columns") or [])}
+    attempts = list(state.get("hypothesis_attempts") or [])
     accepted, rejected = [], []
     for item in items:
         item = item if isinstance(item, dict) else {}
         feature = str(item.get("feature") or "").strip()
-        raw = str(item.get("direction", "")).strip().lower()
-        direction = 1 if raw in {"1", "+1", "positive", "+"} else -1 if raw in {"-1", "negative", "-"} else 0
         knownness = str(item.get("knownness") or "").strip().lower()
-        cited = literature.tokens(str(item.get("citation") or ""))
+        text = " ".join(str(x) for x in (item.get("citation"), item.get("mechanism"),
+                                         (item.get("magnitude") or {}).get("source")
+                                         if isinstance(item.get("magnitude"), dict) else "") if x)
+        cited = literature.tokens(text)
         unknown = [k for k in cited if k not in store]
-        problem = ("it is the target, excluded, or adjustment-only" if feature in blocked
-                   else "not a column or a proposed feature" if feature not in columns | proposals
-                   else "direction must be positive or negative" if not direction
-                   else f"knownness must be one of {', '.join(_KNOWNNESS)}" if knownness not in _KNOWNNESS
-                   else "already registered" if any(h["feature"] == feature for h in registered)
-                   else f"at most {_MAX_A_PRIORI} hypotheses" if len(registered) >= _MAX_A_PRIORI
-                   else (f"{', '.join(unknown)} was not retrieved in this run; cite only papers from the evidence "
-                         "or from search_papers") if unknown
-                   else ("cite at least one retrieved paper by its key, [PMID:...] or [DOI:...] (from the evidence "
-                         "or from search_papers)") if store and not cited else None)
-        if problem:
-            rejected.append({"feature": feature, "reason": problem})
+        feature_ok = ("it is the target, excluded, or adjustment-only" if feature in blocked
+                      else "not a column or a proposed feature" if feature not in columns | proposals
+                      else "already registered" if any(h["feature"] == feature for h in registered)
+                      else f"at most {_MAX_A_PRIORI} hypotheses" if len(registered) >= _MAX_A_PRIORI else None)
+        entry, problems = design.validate(item, feature_ok=feature_ok, measure=measure, columns=usable,
+                                          blocked=columns - usable,  # an incumbent may be any other column
+                                          confounders=set(state.get("confounder_columns") or []),
+                                          citable=set(store), cite_keys=literature.tokens, testable=testable)
+        if knownness not in _KNOWNNESS:
+            problems.append(design.Problem("knownness", f"knownness must be one of {', '.join(_KNOWNNESS)}"))
+        if unknown:
+            problems.append(design.Problem("citation", f"{', '.join(unknown)} was not retrieved in this run; cite only "
+                                                       "papers from the evidence or from search_papers"))
+        elif store and not cited:
+            problems.append(design.Problem("citation", "cite at least one retrieved paper by its key, [PMID:...] or "
+                                                       "[DOI:...] (from the evidence or from search_papers)"))
+        if entry is not None:  # complete: does the outcome-blind data summary allow testing it well?
+            problems += design.objective_problems(
+                entry, profile=_feature_profile(state, feature), testable=testable, wear_rho=eda.WEAR_RHO,
+                incumbent_rho=_rank_with(frame, feature, entry["incumbent"], candidates))
+        attempts.append({"feature": feature, "accepted": not problems, "problems": [str(p) for p in problems],
+                         "parts": [getattr(p, "part", "feature") for p in problems]})
+        if problems:
+            rejected.append({"feature": feature, "reasons": [str(p) for p in problems]})
             continue
         evidence = matrix.get(construct_of.get(feature, ""), {})
-        entry = {"feature": feature, "direction": direction,
-                 # what the counted evidence says, which decides the family; the agent's own label beside it
-                 "knownness": evidence.get("novelty") or literature.NOT_ASSESSED, "declared_knownness": knownness,
-                 "evidence": ({k: evidence.get(k) for k in ("construct", "papers", "reviews", "earliest_year")}
-                              if evidence.get("novelty") not in (None, literature.NOT_ASSESSED) else None),
-                 "citations": cited,
-                 **{k: str(item.get(k) or "")[:300] for k in ("construct", "mechanism", "citation")}}
+        entry.update({
+            # what the counted evidence says, which decides the family; the agent's own label beside it
+            "knownness": evidence.get("novelty") or literature.NOT_ASSESSED, "declared_knownness": knownness,
+            "evidence": ({k: evidence.get(k) for k in ("construct", "papers", "reviews", "earliest_year")}
+                         if evidence.get("novelty") not in (None, literature.NOT_ASSESSED) else None),
+            "citations": cited, "citation": str(item.get("citation") or "")[:300],
+            "mechanism": " -> ".join(entry["mechanism_steps"])[:600]})
         registered.append(entry)
         accepted.append(entry)
     state["a_priori_hypotheses"] = registered
+    state["hypothesis_attempts"] = attempts
     return _json_safe({"registered": accepted, "rejected": rejected, "total_registered": len(registered),
                        "note": "Each registered hypothesis is tested once on the sealed holdout in the a-priori family; "
                                "its knownness is the one the literature evidence gives its construct."})
+
+
+def _feature_profile(state: Any, feature: str) -> dict[str, Any]:
+    """What the outcome-blind data summary says about ``feature``: near-constant, reliability, wear."""
+    dossier = state.get("eda") or {}
+    return {"near_constant": ((dossier.get("features") or {}).get(feature) or {}).get("near_constant"),
+            "reliability": ((dossier.get("reliability") or {}).get(feature) or {}).get("reliability"),
+            "wear": (dossier.get("wear_dependence") or {}).get(feature)}
+
+
+def _rank_with(frame: Any, feature: str, other: str, candidates: set[str]) -> float | None:
+    """Spearman rho of two candidate features (a correlation among wearable features says nothing about the
+    outcome, so it may be computed before registration); None for anything else."""
+    if frame is None or not other or feature not in candidates or other not in candidates:
+        return None
+    pair = frame[[feature, other]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(pair) < 3 * eda.MIN_TAIL:
+        return None
+    rho = pair[feature].corr(pair[other], method="spearman")
+    return float(rho) if math.isfinite(rho) else None
+
+
+def record_data_memo(memo_json: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Record the data-understanding memo the hypothesis designer works from. ``memo_json`` is a JSON object
+    {"summary": two or three sentences on what these data can and cannot show, "claims": [{"statement": one
+    finding, "fields": [the data-summary entries it rests on, as dotted paths: features.<column>.skew,
+    features.<column>.missing, families.<column>, wear_dependence.<column>, missingness.<column>,
+    reliability.<column>, covariates.<column>, outcome.overall.events, outcome_units], "implication": what it
+    means for the design}]}. Each claim is checked against the data summary: every number in its statement
+    must be a value of the cited entries, so write thresholds and percentile names in words. Claims the
+    summary does not confirm are returned to be corrected and never reach the designer; calling again
+    replaces the memo."""
+    state = tool_context.state
+    dossier = state.get("eda") or {}
+    if not dossier:
+        return {"error": "No data summary yet: the target must be set first."}
+    try:
+        memo = json.loads(memo_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": f"memo_json is not valid JSON: {exc}"}
+    if not isinstance(memo, dict) or not isinstance(memo.get("claims"), list):
+        return {"error": 'memo_json must be an object {"summary": ..., "claims": [...]}.'}
+    audit = eda.audit_memo(dossier, memo)
+    audit["revisions"] = int((state.get("data_memo_audit") or {}).get("revisions", -1)) + 1
+    state["data_memo_audit"] = audit
+    state["data_memo"] = eda.memo_text(audit)
+    return _json_safe({"checked": audit["checked"],
+                       "to_correct": [{"statement": c["statement"], "status": c["status"], "detail": c["detail"]}
+                                      for c in audit["claims"] if c["status"] in ("wrong value", "unknown field")],
+                       "note": "Only the claims the data summary confirms reach the hypothesis designer."})
+
+
+def record_hypothesis_review(reviews_json: str, tool_context: ToolContext) -> dict[str, Any]:
+    """Record an independent referee's scores of the registered hypotheses. ``reviews_json`` is a JSON list
+    with one object per registered hypothesis: {"feature", "specificity", "falsifiability", "plausibility",
+    "novelty", "testability", "artefact_risk": each a whole number from 1 (poor) to 5 (excellent; for
+    artefact_risk 5 means little risk), "comment": its weakest part in one sentence}. The scores are reported
+    beside the objective measures of the design; they change nothing that is registered."""
+    state = tool_context.state
+    registered = [h["feature"] for h in state.get("a_priori_hypotheses") or []]
+    if not registered:
+        return {"error": "No hypothesis is registered, so there is nothing to review."}
+    try:
+        items = json.loads(reviews_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": f"reviews_json is not valid JSON: {exc}"}
+    reviews, problems = design.review_scores(items, registered)
+    if problems:
+        return {"error": "; ".join(problems)}
+    state["hypothesis_review"] = reviews
+    return {"recorded": len(reviews)}
 
 
 # --- analysis tools: deeper, deterministic analyses an agent chooses (codas.core.analyses) ---------

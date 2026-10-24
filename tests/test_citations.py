@@ -29,7 +29,9 @@ def _register(ctx, *hypotheses):
 
 
 def _hypothesis(feature="act_steps_mean", citation="", knownness="emerging"):
-    return {"feature": feature, "direction": "negative", "construct": "c", "mechanism": "m", "citation": citation,
+    return {"feature": feature, "direction": "negative", "construct": "c", "incumbent": "none", "shape": "monotone",
+            "magnitude": {"measure": "rho", "low": -0.3, "high": -0.05, "source": "analogy"},
+            "mechanism": ["step one", "step two"], "predictions": ["negative_controls_null"], "citation": citation,
             "knownness": knownness}
 
 
@@ -39,8 +41,8 @@ def test_with_retrieved_papers_a_hypothesis_must_cite_one_of_them(tmp_path):
                    construct_of={"act_steps_mean": "daily step count"})
     out = _register(ctx, _hypothesis(), _hypothesis("sleep_minute_asleep_mean", "[PMID:99999999]"))
     assert [r["feature"] for r in out["rejected"]] == ["act_steps_mean", "sleep_minute_asleep_mean"]
-    assert "cite at least one retrieved paper" in out["rejected"][0]["reason"]
-    assert "PMID:99999999 was not retrieved" in out["rejected"][1]["reason"]
+    assert "cite at least one retrieved paper" in " ".join(out["rejected"][0]["reasons"])
+    assert "PMID:99999999 was not retrieved" in " ".join(out["rejected"][1]["reasons"])
     out = _register(ctx, _hypothesis(citation="as shown [PMID:30000001]", knownness="unexplored"),
                     _hypothesis("sleep_minute_asleep_mean", "[PMID:30000001]"))
     steps, sleep = out["registered"]
@@ -55,7 +57,7 @@ def test_without_retrieved_papers_nothing_can_be_cited_and_novelty_is_not_assess
     out = _register(ctx, _hypothesis(), _hypothesis("sleep_minute_asleep_mean", "[DOI:10.1/made.up]"))
     assert [h["feature"] for h in out["registered"]] == ["act_steps_mean"]
     assert out["registered"][0]["knownness"] == "not assessed"
-    assert "was not retrieved" in out["rejected"][0]["reason"]
+    assert "was not retrieved" in " ".join(out["rejected"][0]["reasons"])
 
 
 def test_the_paper_search_fills_the_runs_store(tmp_path, europe_pmc, monkeypatch):

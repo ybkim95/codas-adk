@@ -416,6 +416,16 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                 doc.table(["after round", "columns", "reason"],
                           [[e.get("after_round"), ", ".join(e.get("columns") or []), e.get("reason")] for e in log],
                           widths=[20, 55, 105])
+        from codas.core.hypotheses import RUBRIC
+
+        audit = phases.get("data_memo_audit") or {}
+        if audit.get("claims"):
+            doc.heading("The data analyst's memo (each claim checked against the data summary)", 2)
+            doc.plain(audit.get("summary") or "", size=9)
+            doc.table(["claim", "rests on", "check", "implication"],
+                      [[c["statement"], ", ".join(c.get("fields") or []),
+                        c["status"] + (f": {c['detail']}" if c.get("detail") else ""), c.get("implication")]
+                       for c in audit["claims"]], widths=[60, 40, 35, 45])
         doc.heading("Hypotheses and literature anchoring", 2)
         doc.markdown(phases.get("hypotheses") or "")
         registered = phases.get("a_priori_hypotheses") or []
@@ -425,6 +435,24 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                       [[h.get("feature"), "positive" if h.get("direction", 0) > 0 else "negative", h.get("knownness"),
                         h.get("declared_knownness"), h.get("construct"), h.get("citation")] for h in registered],
                       widths=[44, 18, 22, 18, 38, 40])
+            doc.heading("Each hypothesis as designed: what it must beat, its shape, magnitude and predictions", 3)
+            doc.table(["feature", "incumbent", "shape", "magnitude", "source", "predictions", "mechanism"],
+                      [[h.get("feature"), h.get("incumbent") or "-", h.get("shape"), _magnitude_text(h.get("magnitude")),
+                        (h.get("magnitude") or {}).get("source"), ", ".join(h.get("predictions") or []),
+                        " -> ".join(h.get("mechanism_steps") or [])] for h in registered],
+                      widths=[30, 25, 16, 22, 18, 35, 34])
+        refused = [a for a in phases.get("hypothesis_attempts") or [] if not a.get("accepted")]
+        if refused:
+            doc.heading("Submissions refused at registration (corrected and resubmitted, or dropped)", 3)
+            doc.table(["feature", "parts", "reasons"],
+                      [[a.get("feature"), ", ".join(dict.fromkeys(a.get("parts") or [])), "; ".join(a.get("problems") or [])]
+                       for a in refused], widths=[40, 30, 110])
+        review = phases.get("hypothesis_review") or []
+        if review:
+            doc.heading("Independent review (1-5; secondary evidence, since a model rates its own kind unreliably)", 3)
+            doc.table(["feature", *[k.replace("_", " ") for k in RUBRIC], "comment"],
+                      [[r["feature"], *[r["scores"].get(k) for k in RUBRIC], r.get("comment")] for r in review],
+                      widths=[30, 14, 16, 16, 14, 16, 16, 58])
 
     def phases_bc() -> None:
         doc.heading("Phases B-C: discovery loop and adversarial validation")
@@ -578,6 +606,12 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
     path = out_dir / f"{stem}_report.pdf"
     pdf.output(str(path))
     return path
+
+
+def _magnitude_text(m: dict[str, Any] | None) -> str:
+    if not m or not isinstance(m.get("low"), (int, float)) or not isinstance(m.get("high"), (int, float)):
+        return ""
+    return f"{m.get('measure')} {m['low']:g}-{m['high']:g}"
 
 
 def _outcome_cells(summary: dict[str, Any], kind: str | None) -> list[Any]:

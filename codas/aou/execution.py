@@ -31,8 +31,8 @@ from google.adk.plugins.base_plugin import BasePlugin
 from codas.core import model_tiers
 
 # Tools whose calls change the analysis design that later agents work on.
-DESIGN_TOOLS = ("set_target", "declare_confounders", "exclude_features", "propose_feature", "register_hypotheses",
-                "record_gap_analysis")
+DESIGN_TOOLS = ("set_target", "record_data_memo", "declare_confounders", "exclude_features", "propose_feature",
+                "register_hypotheses", "record_gap_analysis")
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\??\}")
 _TOKENS = ("prompt", "output", "thoughts", "cached", "tool_prompt", "total")
 LOGGER = logging.getLogger("codas.aou.execution")
