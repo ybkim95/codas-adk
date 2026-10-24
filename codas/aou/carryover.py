@@ -113,3 +113,28 @@ def adopt(out: Path, key: str, spec: CohortSpec, cdr: str, client: Any, reports_
         out.mkdir(parents=True, exist_ok=True)
         done.write_text(json.dumps(seen, indent=1), encoding="utf-8")
     return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m codas.aou.carryover``: write ``carry_over.json`` for the default run folder now (with the
+    fingerprint when the CDR is known from ``CODAS_AOU_CDR`` or ``WORKSPACE_CDR``), for download."""
+    import os
+
+    from codas.aou import runner
+
+    spec = CohortSpec.from_json(cohort.ROOT / "scripts" / "aou" / "hba1c_fitbit.example.json")
+    out = Path(runner.DEFAULT_OUT_DIR).expanduser().resolve()
+    cdr = os.getenv("CODAS_AOU_CDR") or os.getenv("WORKSPACE_CDR") or ""
+    client = None
+    if cdr:
+        from google.cloud import bigquery
+
+        client = bigquery.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
+    path = export(out, spec, cdr or "unknown.cdr", client, runner.reports_dir(out))
+    entries = len(json.loads(path.read_text(encoding="utf-8"))["ledger"])
+    print(f"wrote {path} ({entries} ledger entries); download it and upload it to codas_reports/ in the new workspace")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
