@@ -1,5 +1,5 @@
 {
-  "notes": "Candidate outcomes for free exploration on the All of Us Registered Tier. Concept ids are standard OMOP ids as best known; verify_catalog() checks each against the CDR concept table (exists, domain, name contains expect_name) and skips any that fail, so a wrong id is reported rather than analysed. Newer entries name their concept by public code (SNOMED, LOINC); resolve_codes() looks the code up in the CDR vocabulary, and the same concept check then applies. Defaults apply to every entry of a kind unless the entry sets the field: a condition case needs diagnoses on two distinct dates (min_occurrences), the usual guard against rule-out codes.",
+  "notes": "Candidate outcomes for free exploration on the All of Us Registered Tier. Concept ids are standard OMOP ids as best known; verify_catalog() checks each against the CDR concept table (exists, domain, name contains expect_name) and skips any that fail, so a wrong id is reported rather than analysed. Newer entries name their concept by public code (SNOMED, LOINC); resolve_codes() looks the code up in the CDR vocabulary, and the same concept check then applies. Defaults apply to every entry of a kind unless the entry sets the field: a condition case needs diagnoses on two distinct dates (min_occurrences), the usual guard against rule-out codes. The phenome scan (codas/aou/phenome.py) screens every verified entry against every wearable feature on the discovery share and selects outcomes by their hits, so the catalog is meant to be broad: diagnoses across organ systems and common lab values, each by its public code.",
   "defaults": {
     "condition": {
       "min_occurrences": 2
@@ -320,6 +320,1134 @@
         "SNOMED:90560007"
       ],
       "expect_name": "gout"
+    },
+    {
+      "name": "t1d",
+      "label": "Type 1 diabetes",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:46635009"
+      ],
+      "expect_name": "type 1"
+    },
+    {
+      "name": "prediabetes",
+      "label": "Prediabetes",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:15777000"
+      ],
+      "expect_name": "prediabetes"
+    },
+    {
+      "name": "metabolic_syndrome",
+      "label": "Metabolic syndrome",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:237602007"
+      ],
+      "expect_name": "metabolic syndrome"
+    },
+    {
+      "name": "hypercholesterolemia",
+      "label": "Hypercholesterolemia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:13644009"
+      ],
+      "expect_name": "hypercholesterol"
+    },
+    {
+      "name": "hypertriglyceridemia",
+      "label": "Hypertriglyceridemia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:302870006"
+      ],
+      "expect_name": "hypertriglycerid"
+    },
+    {
+      "name": "hypoglycemia",
+      "label": "Hypoglycemia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:302866003"
+      ],
+      "expect_name": "hypoglycemia"
+    },
+    {
+      "name": "atrial_flutter",
+      "label": "Atrial flutter",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:5370000"
+      ],
+      "expect_name": "flutter"
+    },
+    {
+      "name": "myocardial_infarction",
+      "label": "Myocardial infarction",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:22298006"
+      ],
+      "expect_name": "myocardial infarction"
+    },
+    {
+      "name": "angina",
+      "label": "Angina",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:194828000"
+      ],
+      "expect_name": "angina"
+    },
+    {
+      "name": "tia",
+      "label": "Transient ischemic attack",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:266257000"
+      ],
+      "expect_name": "transient ischemic"
+    },
+    {
+      "name": "cardiomyopathy",
+      "label": "Cardiomyopathy",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:85898001"
+      ],
+      "expect_name": "cardiomyopathy"
+    },
+    {
+      "name": "aortic_stenosis",
+      "label": "Aortic valve stenosis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:60573004"
+      ],
+      "expect_name": "aortic valve stenosis"
+    },
+    {
+      "name": "bradycardia",
+      "label": "Bradycardia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:48867003"
+      ],
+      "expect_name": "bradycardia"
+    },
+    {
+      "name": "tachycardia",
+      "label": "Tachycardia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:3424008"
+      ],
+      "expect_name": "tachycardia"
+    },
+    {
+      "name": "arrhythmia",
+      "label": "Cardiac arrhythmia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:698247007"
+      ],
+      "expect_name": "arrhythmia"
+    },
+    {
+      "name": "pvd",
+      "label": "Peripheral vascular disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:400047006"
+      ],
+      "expect_name": "peripheral vascular"
+    },
+    {
+      "name": "pulmonary_embolism",
+      "label": "Pulmonary embolism",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:59282003"
+      ],
+      "expect_name": "pulmonary embol"
+    },
+    {
+      "name": "dvt",
+      "label": "Deep venous thrombosis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:128053003"
+      ],
+      "expect_name": "venous thrombosis"
+    },
+    {
+      "name": "aortic_aneurysm",
+      "label": "Abdominal aortic aneurysm",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:233985008"
+      ],
+      "expect_name": "aneurysm"
+    },
+    {
+      "name": "anemia",
+      "label": "Anemia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:271737000"
+      ],
+      "expect_name": "anemia"
+    },
+    {
+      "name": "iron_deficiency_anemia",
+      "label": "Iron deficiency anemia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:87522002"
+      ],
+      "expect_name": "iron deficiency"
+    },
+    {
+      "name": "hypothyroidism",
+      "label": "Hypothyroidism",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:40930008"
+      ],
+      "expect_name": "hypothyroidism"
+    },
+    {
+      "name": "hyperthyroidism",
+      "label": "Hyperthyroidism",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:34486009"
+      ],
+      "expect_name": "hyperthyroidism"
+    },
+    {
+      "name": "pcos",
+      "label": "Polycystic ovary syndrome",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:237055002"
+      ],
+      "expect_name": "polycystic ovar"
+    },
+    {
+      "name": "asthma",
+      "label": "Asthma",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:195967001"
+      ],
+      "expect_name": "asthma"
+    },
+    {
+      "name": "allergic_rhinitis",
+      "label": "Allergic rhinitis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:61582004"
+      ],
+      "expect_name": "allergic rhinitis"
+    },
+    {
+      "name": "pneumonia",
+      "label": "Pneumonia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:233604007"
+      ],
+      "expect_name": "pneumonia"
+    },
+    {
+      "name": "influenza",
+      "label": "Influenza",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:6142004"
+      ],
+      "expect_name": "influenza"
+    },
+    {
+      "name": "covid19",
+      "label": "COVID-19",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:840539006"
+      ],
+      "expect_name": "covid"
+    },
+    {
+      "name": "sepsis",
+      "label": "Sepsis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:91302008"
+      ],
+      "expect_name": "sepsis"
+    },
+    {
+      "name": "cellulitis",
+      "label": "Cellulitis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:128045006"
+      ],
+      "expect_name": "cellulitis"
+    },
+    {
+      "name": "uti",
+      "label": "Urinary tract infection",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:68566005"
+      ],
+      "expect_name": "urinary tract"
+    },
+    {
+      "name": "crohns",
+      "label": "Crohn's disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:34000006"
+      ],
+      "expect_name": "crohn"
+    },
+    {
+      "name": "ulcerative_colitis",
+      "label": "Ulcerative colitis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:64766004"
+      ],
+      "expect_name": "ulcerative colitis"
+    },
+    {
+      "name": "ibs",
+      "label": "Irritable bowel syndrome",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:10743008"
+      ],
+      "expect_name": "irritable bowel"
+    },
+    {
+      "name": "celiac",
+      "label": "Celiac disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:396331005"
+      ],
+      "expect_name": "celiac"
+    },
+    {
+      "name": "cholelithiasis",
+      "label": "Gallstones",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:235919008"
+      ],
+      "expect_name": "cholelithiasis"
+    },
+    {
+      "name": "pancreatitis",
+      "label": "Acute pancreatitis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:197456007"
+      ],
+      "expect_name": "pancreatitis"
+    },
+    {
+      "name": "cirrhosis",
+      "label": "Cirrhosis of liver",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:19943007"
+      ],
+      "expect_name": "cirrhosis"
+    },
+    {
+      "name": "peptic_ulcer",
+      "label": "Peptic ulcer",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:13200003"
+      ],
+      "expect_name": "peptic ulcer"
+    },
+    {
+      "name": "hepatitis_c",
+      "label": "Hepatitis C",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:50711007"
+      ],
+      "expect_name": "hepatitis"
+    },
+    {
+      "name": "kidney_stone",
+      "label": "Kidney stone",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:95570007"
+      ],
+      "expect_name": "kidney stone"
+    },
+    {
+      "name": "bph",
+      "label": "Benign prostatic hyperplasia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:266569009"
+      ],
+      "expect_name": "prostatic hyperplasia"
+    },
+    {
+      "name": "urinary_incontinence",
+      "label": "Urinary incontinence",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:165232002"
+      ],
+      "expect_name": "incontinence"
+    },
+    {
+      "name": "acute_kidney_injury",
+      "label": "Acute renal failure",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:14669001"
+      ],
+      "expect_name": "renal failure"
+    },
+    {
+      "name": "esrd",
+      "label": "End-stage renal disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:46177005"
+      ],
+      "expect_name": "end-stage renal"
+    },
+    {
+      "name": "diabetic_kidney_disease",
+      "label": "Diabetic kidney disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:127013003"
+      ],
+      "expect_name": "kidney"
+    },
+    {
+      "name": "diabetic_neuropathy",
+      "label": "Diabetic neuropathy",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:230572002"
+      ],
+      "expect_name": "neuropathy"
+    },
+    {
+      "name": "diabetic_retinopathy",
+      "label": "Diabetic retinopathy",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:4855003"
+      ],
+      "expect_name": "retinopathy"
+    },
+    {
+      "name": "rheumatoid_arthritis",
+      "label": "Rheumatoid arthritis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:69896004"
+      ],
+      "expect_name": "rheumatoid arthritis"
+    },
+    {
+      "name": "osteoporosis",
+      "label": "Osteoporosis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:64859006"
+      ],
+      "expect_name": "osteoporosis"
+    },
+    {
+      "name": "low_back_pain",
+      "label": "Low back pain",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:279039007"
+      ],
+      "expect_name": "back pain"
+    },
+    {
+      "name": "fibromyalgia",
+      "label": "Fibromyalgia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:203082005"
+      ],
+      "expect_name": "fibromyalgia"
+    },
+    {
+      "name": "chronic_pain",
+      "label": "Chronic pain",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:82423001"
+      ],
+      "expect_name": "chronic pain"
+    },
+    {
+      "name": "psoriasis",
+      "label": "Psoriasis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:9014002"
+      ],
+      "expect_name": "psoriasis"
+    },
+    {
+      "name": "psoriatic_arthritis",
+      "label": "Psoriatic arthritis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:156370009"
+      ],
+      "expect_name": "psoriatic arthritis"
+    },
+    {
+      "name": "lupus",
+      "label": "Systemic lupus erythematosus",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:55464009"
+      ],
+      "expect_name": "lupus"
+    },
+    {
+      "name": "ankylosing_spondylitis",
+      "label": "Ankylosing spondylitis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:9631008"
+      ],
+      "expect_name": "ankylosing"
+    },
+    {
+      "name": "dementia",
+      "label": "Dementia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:52448006"
+      ],
+      "expect_name": "dementia"
+    },
+    {
+      "name": "alzheimers",
+      "label": "Alzheimer's disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:26929004"
+      ],
+      "expect_name": "alzheimer"
+    },
+    {
+      "name": "parkinsons",
+      "label": "Parkinson's disease",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:49049000"
+      ],
+      "expect_name": "parkinson"
+    },
+    {
+      "name": "epilepsy",
+      "label": "Epilepsy",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:84757009"
+      ],
+      "expect_name": "epilepsy"
+    },
+    {
+      "name": "seizure_disorder",
+      "label": "Seizure disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:128613002"
+      ],
+      "expect_name": "seizure"
+    },
+    {
+      "name": "multiple_sclerosis",
+      "label": "Multiple sclerosis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:24700007"
+      ],
+      "expect_name": "multiple sclerosis"
+    },
+    {
+      "name": "polyneuropathy",
+      "label": "Polyneuropathy",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:42345000"
+      ],
+      "expect_name": "polyneuropathy"
+    },
+    {
+      "name": "restless_legs",
+      "label": "Restless legs",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:32914008"
+      ],
+      "expect_name": "restless legs"
+    },
+    {
+      "name": "narcolepsy",
+      "label": "Narcolepsy",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:60380001"
+      ],
+      "expect_name": "narcolepsy"
+    },
+    {
+      "name": "bells_palsy",
+      "label": "Bell's palsy",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:193093009"
+      ],
+      "expect_name": "bell"
+    },
+    {
+      "name": "bipolar",
+      "label": "Bipolar disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:13746004"
+      ],
+      "expect_name": "bipolar"
+    },
+    {
+      "name": "schizophrenia",
+      "label": "Schizophrenia",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:58214004"
+      ],
+      "expect_name": "schizophrenia"
+    },
+    {
+      "name": "adhd",
+      "label": "Attention deficit hyperactivity disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:406506008"
+      ],
+      "expect_name": "attention deficit"
+    },
+    {
+      "name": "ptsd",
+      "label": "Posttraumatic stress disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:47505003"
+      ],
+      "expect_name": "stress disorder"
+    },
+    {
+      "name": "ocd",
+      "label": "Obsessive-compulsive disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:191736004"
+      ],
+      "expect_name": "obsessive"
+    },
+    {
+      "name": "panic_disorder",
+      "label": "Panic disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:371631005"
+      ],
+      "expect_name": "panic"
+    },
+    {
+      "name": "eating_disorder",
+      "label": "Eating disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:72366004"
+      ],
+      "expect_name": "eating disorder"
+    },
+    {
+      "name": "alcohol_use_disorder",
+      "label": "Alcohol use disorder",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:7200002"
+      ],
+      "expect_name": "alcohol"
+    },
+    {
+      "name": "nicotine_dependence",
+      "label": "Nicotine dependence",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:56294008"
+      ],
+      "expect_name": "nicotine"
+    },
+    {
+      "name": "glaucoma",
+      "label": "Glaucoma",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:23986001"
+      ],
+      "expect_name": "glaucoma"
+    },
+    {
+      "name": "cataract",
+      "label": "Cataract",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:193570009"
+      ],
+      "expect_name": "cataract"
+    },
+    {
+      "name": "macular_degeneration",
+      "label": "Macular degeneration",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:267718000"
+      ],
+      "expect_name": "macular degeneration"
+    },
+    {
+      "name": "hearing_loss",
+      "label": "Hearing loss",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:15188001"
+      ],
+      "expect_name": "hearing loss"
+    },
+    {
+      "name": "tinnitus",
+      "label": "Tinnitus",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:60862001"
+      ],
+      "expect_name": "tinnitus"
+    },
+    {
+      "name": "atopic_dermatitis",
+      "label": "Atopic dermatitis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:24079001"
+      ],
+      "expect_name": "atopic dermatitis"
+    },
+    {
+      "name": "eczema",
+      "label": "Eczema",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:43116000"
+      ],
+      "expect_name": "eczema"
+    },
+    {
+      "name": "contact_dermatitis",
+      "label": "Contact dermatitis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:40275004"
+      ],
+      "expect_name": "contact dermatitis"
+    },
+    {
+      "name": "acne",
+      "label": "Acne",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:11381005"
+      ],
+      "expect_name": "acne"
+    },
+    {
+      "name": "anaphylaxis",
+      "label": "Anaphylaxis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:39579001"
+      ],
+      "expect_name": "anaphylaxis"
+    },
+    {
+      "name": "hiv",
+      "label": "HIV infection",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:86406008"
+      ],
+      "expect_name": "immunodeficiency virus"
+    },
+    {
+      "name": "any_cancer",
+      "label": "Any malignant neoplasm",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:363346000"
+      ],
+      "expect_name": "malignant"
+    },
+    {
+      "name": "breast_cancer",
+      "label": "Breast cancer",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:254837009"
+      ],
+      "expect_name": "breast"
+    },
+    {
+      "name": "prostate_cancer",
+      "label": "Prostate cancer",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:399068003"
+      ],
+      "expect_name": "prostate"
+    },
+    {
+      "name": "colon_cancer",
+      "label": "Colon cancer",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:363406005"
+      ],
+      "expect_name": "colon"
+    },
+    {
+      "name": "lung_cancer",
+      "label": "Non-small cell lung cancer",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:254637007"
+      ],
+      "expect_name": "lung"
+    },
+    {
+      "name": "melanoma",
+      "label": "Melanoma",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:372244006"
+      ],
+      "expect_name": "melanoma"
+    },
+    {
+      "name": "endometriosis",
+      "label": "Endometriosis",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:129103003"
+      ],
+      "expect_name": "endometriosis"
+    },
+    {
+      "name": "dysmenorrhea",
+      "label": "Dysmenorrhea",
+      "kind": "condition",
+      "concept_ids": [],
+      "codes": [
+        "SNOMED:266599000"
+      ],
+      "expect_name": "dysmenorrhea"
+    },
+    {
+      "name": "glucose",
+      "label": "Glucose",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:2345-7"
+      ],
+      "value_min": 20.0,
+      "value_max": 1000.0,
+      "expect_name": "glucose"
+    },
+    {
+      "name": "creatinine",
+      "label": "Creatinine",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:2160-0"
+      ],
+      "value_min": 0.1,
+      "value_max": 20.0,
+      "expect_name": "creatinine"
+    },
+    {
+      "name": "urea_nitrogen",
+      "label": "Urea nitrogen",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:3094-0"
+      ],
+      "value_min": 1.0,
+      "value_max": 200.0,
+      "expect_name": "urea nitrogen"
+    },
+    {
+      "name": "ast",
+      "label": "AST",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:1920-8"
+      ],
+      "value_min": 1.0,
+      "value_max": 1000.0,
+      "expect_name": "aspartate aminotransferase"
+    },
+    {
+      "name": "albumin",
+      "label": "Albumin",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:1751-7"
+      ],
+      "value_min": 0.5,
+      "value_max": 7.0,
+      "expect_name": "albumin"
+    },
+    {
+      "name": "urate",
+      "label": "Uric acid",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:3084-1"
+      ],
+      "value_min": 0.5,
+      "value_max": 20.0,
+      "expect_name": "urate"
+    },
+    {
+      "name": "tsh",
+      "label": "TSH",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:3016-3"
+      ],
+      "value_min": 0.005,
+      "value_max": 100.0,
+      "expect_name": "thyrotropin"
+    },
+    {
+      "name": "hemoglobin",
+      "label": "Hemoglobin",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:718-7"
+      ],
+      "value_min": 3.0,
+      "value_max": 25.0,
+      "expect_name": "hemoglobin"
+    },
+    {
+      "name": "platelets",
+      "label": "Platelets",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:777-3"
+      ],
+      "value_min": 5.0,
+      "value_max": 1500.0,
+      "expect_name": "platelets"
+    },
+    {
+      "name": "leukocytes",
+      "label": "White blood cells",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:6690-2"
+      ],
+      "value_min": 0.1,
+      "value_max": 100.0,
+      "expect_name": "leukocytes"
+    },
+    {
+      "name": "sodium",
+      "label": "Sodium",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:2951-2"
+      ],
+      "value_min": 100.0,
+      "value_max": 180.0,
+      "expect_name": "sodium"
+    },
+    {
+      "name": "potassium",
+      "label": "Potassium",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:2823-3"
+      ],
+      "value_min": 1.5,
+      "value_max": 9.0,
+      "expect_name": "potassium"
+    },
+    {
+      "name": "ferritin",
+      "label": "Ferritin",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:2276-4"
+      ],
+      "value_min": 1.0,
+      "value_max": 10000.0,
+      "expect_name": "ferritin"
+    },
+    {
+      "name": "vitamin_d",
+      "label": "25-hydroxyvitamin D",
+      "kind": "measurement",
+      "concept_ids": [],
+      "codes": [
+        "LOINC:1989-3"
+      ],
+      "value_min": 1.0,
+      "value_max": 200.0,
+      "expect_name": "hydroxyvitamin d"
     }
   ]
 }

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ from codas.aou import cohort  # noqa: E402
 from codas.aou import daystore  # noqa: E402
 from codas.aou import feasibility as feas
 from codas.aou import ledger as ledger_book
+from codas.aou import phenome
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
 from codas.aou.phenotypes import describe as describe_phenotypes
@@ -543,7 +545,7 @@ def _ledger_lines(out: Path, keys: list[str]) -> list[str]:
 
 
 def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_keys: list[str] | None = None,
-                   billed: list[dict[str, Any]] | None = None) -> Path:
+                   billed: list[dict[str, Any]] | None = None, screen: str = "Feasibility screen") -> Path:
     lines = ["# CoDaS free exploration on All of Us", "",
              "Counts of 1-20 are masked. Review before anything leaves the Workbench.", ""]
     if billed:
@@ -558,7 +560,7 @@ def _write_summary(out: Path, table: str, runs: list[dict[str, Any]], ledger_key
                   f"{sum(t['tool_calls'] for t in ran):,} tool calls, {sum(t['tokens'] for t in ran):,} tokens "
                   f"({sum(t.get('thoughts', 0) for t in ran):,} thinking), "
                   f"{sum(t['wall_s'] for t in ran) / 60:.0f} agent minutes{cost}.", ""]
-    lines += ["## Feasibility screen", "", table, "", "## Runs", ""]
+    lines += [f"## {screen}", "", table, "", "## Runs", ""]
     for r in runs:
         if r.get("failed"):
             lines += [f"### {r['cohort']}", f"- failed: {r['failed']}",
@@ -904,8 +906,15 @@ def explore(
     log: Any = print,
     rerun: bool = False,
     on_agent: Any = None,
+    selection: str | None = None,
 ) -> dict[str, Any]:
-    """Verify the catalog, screen feasibility, then run CoDaS on the top-K outcomes.
+    """Verify the catalog, screen the outcomes, then run CoDaS on the top-K outcomes.
+
+    Under the incident design the outcomes are chosen by the phenome scan (``codas.aou.phenome``, the default
+    ``selection="scan"``): every feature against every verified outcome on the discovery share, keeping
+    outcomes with a hit, ranked by hits the literature has not established. ``min_cases`` and
+    ``min_measurement_n`` then apply to the discovery share in proportion to its size. ``selection="size"``
+    (and any window design) ranks by the number of participants or cases instead.
 
     With ``per_kind`` (the default) the top K is taken for each outcome kind in the catalog, so one
     run covers measurements and conditions alike. ``outcome_names`` names catalog entries to run instead of the ranked top K; they still have to pass the
@@ -951,8 +960,17 @@ def explore(
     verified = [o for o in outcomes if problems.get(o.name) is None]
     log(f"catalog: {len(verified)}/{len(outcomes)} outcomes verified against the concept table")
 
-    rows = feas.feasibility(verified, base, cdr, client)
     out = Path(out_dir).expanduser().resolve()
+    selection = (selection or os.getenv("CODAS_OUTCOME_SELECTION", "scan")).strip().lower()
+    scan = None
+    if selection == "scan" and base.design == "incident":
+        share = 1.0 - base.holdout_fraction
+        out.mkdir(parents=True, exist_ok=True)
+        scan = phenome.scan(verified, base, cdr, client, out, min_events=max(1, math.ceil(min_cases * share)),
+                            min_n=max(1, math.ceil(min_measurement_n * share)), log=log)
+        rows = phenome.feasibility_rows(scan)
+    else:
+        rows = feas.feasibility(verified, base, cdr, client)
     keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
     by_name = {o.name: o for o in verified}
     opened = _opened_outcomes(out, keys, by_name, base, test_holdout)
@@ -964,6 +982,12 @@ def explore(
         skipped = sorted(set(outcome_names) - {r["name"] for r in chosen})
         if skipped:
             log(f"skipped (failed the concept check or no qualifying participants): {', '.join(skipped)}")
+    elif scan is not None:
+        chosen = phenome.select(scan, opened, top_k=top_k, per_kind=per_kind)
+        if opened:
+            log(f"already tested on this holdout, not selected again: {', '.join(sorted(opened))}")
+        if not chosen:
+            log("no outcome had a hit in the phenome scan, so none is selected; name outcomes to run them anyway")
     else:
         chosen = feas.rank_outcomes([r for r in rows if r["name"] not in opened], top_k=top_k,
                                     min_measurement_n=min_measurement_n, min_cases=min_cases, per_kind=per_kind)
@@ -971,13 +995,18 @@ def explore(
             log(f"already tested on this holdout, not selected again: {', '.join(sorted(opened))}")
     if max_outcomes:
         chosen = chosen[:max_outcomes]
-    table = feas.feasibility_table(rows, problems, chosen, opened)
+    if scan is not None:
+        table = (phenome.scan_table(scan, problems, chosen, opened) + "\n\n### Strongest hits\n\n"
+                 + phenome.hits_table(scan))
+    else:
+        table = feas.feasibility_table(rows, problems, chosen, opened)
     log(table)
+    screen = "Phenome scan" if scan is not None else "Feasibility screen"
 
     out.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, Any]] = []
     memory_key = keys[0] if keys else cdr  # lessons are shared across outcomes on the same participants
-    summary_path = _write_summary(out, table, runs, keys, cohort.QUERY_LOG[first_job:])
+    summary_path = _write_summary(out, table, runs, keys, cohort.QUERY_LOG[first_job:], screen)
     if not screen_only:
         for row in chosen:
             o = by_name[row["name"]]
@@ -1006,10 +1035,13 @@ def explore(
                     log(f"  finished: {result.get('rounds')} rounds, {result.get('validated_count')} validated in "
                         f"the last round" + (f", replicated on the sealed holdout: {result['replication']}"
                                              if result.get("replication") else ""))
-            summary_path = _write_summary(out, table, runs, keys, cohort.QUERY_LOG[first_job:])
+            summary_path = _write_summary(out, table, runs, keys, cohort.QUERY_LOG[first_job:], screen)
     billed = cohort.QUERY_LOG[first_job:]
     if billed:
         log(f"BigQuery in this run: {cohort.billed_text(sum(b['bytes_billed'] for b in billed))}")
 
     return {"table": table, "chosen": [r["name"] for r in chosen], "runs": runs, "summary_path": str(summary_path),
-            "rows": mask_small_counts(rows)}
+            "rows": mask_small_counts(rows), "selection": "scan" if scan is not None else "size",
+            "scan": None if scan is None else {"path": str(out / phenome.SCAN_FILE), "pairs": scan["tested_pairs"],
+                                               "hits": sum(1 for p in scan["pairs"] if p["hit"]),
+                                               "features": scan["features"], "literature": scan.get("literature")}}

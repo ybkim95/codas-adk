@@ -389,15 +389,42 @@ python scripts/aou/run_codas_aou.py explore --screen-only   # check + count, no 
 python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 3 outcomes of each kind
 ```
 
-1. **Catalog check.** `scripts/aou/outcomes_catalog.json` lists about 15 Registered Tier outcomes
-   (labs and conditions). Each outcome's concept ids must exist in the CDR concept table, sit in the
-   expected domain, and have a name containing `expect_name`; failures are skipped and reported.
-2. **Feasibility screen.** For each outcome, the participants who meet the extractor's wearable
-   rule (and, for a condition, cases and controls), counted with the extractor's own SQL.
-3. **Selection.** A fixed rule: keep measurements with at least `--min-n` participants (default
-   1,000) and conditions with at least `--min-cases` cases and controls (default 200), order by that
-   sample, and take `--top-k` (default 3) for each outcome kind, so one run covers lab measurements
-   and diagnoses. `--overall` takes the top K across kinds instead. Outcomes already tested on this
+1. **Catalog check.** `scripts/aou/outcomes_catalog.json` lists about 140 Registered Tier outcomes
+   (115 diagnoses across organ systems by SNOMED CT code, 25 lab values by LOINC code). Each outcome's
+   concepts must exist in the CDR concept table, sit in the expected domain, and have a name containing
+   `expect_name`; failures are skipped and reported, so a wrong code is never analysed.
+2. **Phenome scan** (incident design, the default; `codas/aou/phenome.py`). Every wearable feature and
+   phenotype against every verified outcome, on the discovery share only, to choose outcomes by their
+   signal and by how little the literature has said about it rather than by their size:
+   * Three BigQuery reads in all: the discovery participants' person-level columns (built by the
+     extraction's own SQL in its person-level mode, with the phenotypes computed once per run merged in),
+     every catalog diagnosis's first date and number of dates, and every catalog lab's first in-range
+     value after index + lag. The sealed share is filtered out in the queries: no sealed row is downloaded.
+     Each outcome's cohort is then derived locally by the extraction's own rules (prevalent cases and too
+     few diagnosis dates left out, follow-up from index + lag to the diagnosis or the last visit); a test
+     checks it against the extraction person by person.
+   * Each pair is tested adjusted for age and sex (T0): for a diagnosis the Cox score test at one
+     age-and-sex fit per outcome (Breslow ties, Neyman's C(alpha) form so a feature's own missing rows do
+     not bias it), with the one-step hazard ratio per SD; for a lab value the partial Spearman correlation.
+     The same again adjusted for the spec's covariates and wear time (T1; a missing covariate is filled
+     with the median and flagged, a screening approximation), and T0 in two fixed halves. About 10,000
+     pairs take a few minutes; the result is cached by its inputs.
+   * A **hit** has q < 0.05 by Benjamini-Hochberg across every tested pair, a size that is not
+     negligible (hazard ratio per SD beyond 0.95-1.05; |rho| at least 0.1), the same sign with one-sided p
+     < 0.05 in each half, and the same sign with p < 0.05 at T1. Diagnoses need at least `--min-cases`
+     events and lab values `--min-n` participants, both in proportion to the discovery share (100 and 500
+     by default).
+   * For each outcome's three strongest hits the literature is counted (Europe PMC, as for the agents'
+     evidence matrix): whether the hit's construct is established for that outcome.
+   * The full grid, the rule and the strongest hits go to `phenome_scan.json` and `explore_summary.md`;
+     the notebook shows a map of the hits and their table. Searching the discovery share spends no
+     holdout: only registered hypotheses are tested on the sealed share. No agent sees the scan.
+3. **Selection.** Outcomes with at least one hit, ranked by hits the literature has not established,
+   then by hits, then by the strongest adjusted statistic; `--top-k` (default 3) for each outcome kind,
+   so one run covers lab measurements and diagnoses. An outcome without a hit is not selected (name it to
+   run it anyway). `--selection size` (and any window design) ranks by sample size instead: measurements
+   with at least `--min-n` participants and conditions with at least `--min-cases` cases and controls,
+   largest first. `--overall` takes the top K across kinds instead. Outcomes already tested on this
    holdout are not selected again (the screen table says "already tested on this holdout"): their
    holdout results are known, so a new test of them could not be confirmatory; an outcome this exploration
    tested itself and finished with the current code is reused, not skipped. `MAX_OUTCOMES` in the
@@ -528,7 +555,8 @@ or in a printed copy of the notebook.
 
 ### Choosing outcomes yourself
 
-The ranking favours whichever outcomes have the largest effective sample. To run specific catalog
+The ranking favours outcomes whose discovery signal is strong, consistent and new to the literature
+(or, with `selection="size"`, the largest effective sample). To run specific catalog
 entries instead, set `OUTCOMES = ["<name>", ...]` in the notebook's second cell, or pass
 `--outcomes <name>,<name>` to `run_codas_aou.py explore`.
 

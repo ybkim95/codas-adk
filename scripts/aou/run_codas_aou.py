@@ -71,7 +71,7 @@ def cmd_explore(args: argparse.Namespace) -> None:
     result = runner.explore(
         args.catalog, CohortSpec.from_json(args.spec), args.cdr, top_k=args.top_k, per_kind=not args.overall,
         min_measurement_n=args.min_n, min_cases=args.min_cases, out_dir=args.out_dir,
-        screen_only=args.screen_only, on_tool_call=_progress,
+        screen_only=args.screen_only, on_tool_call=_progress, selection=args.selection,
         outcome_names=[o.strip() for o in args.outcomes.split(",") if o.strip()] or None)
     print(f"\nsummary: {result['summary_path']}")
 
@@ -107,6 +107,8 @@ def main() -> None:
                            help="minimum cases (and controls) for a condition outcome")
             p.add_argument("--screen-only", action="store_true", help="verify and count, run no agents")
             p.add_argument("--outcomes", default="", help="comma-separated catalog names to run instead of the top K")
+            p.add_argument("--selection", choices=["scan", "size"], default=None,
+                           help="choose outcomes by the phenome scan (incident design; default) or by sample size")
     args = parser.parse_args()
     if args.command == "extract":
         cmd_extract(args)

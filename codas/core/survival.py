@@ -4,12 +4,16 @@ Newton-Raphson on the partial likelihood with Efron's handling of tied event tim
 most survival software. Standard errors come from the inverse observed information. Used by the
 confirmation step, where a pre-registered exposure is tested on held-out data, and by the agents'
 analysis tools (``codas.core.analyses``); the discovery screen does not depend on it.
+
+For screens over many columns (``codas.aou.phenome``) there is also a vectorised fit under Breslow's ties
+(``breslow_fit``) and the score test of each column against one such base fit (``score_tests``).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 from scipy import stats
@@ -157,3 +161,126 @@ def e_value(rr: float) -> float:
         return math.nan
     rr = rr if rr >= 1 else 1 / rr
     return rr + math.sqrt(rr * (rr - 1))
+
+
+# --- screening: one base fit per outcome, then a score test per column ------------------------------
+# Under Breslow's ties the information sums over event times collapse to weighted sums over rows: a row's
+# weight c is the sum of d_b / S0_b over the event blocks whose risk set holds it, so sum_b d_b S2_b / S0_b
+# = z' diag(c w) z, one matrix product, and no (rows x columns x columns) array is ever formed.
+
+def _tie_blocks(time: np.ndarray, event: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """For rows sorted by descending time: the last row of each block of equal times that holds an event
+    (its risk set is every row up to it) and the number of events in the block."""
+    ends = np.flatnonzero(np.r_[time[1:] != time[:-1], True]) if len(time) else np.zeros(0, dtype=int)
+    d = np.add.reduceat(event.astype(float), np.r_[0, ends[:-1] + 1]) if len(ends) else np.zeros(0)
+    keep = d > 0
+    return ends[keep], d[keep]
+
+
+def _row_weights(ends: np.ndarray, d: np.ndarray, s0: np.ndarray, n: int) -> np.ndarray:
+    """c_r = sum of d_b / S0_b over the blocks b whose risk set (rows 0..end_b) holds row r."""
+    tail = np.cumsum((d / s0)[::-1])[::-1]
+    first = np.searchsorted(ends, np.arange(n))  # the first block whose end is at or after the row
+    return np.where(first < len(ends), tail[np.minimum(first, len(ends) - 1)], 0.0)
+
+
+def breslow_fit(time: Any, event: Any, z: Any, max_iter: int = 50, tol: float = 1e-9) -> np.ndarray:
+    """Cox coefficients of ``z`` under Breslow's handling of ties, by Newton-Raphson with step-halving.
+    Rows must be complete and sorted by descending time. Risk-set sums are cumulative sums read at the end of
+    each block of tied times, with no loop over event times: a screen fits one such base model per outcome
+    and tests every column against it (``score_tests``)."""
+    time, event, z = np.asarray(time, dtype=float), np.asarray(event, dtype=bool), np.asarray(z, dtype=float)
+    ends, d = _tie_blocks(time, event)
+    beta = np.zeros(z.shape[1])
+    if not len(ends) or not z.shape[1]:
+        return beta
+    zsum = z[event].sum(axis=0)
+
+    def likelihood(b: np.ndarray):
+        eta = z @ b
+        shift = eta.max()
+        w = np.exp(eta - shift)
+        s0 = np.cumsum(w)[ends]
+        if not np.all(s0 > 0):
+            return -math.inf, None, None
+        mean = np.cumsum(w[:, None] * z, axis=0)[ends] / s0[:, None]
+        c = _row_weights(ends, d, s0, len(time))
+        loglik = float(eta[event].sum() - (d * (np.log(s0) + shift)).sum())
+        grad = zsum - d @ mean
+        hess = -(z.T @ ((c * w)[:, None] * z) - (mean * d[:, None]).T @ mean)
+        return loglik, grad, hess
+
+    loglik, grad, hess = likelihood(beta)
+    for _ in range(max_iter):
+        try:
+            step = np.linalg.solve(-hess, grad)
+        except np.linalg.LinAlgError:
+            break
+        new = beta + step
+        new_loglik, new_grad, new_hess = likelihood(new)
+        halvings = 0
+        while not new_loglik >= loglik - 1e-12 and halvings < 20:  # also rejects a step with -inf
+            step /= 2
+            new = beta + step
+            new_loglik, new_grad, new_hess = likelihood(new)
+            halvings += 1
+        if not np.isfinite(new_loglik):
+            break
+        done = abs(new_loglik - loglik) < tol * (abs(loglik) + tol)
+        beta, loglik, grad, hess = new, new_loglik, new_grad, new_hess
+        if done:
+            break
+    return beta
+
+
+def score_tests(time: Any, event: Any, z: Any, x: Any, beta: Any) -> list[dict[str, Any]]:
+    """For each column of ``x``: the score test of adding it, standardised, to the Cox model of ``z`` fitted
+    at ``beta`` (``breslow_fit``). Rows sorted by descending time; ``z`` complete; ``x`` may be missing.
+
+    Neyman's C(alpha) form: the score for the column is taken net of its regression on the score for ``z``,
+    so a ``beta`` fitted on every row stays valid on the rows where the column is observed. Returns per
+    column the one-step log hazard ratio per SD (a Newton step from zero, close to the maximum-likelihood
+    estimate for the modest effects a screen ranks), its z statistic, the two-sided p, and the rows and
+    events used. Columns missing on the same rows are tested together."""
+    time, event = np.asarray(time, dtype=float), np.asarray(event, dtype=bool)
+    z, x = np.asarray(z, dtype=float), np.asarray(x, dtype=float)
+    if x.ndim == 1:
+        x = x.reshape(-1, 1)
+    eta = z @ np.asarray(beta, dtype=float)
+    w_all = np.exp(eta - (eta.max() if len(eta) else 0.0))
+    observed_all = np.isfinite(x)
+    groups: dict[bytes, list[int]] = {}
+    for j in range(x.shape[1]):
+        groups.setdefault(np.packbits(observed_all[:, j]).tobytes(), []).append(j)
+    out: list[dict[str, Any]] = [{} for _ in range(x.shape[1])]
+    for cols in groups.values():
+        observed = observed_all[:, cols[0]]
+        t, e, zz, w = time[observed], event[observed], z[observed], w_all[observed]
+        nan = {"log_hr": math.nan, "z": math.nan, "p": math.nan, "n": int(observed.sum()), "events": int(e.sum())}
+        ends, d = _tie_blocks(t, e)
+        v = x[observed][:, cols]
+        sd = v.std(axis=0) if len(v) else np.zeros(len(cols))
+        if len(ends) < 2:
+            for j in cols:
+                out[j] = dict(nan)
+            continue
+        v = (v - v.mean(axis=0)) / np.where(sd > 0, sd, 1.0)
+        s0 = np.cumsum(w)[ends]
+        cw = _row_weights(ends, d, s0, len(t)) * w
+        mz = np.cumsum(w[:, None] * zz, axis=0)[ends] / s0[:, None]
+        izz = zz.T @ (cw[:, None] * zz) - (mz * d[:, None]).T @ mz
+        uz = zz[e].sum(axis=0) - d @ mz
+        mx = np.cumsum(w[:, None] * v, axis=0)[ends] / s0[:, None]
+        ux = v[e].sum(axis=0) - d @ mx
+        ixx = (cw[:, None] * v * v).sum(axis=0) - d @ (mx * mx)
+        ixz = v.T @ (cw[:, None] * zz) - (mx * d[:, None]).T @ mz
+        a = ixz @ np.linalg.pinv(izz)
+        score = ux - a @ uz
+        info = ixx - (a * ixz).sum(axis=1)
+        for k, j in enumerate(cols):
+            if not (sd[k] > 0 and info[k] > 0):
+                out[j] = dict(nan)
+                continue
+            stat = float(score[k] / math.sqrt(info[k]))
+            out[j] = {**nan, "log_hr": float(score[k] / info[k]), "z": stat, "p": float(2 * stats.norm.sf(abs(stat)))}
+    return out

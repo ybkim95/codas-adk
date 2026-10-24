@@ -327,12 +327,15 @@ doubtful = views.references_doubtful(checked)
 if doubtful is not None:
     display(Markdown("**Not found, or the entry matches little of the registered title**"))
     display(views.fit(doubtful))"""),
-md("## 3. Feasibility screen (counts only; 1-20 masked)"),
-code("""screen = runner.explore(CATALOG, BASE, CDR, client=client, top_k=TOP_K, outcome_names=OUTCOMES or None,
-                        max_outcomes=MAX_OUTCOMES or None, screen_only=True, log=lambda *_: None)
-display(Markdown(screen["table"]))
-print("selected for CoDaS:", screen["chosen"] or "none (lower the minimums in runner.explore if needed)")
-display(views.feasibility_figure(screen["rows"], screen["chosen"]))"""),
+md("""## 3. Choosing the outcomes: a phenome-wide scan
+
+The background job below starts by screening every verified catalog outcome (about 100 diagnoses and 30 lab
+values) against every wearable feature and phenotype, on the discovery half only: one BigQuery pass for the
+participants' features and one for all their diagnoses and lab values, then a test of every pair adjusted
+for age and sex, again after all covariates and wear time, and in two fixed halves. An outcome is selected
+when it has a hit (significant across the whole matrix, not negligible in size, the same sign in both halves
+and after adjustment), best first by hits the literature has not established. Nothing is tested on the
+sealed half here. Its table and map are shown below once the job ends (counts of 1-20 masked)."""),
 md("""## 4. Exploration
 
 Runs CoDaS (extraction, profiling, the discovery loop, critic/defender debate, reporting) on each
@@ -356,6 +359,13 @@ whose agents finished but whose holdout test or saving failed redoes only those 
 code("""result = job.run_or_attach({"catalog": str(CATALOG), "spec": str(REPO / "scripts/aou/hba1c_fitbit.example.json"),
                             "cdr": CDR, "top_k": TOP_K, "outcomes": OUTCOMES or None,
                             "max_outcomes": MAX_OUTCOMES or None, "test_holdout": TEST_ON_HOLDOUT}, quiet=True)
+if result.get("scan"):
+    display(Markdown(f"### Phenome scan: {result['scan']['hits']} hits among {result['scan']['pairs']:,} pairs"))
+    display(views.phenome_figure(result))
+    hits = views.phenome_hits_table(result)
+    if hits is not None:
+        display(views.fit(hits))
+display(views.feasibility_figure(result["rows"], result["chosen"]))
 display(Markdown("### Runs"))
 display(views.fit(views.runs_table(result)))
 literature = views.literature_table(result)

@@ -205,6 +205,55 @@ def feasibility_figure(rows: list[dict[str, Any]], chosen: list[str]):
     return Chart(fig)
 
 
+def _scan(result: dict[str, Any]) -> dict[str, Any] | None:
+    path = Path((result.get("scan") or {}).get("path") or "")
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def phenome_hits_table(result: dict[str, Any], limit: int = 25) -> pd.DataFrame | None:
+    """The phenome scan's strongest hits (discovery share): effect adjusted for age and sex, its q across the
+    matrix, both halves, the effect after covariates and wear, and what the literature says."""
+    scan = _scan(result)
+    if scan is None:
+        return None
+    labels = {o["name"]: o["label"] for o in scan["outcomes"]}
+    hits = sorted((p for p in scan["pairs"] if p["hit"]), key=lambda p: -abs(p["t1_z"] or 0))[:limit]
+    show = lambda p, k: (f"HR {p[k]:.2f}/SD" if p["measure"] == "hr_per_sd" else f"rho {p[k]:+.2f}") if p.get(k) is not None else "-"  # noqa: E731
+    return pd.DataFrame([{"outcome": labels.get(p["outcome"], p["outcome"]), "feature": p["feature"],
+                          "effect (age, sex)": show(p, "estimate"), "q": f"{p['q']:.1e}",
+                          "halves z": f"{p['half_z'][0]:+.1f} / {p['half_z'][1]:+.1f}",
+                          "effect (all covariates)": show(p, "t1_estimate"), "magnitude": p.get("magnitude"),
+                          "literature": p.get("novelty") or "not looked up"} for p in hits]) if hits else None
+
+
+def phenome_figure(result: dict[str, Any], limit: int = 25):
+    """The phenome scan as a map: outcomes with a hit (rows) by the features hit most often (columns); a hit
+    is coloured by its direction and strength (z adjusted for age and sex), other pairs left blank."""
+    scan = _scan(result)
+    if scan is None:
+        return None
+    hits = [p for p in scan["pairs"] if p["hit"]]
+    if not hits:
+        return None
+    labels = {o["name"]: o["label"] for o in scan["outcomes"]}
+    outcomes = list(pd.Series([p["outcome"] for p in hits]).value_counts().index[:limit])
+    features = list(pd.Series([p["feature"] for p in hits if p["outcome"] in outcomes]).value_counts().index[:limit])
+    grid = np.full((len(outcomes), len(features)), np.nan)
+    for p in hits:
+        if p["outcome"] in outcomes and p["feature"] in features:
+            grid[outcomes.index(p["outcome"]), features.index(p["feature"])] = p["z"]
+    bound = float(np.nanmax(np.abs(grid))) or 1.0
+    fig = _figure(max(6.0, 0.28 * len(features) + 3), max(2.5, 0.3 * len(outcomes) + 1.6))
+    ax = fig.subplots()
+    image = ax.imshow(grid, cmap="RdBu_r", vmin=-bound, vmax=bound, aspect="auto")
+    ax.set_xticks(range(len(features)), features, rotation=70, ha="right", fontsize=6)
+    ax.set_yticks(range(len(outcomes)), [labels.get(o, o) for o in outcomes], fontsize=7)
+    fig.colorbar(image, ax=ax, shrink=0.8, label="z (age and sex adjusted)")
+    ax.set_title(f"Phenome scan on the discovery share: {len(hits)} hits among {scan['tested_pairs']:,} pairs",
+                 loc="left", fontsize=9, color=INK)
+    return Chart(fig)
+
+
 # --- runs ---------------------------------------------------------------------------------------
 
 def _out_dir(result: dict[str, Any]) -> Path:

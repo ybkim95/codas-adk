@@ -689,33 +689,42 @@ def build_phenotype_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryPara
     return sql, params
 
 
-def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
-                     qc: bool = False, person_id: bool = False) -> tuple[str, list[QueryParam]]:
+def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc: bool = False,
+                     person_id: bool = False, person_level: bool = False) -> tuple[str, list[QueryParam]]:
     """Return the extraction SQL and its parameters. Identifiers are validated, values are bound.
 
     With ``phenotypes=False`` the intraday phenotypes are left out and ``person_id`` is selected so that
     the phenotypes computed once by ``build_phenotype_sql`` can be merged in (then dropped). With ``qc=True``
     the inputs of ``extraction_qc`` are selected too (a lab outcome's unit, id and name; each daily column's
-    mean and SD over each half of the window); the extraction drops them before writing any table."""
+    mean and SD over each half of the window); the extraction drops them before writing any table.
+
+    With ``person_level`` (incident design) the table holds the discovery share's participants with a valid
+    baseline whatever their outcome: ``person_id``, the days from the index date to the last EHR visit
+    (``last_seen_day``) and the person-level columns, built by the same code as each outcome's table, for the
+    phenome scan (``codas.aou.phenome``). The sealed share is left out in the query."""
     spec.validate()
+    if person_level and spec.design != "incident":
+        raise ValueError("A person-level table needs the incident design, whose index date is a person's own.")
+    qc = qc and not person_level
     cdr = resolve_cdr(cdr)
     t = lambda name: f"`{cdr}.{name}`"  # noqa: E731 - table reference helper
     params: list[QueryParam] = [
-        ("outcome_concept_ids", "ARRAY<INT64>", list(spec.outcome.concept_ids)),
         ("window_days", "INT64", int(spec.window_days)),
         ("min_wear_days", "INT64", int(spec.min_wear_days)),
     ]
-
-    concepts = "SELECT concept_id FROM UNNEST(@outcome_concept_ids) AS concept_id"
-    if spec.outcome.include_descendants:
-        concepts += (f"\n  UNION DISTINCT\n  SELECT descendant_concept_id FROM {t('concept_ancestor')}"
-                     "\n  WHERE ancestor_concept_id IN UNNEST(@outcome_concept_ids)")
-    ctes = [f"outcome_concepts AS (\n  {concepts}\n)"]
+    ctes: list[str] = []
+    if not person_level:
+        params.insert(0, ("outcome_concept_ids", "ARRAY<INT64>", list(spec.outcome.concept_ids)))
+        concepts = "SELECT concept_id FROM UNNEST(@outcome_concept_ids) AS concept_id"
+        if spec.outcome.include_descendants:
+            concepts += (f"\n  UNION DISTINCT\n  SELECT descendant_concept_id FROM {t('concept_ancestor')}"
+                         "\n  WHERE ancestor_concept_id IN UNNEST(@outcome_concept_ids)")
+        ctes.append(f"outcome_concepts AS (\n  {concepts}\n)")
 
     primary = spec.wearables[0]
     valid = _valid_rule(spec, params)
     bounds = ""
-    if spec.outcome.kind == "measurement":
+    if spec.outcome.kind == "measurement" and not person_level:
         if spec.outcome.value_min is not None:
             bounds += "\n    AND m.value_as_number >= @value_min"
             params.append(("value_min", "FLOAT64", float(spec.outcome.value_min)))
@@ -729,7 +738,11 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
     unit = ", m.unit_concept_id AS outcome_unit" if qc and spec.outcome.kind == "measurement" else ""
     unit_out = ", outcome_unit" if unit else ""
 
-    if spec.design == "incident":
+    if person_level:  # everyone with a baseline; each outcome's rules are applied by the caller
+        ctes += [_first_wear_cte(primary, t, valid),
+                 "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
+                 "  FROM first_wear\n)", _LAST_SEEN.format(visits=t("visit_occurrence"))]
+    elif spec.design == "incident":
         # One index rule for everyone: the end of a baseline window that starts at the first valid
         # wear day. Outcomes are observed from index + lag; earlier ones exclude the person.
         params.append(("outcome_from", "INT64", int(spec.window_days + spec.lag_days)))
@@ -915,14 +928,18 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
         extra, phenotype_ctes = _phenotype_parts(spec, t, valid, params)
         ctes += extra
 
-    select = [f"ie.outcome_value AS {spec.outcome.name}"]
-    if unit:  # the value's unit, summarised for the report and then dropped
-        select += [f"ie.outcome_unit AS {UNIT_COLUMN}", f"uc.concept_name AS {UNIT_NAME_COLUMN}"]
-    if not phenotypes or person_id:  # the caller merges by person (phenotype_table, the day store), then drops it
-        select.insert(0, "ie.person_id")
-    if is_survival(spec):
-        select.append(f"ie.{FOLLOWUP_COLUMN}")
-    joins = [f"LEFT JOIN {t('concept')} uc ON uc.concept_id = ie.outcome_unit"] if unit else []
+    if person_level:
+        select = ["ie.person_id", "DATE_DIFF(ls.last_seen, ie.index_date, DAY) AS last_seen_day"]
+        joins = ["LEFT JOIN last_seen ls ON ls.person_id = ie.person_id"]
+    else:
+        select = [f"ie.outcome_value AS {spec.outcome.name}"]
+        if unit:  # the value's unit, summarised for the report and then dropped
+            select += [f"ie.outcome_unit AS {UNIT_COLUMN}", f"uc.concept_name AS {UNIT_NAME_COLUMN}"]
+        if not phenotypes or person_id:  # the caller merges by person (phenotype_table, the day store), then drops it
+            select.insert(0, "ie.person_id")
+        if is_survival(spec):
+            select.append(f"ie.{FOLLOWUP_COLUMN}")
+        joins = [f"LEFT JOIN {t('concept')} uc ON uc.concept_id = ie.outcome_unit"] if unit else []
     if spec.include_demographics:
         select += [
             "EXTRACT(YEAR FROM ie.index_date) - p.year_of_birth AS age",
@@ -950,7 +967,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
         else:
             select.append(f"IF(c{i}.present IS NULL, 0, 1) AS {covariate.name}")
         joins.append(f"LEFT JOIN c{i} ON c{i}.person_id = ie.person_id")
-    if spec.negative_controls:
+    if spec.negative_controls and not person_level:
         # Follow-up for a negative control starts where the outcome's does (index + lag); a diagnosis
         # before then leaves that control empty for the person rather than excluding them.
         params.append(("nc_lag_days", "INT64", int(spec.lag_days)))
@@ -998,7 +1015,8 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
                    ("split_salt", "INT64", int(spec.split_salt))]
         ctes.append(f"split AS (\n  SELECT person_id, {_SPLIT_SQL} < @holdout_permille AS {HOLDOUT_COLUMN}\n"
                     "  FROM index_events\n)")
-        select.append(f"sp.{HOLDOUT_COLUMN}")
+        if not person_level:
+            select.append(f"sp.{HOLDOUT_COLUMN}")
         joins.append("JOIN split sp ON sp.person_id = ie.person_id")
 
     sql = (
@@ -1006,6 +1024,8 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True,
         "SELECT\n  " + ",\n  ".join(select) + "\n"
         "FROM index_events ie\n" + "\n".join(joins) + "\n"
         f"WHERE w0.{primary.prefix}_days >= @min_wear_days"
+        # A person-level table holds the discovery share only: the sealed rows never leave BigQuery.
+        + (f"\n  AND NOT sp.{HOLDOUT_COLUMN}" if person_level and spec.holdout_fraction > 0 else "")
     )
     return sql, params
 
