@@ -258,7 +258,7 @@ STATE_KEYS = ("target_column", "confounder_columns", "excluded_columns", "contex
               "constraints", "candidate_debates", "lessons", "report_review", "preflight", "eda", "signal_map",
               "quality_rules", "extraction_qc", "literature_evidence", "literature_status", "literature_store",
               "construct_of", "citations", "data_memo", "data_memo_audit", "hypothesis_attempts",
-              "hypothesis_review", "hypothesis_quality", "defined_phenotypes")
+              "hypothesis_review", "hypothesis_quality", "defined_phenotypes", "scorecard")
 
 
 def save_outputs(state: dict[str, Any], stem: str, out_dir: str | Path = DEFAULT_OUT_DIR,
@@ -620,7 +620,7 @@ def _duplicate_columns(frame: Any) -> list[list[str]]:
 def preflight(csv: str | Path, out_dir: str | Path, *, stem: str, target: str, survival_time: str | None,
               confounders: list[str], stand_ins: list[str], negative_controls: list[str] | tuple[str, ...] = (),
               positive_controls: list[str] | tuple[str, ...] = (), availability: list[str] | tuple[str, ...] = (),
-              panel_csv: str | Path | None = None) -> dict[str, Any]:
+              panel_csv: str | Path | None = None, heterogeneity: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
     """Run the holdout pipeline end to end on the DISCOVERY share with stand-in hypotheses (one wearable
     column per source), adjusting for every covariate the agents could choose, before any agent runs. It
     never touches the sealed share and writes no ledger entry. ``fatal`` lists what could not be computed:
@@ -636,7 +636,8 @@ def preflight(csv: str | Path, out_dir: str | Path, *, stem: str, target: str, s
              "excluded_columns": [], "latest_report": {"candidates": candidates}, "proposed_features": []}
     prereg = preregister(state, out, stem, survival_time=survival_time, negative_controls=list(negative_controls),
                          positive_controls=list(positive_controls), availability=list(availability),
-                         covariate_imputations=PREFLIGHT_IMPUTATIONS, discovery_csv=csv)
+                         covariate_imputations=PREFLIGHT_IMPUTATIONS, discovery_csv=csv,
+                         heterogeneity=list(heterogeneity))
     result = confirm(prereg, Path(csv), out, ledger_key=None,
                      panel_csv=Path(panel_csv) if panel_csv and Path(panel_csv).exists() else None)
     # The stand-ins carry a placeholder screen correlation, so a direction disagreement means nothing here.
@@ -738,6 +739,17 @@ def _with_quality(state: dict[str, Any]) -> None:
     state["report"] = f"{state.get('report') or ''}\n\n{design.quality_markdown(quality)}"
 
 
+def _with_scorecard(state: dict[str, Any], time_to_event: bool) -> None:
+    """What the analysis covered and how far each hypothesis's evidence reaches (``codas.aou.scorecard``),
+    computed from the run's records; appended to the report."""
+    from codas.aou import scorecard
+
+    card = state["scorecard"] = scorecard.scorecard(state, time_to_event)
+    text = scorecard.markdown(card)
+    if text:
+        state["report"] = f"{state.get('report') or ''}\n\n{text}"
+
+
 def _day_state(csv: Path) -> dict[str, Any]:
     """Where the discovery share's day-by-day baseline is, and its day-level signals for the agents (none
     without a day store)."""
@@ -788,7 +800,7 @@ def _preflight_args(spec: CohortSpec, csv: Path) -> dict[str, Any]:
             "confounders": demographics + [c.name for c in spec.covariates] + cohort.availability_columns(spec),
             "stand_ins": stand_ins, "negative_controls": [c.name for c in spec.negative_controls],
             "positive_controls": list(spec.positive_controls), "availability": cohort.availability_columns(spec),
-            "panel_csv": cohort.panel_path(csv)}
+            "panel_csv": cohort.panel_path(csv), "heterogeneity": cohort.heterogeneity_columns(spec)}
 
 
 def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = None, client: Any = None,
@@ -856,7 +868,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
                              positive_controls=list(spec.positive_controls),
                              availability=cohort.availability_columns(spec),
                              covariate_imputations=CONFIRM_IMPUTATIONS, discovery_csv=csv,
-                             outcome=outcome_identity(spec))
+                             outcome=outcome_identity(spec), heterogeneity=cohort.heterogeneity_columns(spec))
         # The pre-registration is on disk before the holdout is read. Phenotypes defined on the discovery
         # share's days are computed on the sealed share's days by their registered definitions.
         sealed_days = daystore.holdout_days_path(csv)
@@ -881,8 +893,15 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         state["report"] = (f"{reconciliation_markdown(result, engine)}\n{state.get('report') or ''}\n\n"
                            f"{confirmation_markdown(result)}")
     _with_quality(state)
+    _with_scorecard(state, is_survival(spec))
     _with_references(state)
     summary = {**save_outputs(state, spec.name, out_dir, recorder), "holdout_tested": tested}
+    if tested:  # what an independent cohort needs to test the same hypotheses the same way
+        from codas.aou import replication
+
+        package = replication.write_package(out, spec, label or spec.outcome.name, prereg, state["confirmation"], state,
+                                            code_version=_analysis_version()[:12], cdr=resolve_cdr(cdr))
+        summary.setdefault("files", {})["replication_protocol"] = str(package / "protocol.md")
     _agents_checkpoint(out, spec.name).unlink(missing_ok=True)
     return summary
 

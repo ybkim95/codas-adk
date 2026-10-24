@@ -79,6 +79,9 @@ _ROLE_STATUS = {ledger_book.NOVEL: {True: "replicated", False: "not replicated"}
                 ledger_book.NON_CONFIRMATORY: {True: "non-confirmatory", False: "non-confirmatory"}}
 DEFAULT_SENSITIVITY_LAG_DAYS = 365
 _MIN_ROWS = 30
+# A stratum's effect is estimated with more than SMALL_CELL_MAX events (a time to event) or at least this many
+# rows (a value). Strata report effects only, never counts: a stratum's count and the total would give the other's.
+_STRATUM_ROWS = 50
 _MIN_CONTROL_EVENTS = 10  # a negative control with fewer events cannot show an association
 _QUANTILES = 5
 _MONOTONE_RHO = 0.8  # rank correlation between quantile and effect that counts as monotone
@@ -128,7 +131,8 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                 positive_controls: list[str] | tuple[str, ...] = (),
                 sensitivity_lag_days: int = DEFAULT_SENSITIVITY_LAG_DAYS,
                 availability: list[str] | tuple[str, ...] = (), covariate_imputations: int = 0,
-                discovery_csv: str | Path | None = None, outcome: dict[str, Any] | None = None) -> dict[str, Any]:
+                discovery_csv: str | Path | None = None, outcome: dict[str, Any] | None = None,
+                heterogeneity: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
     """Freeze the final round's validated candidates as hypotheses and write ``<stem>_prereg.json``.
 
     ``negative_controls`` are control names (the holdout has ``nc_<name>`` and ``nc_<name>_days``),
@@ -144,7 +148,8 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
     disagreement is noted. A-priori hypotheses keep the direction they predicted.
 
     ``outcome`` (kind, concept ids, codes, value bounds) identifies the outcome in the holdout ledger, so a
-    later registration about the same outcome is recognised whatever the run is called.
+    later registration about the same outcome is recognised whatever the run is called. ``heterogeneity`` names
+    the columns each effect's consistency is checked across on the holdout (``cohort.heterogeneity_columns``).
 
     With ``discovery_csv`` each hypothesis also gets its frozen transform (``codas.core.preprocess``: clipped
     at the discovery 0.5th-99.5th percentiles, logged when strongly skewed, scaled by the discovery SD), so a
@@ -253,6 +258,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         "sensitivity_lag_days": int(sensitivity_lag_days),
         "absolute_risk_horizon_days": _horizon(frame, survival_time),
         "availability": list(availability), "covariate_imputations": int(covariate_imputations),
+        "heterogeneity": list(heterogeneity),
         "discovery_rounds": len(rounds),
         "discovery_variants_evaluated": sum(int(r.get("evaluated_count") or 0) for r in rounds),
         "discovery_features_proposed": len(proposed),
@@ -493,9 +499,83 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
                                           cov, int(prereg.get("sensitivity_lag_days") or 0), h["direction"], m, scale)
     row["negative_controls"] = _guarded(errors, "negative_controls", _negative_controls, frame, x, cov,
                                         list(prereg.get("negative_controls") or []), prereg["alpha"], scale) or []
+    if prereg.get("heterogeneity"):
+        row["heterogeneity"] = _guarded(errors, "heterogeneity", _heterogeneity, frame, x, target, time_col, cov,
+                                        list(prereg["heterogeneity"]), scale) or []
     if errors:
         row["errors"] = errors
     return row
+
+
+def _strata(frame: pd.DataFrame, column: str) -> tuple[pd.Series, list[str]] | None:
+    """Two strata of ``column`` on the holdout: its two values when it has two, else below and above its
+    median. The split reads the column only, never the outcome, so it cannot favour a hypothesis."""
+    v = _num(frame, column)
+    values = sorted(v.dropna().unique())
+    if len(values) < 2:
+        return None
+    if len(values) == 2:
+        upper, labels = v == values[1], [f"{column} = {values[0]:g}", f"{column} = {values[1]:g}"]
+    else:
+        cut = float(v.median())
+        upper, labels = v > cut, [f"{column} <= {cut:g}", f"{column} > {cut:g}"]
+    return upper.where(v.notna()), labels
+
+
+def _log_effect(res: dict[str, Any]) -> tuple[float, float] | None:
+    """An effect and its standard error on the scale where strata are compared: the log hazard ratio, or the
+    Fisher z of a correlation (from its 95% interval)."""
+    lo, hi = res.get("ci95") or [np.nan, np.nan]
+    if res.get("test") == "cox":
+        value, lo, hi = (np.log(v) if isinstance(v, (int, float)) and v > 0 else np.nan for v in (res.get("hr_per_sd"), lo, hi))
+    else:
+        value, lo, hi = (np.arctanh(np.clip(v, -0.999999, 0.999999)) if isinstance(v, (int, float)) else np.nan
+                         for v in (res.get("rho"), lo, hi))
+    se = (hi - lo) / (2 * 1.959964)
+    return (float(value), float(se)) if np.isfinite(value) and np.isfinite(se) and se > 0 else None
+
+
+def _heterogeneity(frame: pd.DataFrame, x: pd.Series, target: str, time_col: str | None, cov: pd.DataFrame | None,
+                   columns: list[str], scale: bool) -> list[dict[str, Any]]:
+    """The effect within the two strata of each of ``columns`` (complete cases, adjusted for the confounders
+    other than the stratifier, per the same SD as the main estimate), and Cochran's Q test of their
+    difference with I^2: the share of the variation between strata beyond chance. A stratum with 1-20 events
+    (or fewer than _STRATUM_ROWS rows) is not estimated, and no stratum's count is reported."""
+    if time_col and scale:  # one unit for every stratum: the SD over the whole holdout
+        x = (x - x.mean()) / x.std(ddof=0)
+    out = []
+    for column in columns:
+        split = _strata(frame, column) if column in frame.columns else None
+        if split is None:
+            continue
+        upper, labels = split
+        others = None if cov is None else cov.drop(columns=[column], errors="ignore")
+        others = others if others is not None and others.shape[1] else None
+        strata, estimates = [], []
+        for k, label in enumerate(labels):
+            mask = (upper == bool(k)).to_numpy()
+            sub = frame.loc[mask]
+            few = (int(_num(sub, target).fillna(0).sum()) <= SMALL_CELL_MAX if time_col
+                   else int(mask.sum()) < _STRATUM_ROWS)
+            if few:
+                strata.append({"stratum": label, "status": "too few to estimate"})
+                continue
+            res = _effect(sub, x[mask], target, time_col, None if others is None else others.loc[mask], 0, False)
+            strata.append({"stratum": label, **{k: v for k, v in res.items() if k in ("test", "hr_per_sd", "rho", "ci95", "p")}})
+            pair = _log_effect(res)
+            if pair is not None:
+                estimates.append(pair)
+        entry: dict[str, Any] = {"by": column, "strata": strata}
+        if len(estimates) == 2:
+            (b1, s1), (b2, s2) = estimates
+            w1, w2 = 1 / s1 ** 2, 1 / s2 ** 2
+            pooled = (w1 * b1 + w2 * b2) / (w1 + w2)
+            q = float(w1 * (b1 - pooled) ** 2 + w2 * (b2 - pooled) ** 2)
+            from scipy import stats
+
+            entry.update(q=round(q, 3), q_p=float(stats.chi2.sf(q, 1)), i2=round(max(0.0, (q - 1) / q), 3) if q > 0 else 0.0)
+        out.append(entry)
+    return out
 
 
 def _effect_sizes(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, Any], target: str, time_col: str | None,
@@ -1036,6 +1116,16 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
     if failed_checks:
         lines += ["Checks that could not be computed (numerical failure; reported, not counted as passed): "
                   + "; ".join(failed_checks) + ".", ""]
+    varied = [(r, h) for r in result["hypotheses"] for h in r.get("heterogeneity") or [] if h.get("q_p") is not None]
+    if varied:
+        lines += ["**Consistency across strata** (each effect within the two strata of a column, complete cases; Q "
+                  "test and I^2, the share of the difference between strata beyond chance; a stratifier never reads "
+                  "the outcome):", "", "| feature | across | stratum effects | Q p | I^2 |", "|---|---|---|---|---|"]
+        for r, h in varied:
+            shown = "; ".join(f"{s['stratum']}: " + (f"{s.get('hr_per_sd', s.get('rho'))} ({_ci(s.get('ci95'))})"
+                                                      if "ci95" in s else s.get("status", "-")) for s in h["strata"])
+            lines.append(f"| {r['feature']} | {h['by']} | {shown} | {h['q_p']:.3g} | {h['i2']:.2f} |")
+        lines.append("")
     adjusted = [r for r in result["hypotheses"] if r.get("adherence_adjusted")]
     if adjusted:
         lines += ["", "Wear adherence as a negative-control exposure: each effect re-estimated with "

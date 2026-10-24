@@ -554,6 +554,34 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                       [[f["writer"], f["key"], f["read by (turns)"]] for f in flow_by_writer(execution["flow"])],
                       widths=[38, 38, 104])
 
+    def evidence() -> None:
+        card = phases.get("scorecard") or {}
+        doc.heading("What the analysis covered, and how far the evidence reaches")
+        doc.table(["", "measure", "value"], [[s["section"], s["measure"], s["value"]] for s in card.get("summary") or []],
+                  widths=[30, 95, 55])
+        records = card.get("hypotheses") or []
+        if records:
+            from codas.aou.scorecard import STEPS
+
+            doc.heading("Recipe coverage and the evidence ladder", 2)
+            doc.plain("Rung 1: associated on the sealed holdout; 2: replicated and robust to every falsification test "
+                      "that ran; 3: adds predictive value over the covariates.", size=8, style="I")
+            rows = []
+            for r in records:
+                done = [label for key, label in STEPS if r["cells"][key][0] == "yes"]
+                missing = [f"{label} ({r['cells'][key][1]})" for key, label in STEPS if r["cells"][key][0] == "no"]
+                rows.append([r["feature"], f"{r['rung']}: {r['rung_label']}", "; ".join(done), "; ".join(missing) or "-",
+                             r["next"]])
+            doc.table(["feature", "rung", "ran", "missing", "next step"], rows, widths=[32, 30, 50, 40, 28])
+        varied = [(h["feature"], e) for h in (conf or {}).get("hypotheses") or [] for e in h.get("heterogeneity") or []
+                  if e.get("q_p") is not None]
+        if varied:
+            doc.heading("Sealed holdout: consistency across strata (effects only; Q test and I^2)", 2)
+            doc.table(["feature", "across", "stratum effects", "Q p", "I^2"],
+                      [[f, e["by"], "; ".join(f"{s['stratum']}: {s.get('hr_per_sd', s.get('rho'))}" if "ci95" in s
+                                                else f"{s['stratum']}: {s.get('status')}" for s in e["strata"]),
+                        _fmt(e["q_p"]), _fmt(e["i2"])] for f, e in varied], widths=[40, 25, 85, 15, 15])
+
     def appendix() -> None:
         doc.heading("Appendix")
         if conf:
@@ -588,7 +616,8 @@ def build_pdf(out_dir: Path, stem: str, phases: dict[str, Any], events: list[dic
                 (literature, bool(phases.get("literature_evidence"))), (phase_a, True),
                 (phases_bc, True),
                 (phase_d, True), (phases_ef, True),
-                (agent_execution, bool((execution or {}).get("agents"))), (appendix, True)]
+                (agent_execution, bool((execution or {}).get("agents"))),
+                (evidence, bool((phases.get("scorecard") or {}).get("summary"))), (appendix, True)]
     errors = []
     for section, new_page in sections:
         if new_page or not pdf.page:

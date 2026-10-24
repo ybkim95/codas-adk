@@ -385,7 +385,9 @@ def test_holdout_rows_are_sealed_in_a_separate_table(incident_cdr, monkeypatch, 
     try:
         path = cohort.extract_cohort(spec, SYNTHETIC_CDR, out_dir, client=object(), check_schema=False)
         discovery, sealed = pd.read_csv(path), pd.read_csv(cohort.holdout_path(path))
-        assert list(discovery.columns) == list(sealed.columns) == output_columns(spec)  # no split column, no ids
+        assert list(discovery.columns) == output_columns(spec)  # no split column, no ids
+        # The sealed table adds only the enrolment era, which the holdout checks consistency across.
+        assert list(sealed.columns) == cohort.holdout_columns(spec) == output_columns(spec) + [cohort.ERA_COLUMN]
         expected_sealed = {pid for pid in (1, 2) if cohort.holdout_bucket(pid, 7) < 500}
         sealed_steps = {1000.0 * pid for pid in expected_sealed}
         assert set(sealed["act_steps_mean"]) == sealed_steps

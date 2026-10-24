@@ -589,6 +589,69 @@ def effect_sizes_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None
     return pd.DataFrame(rows) if rows else None
 
 
+def outcome_scorecard_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """The outcome's scorecard: how well the data were understood, how the hypotheses were designed, what the
+    sealed holdout showed and how far the evidence reaches (``codas.aou.scorecard``)."""
+    card = _read(_out_dir(result) / f"{stem}_state.json").get("scorecard") or {}
+    return pd.DataFrame(card["summary"]) if card.get("summary") else None
+
+
+_MARK = {"yes": "✓", "no": "✗", "n/a": "–"}
+
+
+def recipe_coverage_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """For each hypothesis tested on the holdout: the rung of the evidence ladder it reached and which steps of
+    the published biomarker recipe it went through (✓ ran, ✗ applicable but missing, – not applicable)."""
+    card = _read(_out_dir(result) / f"{stem}_state.json").get("scorecard") or {}
+    records = card.get("hypotheses") or []
+    if not records:
+        return None
+    from codas.aou.scorecard import STEPS
+
+    return pd.DataFrame([{"feature": r["feature"], "rung": f"{r['rung']}: {r['rung_label']}",
+                          **{label: _MARK.get(r["cells"][key][0], r["cells"][key][0]) for key, label in STEPS},
+                          "next step": r["next"]} for r in records])
+
+
+def heterogeneity_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Each holdout effect within the strata of sex, age, enrolment era and sub-study membership, with the Q
+    test of their difference and I^2 (effects only: no stratum's count is shown)."""
+    conf = _read(_out_dir(result) / f"{stem}_state.json").get("confirmation") or {}
+    rows = []
+    for h in conf.get("hypotheses") or []:
+        for entry in h.get("heterogeneity") or []:
+            effects_ = "; ".join(f"{s['stratum']}: {s.get('hr_per_sd', s.get('rho'))}" if "ci95" in s
+                                 else f"{s['stratum']}: {s.get('status')}" for s in entry["strata"])
+            rows.append({"feature": h["feature"], "across": entry["by"], "stratum effects": effects_,
+                         "Q p": entry.get("q_p"), "I^2": entry.get("i2")})
+    return pd.DataFrame(rows) if rows else None
+
+
+def absolute_risk_figure(result: dict[str, Any], stem: str):
+    """Cumulative incidence by quarter of each time-to-event hypothesis on the sealed holdout (quarters on the
+    discovery share's frozen cut-points; a quarter with 1-20 events is masked and left out)."""
+    conf = _read(_out_dir(result) / f"{stem}_state.json").get("confirmation") or {}
+    rows = [(h["feature"], (h.get("effect_sizes") or {}).get("cumulative_incidence"),
+             (h.get("effect_sizes") or {}).get("horizon_days")) for h in conf.get("hypotheses") or []
+            if "same_direction" in h and (h.get("effect_sizes") or {}).get("cumulative_incidence")]
+    rows = [r for r in rows if any(v is not None for v in r[1])][:8]
+    if not rows:
+        return None
+    fig = _figure(8, 0.5 * len(rows) + 1.6)
+    ax = fig.subplots()
+    width = 0.8 / 4
+    for k in range(4):
+        values = [r[1][k] if r[1][k] is not None else np.nan for r in rows]
+        ax.barh(np.arange(len(rows)) + (k - 1.5) * width, values, height=width, label=f"Q{k + 1}",
+                color=[GRAY, "#9db8d9", "#5b8cc8", BLUE][k])
+    ax.set_yticks(range(len(rows)), [r[0] for r in rows], fontsize=7)
+    ax.set_xlabel(f"cumulative incidence at {int(rows[0][2] or 0) // 365} years", fontsize=8)
+    ax.legend(fontsize=7, frameon=False, ncol=4, loc="lower right")
+    ax.set_title("Sealed holdout: absolute risk by quarter of each feature", loc="left", fontsize=9, color=INK)
+    _style(ax)
+    return Chart(fig)
+
+
 def scorecard_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
     """Each registered prediction scored on the sealed holdout: magnitude, shape and every falsification test."""
     conf = _read(_out_dir(result) / f"{stem}_state.json").get("confirmation") or {}

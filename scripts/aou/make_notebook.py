@@ -424,6 +424,12 @@ code("""for run in result["runs"]:
                          ("Sealed holdout: pre-registered hypotheses", views.confirmation_table(result, stem)),
                          ("Sealed holdout: effect sizes in units a reader can weigh", views.effect_sizes_table(result, stem)),
                          ("Sealed holdout: each registered prediction scored", views.scorecard_table(result, stem)),
+                         ("Sealed holdout: each effect across strata of sex, age, era and sub-study",
+                          views.heterogeneity_table(result, stem)),
+                         ("What the analysis covered, and how far the evidence reaches",
+                          views.outcome_scorecard_table(result, stem)),
+                         ("Recipe coverage and the evidence ladder, per hypothesis",
+                          views.recipe_coverage_table(result, stem)),
                          ("Agent execution: calls, tokens, tools, time and estimated cost per agent",
                           views.execution_table(result, stem)),
                          ("Design changes: who changed what the later agents work on, by round",
@@ -432,7 +438,8 @@ code("""for run in result["runs"]:
         if table is not None:
             display(Markdown(f"**{title}**"))
             display(views.fit(table))
-    for figure in (views.candidates_figure(result, stem), views.execution_timeline_figure(result, stem)):
+    for figure in (views.candidates_figure(result, stem), views.absolute_risk_figure(result, stem),
+                   views.execution_timeline_figure(result, stem)):
         if figure is not None:
             display(figure)
     display(Markdown("**Report**\\n\\n" + views.wrap_tables(Path(run["report_path"]).read_text())))"""),

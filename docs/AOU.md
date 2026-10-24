@@ -304,6 +304,44 @@ of 0.005 / 0.01 / 0.02 (0.005 is about what HDL cholesterol or CRP add to establ
 models). A replicated effect that is negligible is said to be so, in the reconciliation table and below
 the effect table.
 
+## How far the evidence reaches, and what the analysis covered
+
+Each outcome's report ends with a scorecard computed from the run's records (`codas/aou/scorecard.py`):
+* **Consistency across strata.** On the sealed holdout every registered effect is estimated again within two
+  strata of sex, age (above and below its median), the enrolment era (the index year, written to the sealed
+  table only) and each sub-study membership covariate (`in_table`, e.g. a participant's own device against one a
+  study handed out), adjusted for the other confounders, with Cochran's Q test and I^2. A split reads its column,
+  never the outcome. Strata show effects only, never counts (a stratum's count and the total would give the
+  other's), and a stratum with 1-20 events is not estimated.
+* **Recipe coverage.** For each tested hypothesis, which steps of the analysis that published biomarker studies
+  share it went through: adjusted, per natural unit and by quarter, absolute risk, dose-response, a lag, negative
+  controls, wear adherence, the incumbent head to head, added predictive value, within-person change,
+  consistency across strata, the sealed-holdout test and an E-value. A step is yes (ran, whatever it showed), no
+  (applicable but missing or not computable: the time-varying exposure is always no in this version) or n/a.
+* **The evidence ladder** (after Hlatky et al., Circulation 2009): 1, associated on the sealed holdout in the
+  registered direction; 2, replicated under the ledger's error control and robust to every falsification test
+  that ran; 3, adding predictive value over the covariates (a gain whose interval excludes zero, not negligible
+  in size). Clinical utility and external replication are named as the next steps; one cohort's holdout cannot
+  show them.
+* **The scorecard**: features profiled and how many are reliable over the window, the memo's confirmed claims
+  and noticed problems, the design's measures (complete submissions, new by evidence, constructed phenotypes,
+  incumbents, magnitudes from papers, verified citations), the holdout's replications, robust results,
+  reproduced references, predictions met and shrinkage, the rungs reached and the share of recipe steps done.
+The notebook shows these as tables (with an absolute-risk-by-quarter figure), and the PDF as its own section.
+
+## Replication beyond the split
+
+A split of one cohort is internal replication. For each outcome tested on the sealed holdout CoDaS writes a
+replication package, `<outcome>_replication/` (`codas/aou/replication.py`), so another cohort (e.g. UK
+Biobank) or a later All of Us release restricted to participants who were in neither share can run the same
+test: the cohort spec and its extraction, phenotype and day-store SQL (code, with the CDR as a placeholder and
+the bound parameters listed), each registered feature's definition in words and in code, the
+pre-registration (directions, frozen transforms, scales, quarter cut-points and prediction models: aggregates
+of the discovery share), the holdout's masked results and scorecard, the feature-definition hashes, a manifest
+with the code version and file hashes, and `protocol.md`: population and time zero, the outcome by its public
+codes, the exposures, covariates, model, effect sizes, falsification tests and the success criteria, fixed
+before the test. No participant-level data is in it.
+
 ## Quality rules: which days, nights, cases and participants count
 
 The example spec applies the rules the published All of Us wearable studies share (e.g. Master et al.,

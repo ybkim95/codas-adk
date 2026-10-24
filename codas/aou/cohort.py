@@ -544,6 +544,9 @@ def output_columns(spec: CohortSpec) -> list[str]:
 
 FOLLOWUP_COLUMN = "followup_days"
 HOLDOUT_COLUMN = "_holdout"
+# The calendar year of the index date: the enrolment era the holdout checks each effect across. It is written to
+# the sealed table only, so no agent sees it.
+ERA_COLUMN = "_index_year"
 # Holdout split: the person id is reduced modulo the prime 2**31 - 1, mixed (multiply, add the salt,
 # square, multiply), and mapped to a bucket in 0..999. Every intermediate stays below 2**62, so
 # 12-digit All of Us person ids cannot overflow INT64; the squaring makes a new salt an unrelated
@@ -566,8 +569,18 @@ def negative_control_columns(spec: CohortSpec) -> list[str]:
 
 
 def holdout_columns(spec: CohortSpec) -> list[str]:
-    """The columns of the sealed replication table: the analysis columns plus the negative controls."""
-    return output_columns(spec) + negative_control_columns(spec)
+    """The columns of the sealed replication table: the analysis columns plus the negative controls and, when
+    there is a sealed holdout, the enrolment era."""
+    return output_columns(spec) + negative_control_columns(spec) + ([ERA_COLUMN] if spec.holdout_fraction > 0 else [])
+
+
+def heterogeneity_columns(spec: CohortSpec) -> list[str]:
+    """What the holdout checks each effect's consistency across: sex and age, sub-study membership (each
+    ``in_table`` covariate, e.g. a device brought by the participant or one handed out by a study) and, with a
+    sealed holdout, the enrolment era."""
+    columns = ["female", "age"] if spec.include_demographics else []
+    columns += [c.name for c in spec.covariates if c.kind == "in_table"]
+    return columns + ([ERA_COLUMN] if spec.holdout_fraction > 0 else [])
 
 
 def negative_controls_without(controls: list[OutcomeSpec], outcome: OutcomeSpec) -> list[OutcomeSpec]:
@@ -1016,7 +1029,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc:
         ctes.append(f"split AS (\n  SELECT person_id, {_SPLIT_SQL} < @holdout_permille AS {HOLDOUT_COLUMN}\n"
                     "  FROM index_events\n)")
         if not person_level:
-            select.append(f"sp.{HOLDOUT_COLUMN}")
+            select += [f"sp.{HOLDOUT_COLUMN}", f"EXTRACT(YEAR FROM ie.index_date) AS {ERA_COLUMN}"]
         joins.append("JOIN split sp ON sp.person_id = ie.person_id")
 
     sql = (

@@ -573,6 +573,24 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
         assert views.hypotheses_table(result, stem)["incumbent"].tolist() == ["bmi_cov", "-"]
         assert views.defined_phenotypes_table(result, stem)["column"].tolist() == [column]
         assert confirmation["ledger"]["registrations"] >= 1
+        # How far the evidence reaches: every tested hypothesis's recipe coverage and rung, from the records.
+        card = state["scorecard"]
+        assert card["summary"] and {r["feature"] for r in card["hypotheses"]} <= {h["feature"] for h in confirmation["hypotheses"]}
+        assert all(0 <= r["rung"] <= 3 and len(r["cells"]) == 14 for r in card["hypotheses"])
+        assert "## What the analysis covered, and how far the evidence reaches" in report
+        assert views.outcome_scorecard_table(result, stem) is not None and views.recipe_coverage_table(result, stem) is not None
+        # Each registered effect was checked across strata (sex, age, era, sub-study) without stratum counts.
+        tested_rows = [h for h in confirmation["hypotheses"] if "same_direction" in h]
+        # (the synthetic participants all start in one year, so the era cannot be split here)
+        assert all({"female", "age", "wear_study"} <= {e["by"] for e in h["heterogeneity"]} for h in tested_rows)
+        assert not any("n" in s or "events" in s for h in tested_rows for e in h["heterogeneity"] for s in e["strata"])
+        assert "_index_year" in sealed.columns and "_index_year" not in discovery.columns
+        # A replication package another cohort can run: definitions, plan, protocol; no participant data.
+        protocol = Path(run["files"]["replication_protocol"]).read_text()
+        assert "## Success criteria" in protocol and "act_steps_mean" in protocol
+        package = Path(run["files"]["replication_protocol"]).parent
+        assert {"extraction.sql", "pre_registration.json", "MANIFEST.json"} <= {p.name for p in package.iterdir()}
+        assert not re.search(r"\b2\d{11}\b", "".join(p.read_text() for p in package.iterdir()))  # no person id
         kinds[stem] = prereg["survival_time"]
     # One measurement (value outcome) and one condition (time to event, tested with Cox).
     assert sorted(kinds.values(), key=str) == [None, "followup_days"]
