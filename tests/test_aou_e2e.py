@@ -533,6 +533,9 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
                                "adherence_robust"}
         assert first["incumbent_adjusted"]["incumbent"] == "bmi_cov"
         assert "Registered predictions on the holdout" in report
+        # Effect sizes in units a reader can weigh, on the scales frozen at registration.
+        assert first["effect_sizes"] and first.get("magnitude") and "Effect sizes on the holdout" in report
+        assert prereg["hypotheses"][0]["effect_scale"]["cutpoints"] and "frozen_model" in prereg["hypotheses"][0]
         # The design's quality is measured: the memo's claims checked, the review, the holdout's verdict.
         assert state["data_memo_audit"]["checked"] == {"cited": 1, "wrong value": 1}
         assert "skew 999.5" not in state["data_memo"] and "activity-volume feature" in state["data_memo"]
@@ -542,7 +545,7 @@ def test_prospective_design_with_sealed_holdout_end_to_end(aou_env, monkeypatch,
         from codas.aou import notebook_views as views
 
         for table in (views.data_memo_table, views.hypothesis_review_table, views.hypothesis_quality_table,
-                      views.scorecard_table, views.hypotheses_table):
+                      views.scorecard_table, views.hypotheses_table, views.effect_sizes_table):
             assert table(result, stem) is not None, table.__name__
         assert views.hypotheses_table(result, stem)["incumbent"].tolist() == ["bmi_cov"]
         assert confirmation["ledger"]["registrations"] >= 1

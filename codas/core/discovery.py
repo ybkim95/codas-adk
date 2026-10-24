@@ -34,6 +34,7 @@ from .models import Candidate, DiscoveryReport
 from .quality_gates import evaluate_quality_gates
 from .reporting import build_fact_sheet, build_markdown_report
 from .statistics import auc_against_target, autocorr_effective_n, benjamini_hochberg, cluster_effective_n, correlation_pvalue, intraclass_correlation, lag1_autocorr, safe_spearman, signed_direction, within_subject_two_stage
+from .survival import cox_ph
 from .validation import ValidationConfig, validate_candidate
 
 # Library logger: silent unless the host app configures handlers. Logs phase progress at INFO so a
@@ -80,6 +81,62 @@ class DiscoveryRequest:
     # Missing confounder values in the adjusted validation tests: 0 = complete-case (the default), m > 0 =
     # multiple imputation with m draws pooled by Rubin's rules (codas.core.imputation).
     covariate_imputations: int = 0
+    # Opt-in screens that rank candidates the way a confirmatory test judges them (off: the unadjusted
+    # Spearman screen). ``screen_adjust`` ranks by the partial Spearman correlation given the confounders, so a
+    # feature that merely stands in for a declared confounder does not lead the list; with
+    # ``survival_time_column`` too (the target an event flag) each feature gets a confounder-adjusted Cox model
+    # on the follow-up time, so a feature that only lengthens or shortens follow-up cannot pass as an effect.
+    # They rank and gate entry to the validation battery; the battery itself is unchanged.
+    screen_adjust: bool = False
+    survival_time_column: str | None = None
+
+
+def _adjustment_matrix(frame: pd.DataFrame, columns: list[str]) -> np.ndarray | None:
+    """Confounders for an adjusted screen: missing values set to the column median with a missing-value
+    indicator for any column with gaps (nothing here looks at the outcome); None without any."""
+    blocks = []
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
+        missing = ~np.isfinite(values)
+        if missing.all() or np.nanstd(values) == 0:
+            continue
+        blocks.append(np.where(missing, np.nanmedian(values), values))
+        if missing.any():
+            blocks.append(missing.astype(float))
+    return np.column_stack(blocks) if blocks else None
+
+
+def _partial_rank(x: np.ndarray, y: np.ndarray, adjust: np.ndarray) -> tuple[float, float, int]:
+    """Partial Spearman rho of x and y given ``adjust``: both ranked, each rank residualised on the
+    confounders by least squares; p on n - k - 2 degrees of freedom."""
+    ok = np.isfinite(x) & np.isfinite(y)
+    n, k = int(ok.sum()), adjust.shape[1]
+    if n < max(20, k + 5):
+        return float("nan"), float("nan"), n
+    design = np.column_stack([np.ones(n), adjust[ok]])
+    residuals = []
+    for v in (x[ok], y[ok]):
+        r = pd.Series(v).rank().to_numpy()
+        residuals.append(r - design @ np.linalg.lstsq(design, r, rcond=None)[0])
+    if min(float(np.std(r)) for r in residuals) == 0:
+        return float("nan"), float("nan"), n
+    rho = float(np.corrcoef(*residuals)[0, 1])
+    return rho, correlation_pvalue(rho, n - k), n
+
+
+def _cox_screen(x: np.ndarray, event: np.ndarray, time: np.ndarray, adjust: np.ndarray | None) -> dict[str, float] | None:
+    """Hazard ratio per SD of x on the follow-up time, adjusted for ``adjust``; None when it cannot be fitted."""
+    sd = float(np.nanstd(x))
+    if not np.isfinite(sd) or sd == 0:
+        return None
+    z = (x - np.nanmean(x)) / sd
+    fit = cox_ph(time, event, z[:, None] if adjust is None else np.column_stack([z, adjust]))
+    if not fit.converged or not np.isfinite(fit.coef[0]) or not np.isfinite(fit.p[0]):
+        return None
+    return {"hr_per_sd": float(np.exp(fit.coef[0])), "log_hr": float(fit.coef[0]), "p": float(fit.p[0]),
+            "n": int(fit.n), "events": int(fit.events)}
 
 
 def _rank_candidates(
@@ -88,9 +145,17 @@ def _rank_candidates(
     feature_columns: list[str],
     autocorr_correct: bool = False,
     cluster_groups: "pd.Series | None" = None,
+    adjust: np.ndarray | None = None,
+    adjust_names: list[str] | None = None,
+    survival_time: np.ndarray | None = None,
 ) -> list[Candidate]:
+    """Spearman screen with BH FDR (and the pseudo-replication corrections). With ``adjust`` (confounders)
+    the p-value, q-value and score come from the partial Spearman correlation instead; with
+    ``survival_time`` too, from a confounder-adjusted Cox model. ``rho`` and the direction stay the plain
+    Spearman ones, which the validation battery uses."""
     candidates: list[Candidate] = []
     p_values: list[float] = []
+    y_values = pd.to_numeric(frame[target_column], errors="coerce").to_numpy(dtype=float)
     # Temporal pseudo-replication guard: when the rows are an autocorrelated time series with no
     # participant grouping, adjacent samples are NOT independent, so the raw row count vastly
     # overstates significance (a tiny correlation between two slowly-drifting series reads p<1e-3
@@ -126,6 +191,25 @@ def _rank_candidates(
             n_eff = cluster_effective_n(n, cluster_mbar, feat_icc, cluster_target_icc, cluster_k)
             if n_eff < n:
                 p_value = correlation_pvalue(rho, n_eff)
+        screen = None
+        size = abs(rho)
+        if survival_time is not None or adjust is not None:
+            x = pd.to_numeric(frame[feature], errors="coerce").to_numpy(dtype=float)
+            names = list(adjust_names or [])
+            if survival_time is not None:
+                fit = _cox_screen(x, y_values, survival_time, adjust)
+                screen = ({"measure": "hazard ratio per SD (Cox)", "effect": round(fit["hr_per_sd"], 4),
+                           "p": fit["p"], "adjusted_for": names} if fit else
+                          {"measure": "hazard ratio per SD (Cox)", "effect": None, "p": 1.0, "adjusted_for": names,
+                           "note": "the Cox model could not be fitted"})
+                p_value, size = screen["p"], (abs(fit["log_hr"]) if fit else 0.0)
+            else:
+                partial, partial_p, _n = _partial_rank(x, y_values, adjust)
+                if not np.isfinite(partial):
+                    continue
+                screen = {"measure": "partial Spearman rho", "effect": round(partial, 4), "p": partial_p,
+                          "adjusted_for": names}
+                p_value, size = partial_p, abs(partial)
         p_values.append(p_value)
         candidates.append(Candidate(
             feature=feature,
@@ -134,12 +218,13 @@ def _rank_candidates(
             q_value=1.0,
             n=n,
             direction=signed_direction(rho),
-            score=abs(rho),
+            score=size,
+            screen=screen,
         ))
     q_values = benjamini_hochberg(p_values)
     for candidate, q_value in zip(candidates, q_values):
         candidate.q_value = q_value
-        candidate.score = abs(candidate.rho) * (1.0 - min(q_value, 1.0))
+        candidate.score = candidate.score * (1.0 - min(q_value, 1.0))
     return sorted(candidates, key=lambda item: item.score, reverse=True)
 
 
@@ -859,8 +944,21 @@ def _screen(df: pd.DataFrame, request: "DiscoveryRequest", effective_participant
                 f"per participant ({_k} participants) so per-row significance is not inflated. Pass it explicitly "
                 f"to override."
             )
+    adjust = adjust_names = survival_time = None
+    if (request.screen_adjust or request.survival_time_column) and not autocorr_correct and cluster_groups is None:
+        adjust_names = [c for c in analysis.confounder_columns if c != request.survival_time_column]
+        adjust = _adjustment_matrix(screen_frame, adjust_names)
+        column = request.survival_time_column
+        if column and column in df.columns:
+            survival_time = pd.to_numeric(df[column], errors="coerce").reindex(screen_frame.index).to_numpy(dtype=float)
+            if not np.isfinite(survival_time).any():
+                survival_time = None
+        cluster_screen_info["screen_measure"] = ("hazard ratio per SD (Cox, on the follow-up time)" if survival_time
+                                                 is not None else "partial Spearman rho")
+        cluster_screen_info["screen_adjusted_for"] = adjust_names if adjust is not None else []
     ranked = _rank_candidates(screen_frame, analysis.target_column, analysis.feature_columns,
-                              autocorr_correct=autocorr_correct, cluster_groups=cluster_groups)
+                              autocorr_correct=autocorr_correct, cluster_groups=cluster_groups,
+                              adjust=adjust, adjust_names=adjust_names, survival_time=survival_time)
     if not ranked:
         raise InsufficientDataError("No candidate feature had enough valid observations for screening.")
 
@@ -1084,8 +1182,12 @@ def _assemble_report(df: pd.DataFrame, candidates: list[Candidate], validated: l
     warnings.extend(_opaque_schema_warnings(df, request))
     warnings.extend(_interaction_terms_warnings(df, request))
     markdown = build_markdown_report(fact_sheet, candidates, warnings)
+    measure = cluster_screen_info.get("screen_measure")
     audit_log.extend([
-        f"Screened {screened_count} candidate features with Spearman correlation and Benjamini-Hochberg FDR.",
+        (f"Screened {screened_count} candidate features by {measure} adjusted for "
+         f"{', '.join(cluster_screen_info.get('screen_adjusted_for') or []) or 'nothing'}, with Benjamini-Hochberg FDR."
+         if measure else
+         f"Screened {screened_count} candidate features with Spearman correlation and Benjamini-Hochberg FDR."),
         f"Audited {len(validation_pool)} candidate variants with the CoDaS internal validation battery.",
         "Generated Fact Sheet before report assembly.",
     ])

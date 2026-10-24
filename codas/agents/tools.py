@@ -605,6 +605,8 @@ def _round_summary(round_index: int, ratio_features: int, top_k: int, report: di
             "adjusted_rho": adjusted(c),
             "failed_checks": [t.get("name") for t in c.get("tests") or []
                               if t.get("applicable", True) and not t.get("passed")],
+            # the adjusted screen's own effect (partial rho, or the Cox hazard ratio per SD), when it ran
+            **({"screen_effect": c["screen"].get("effect")} if c.get("screen") else {}),
         }
         for c in report.get("candidates", [])
         if c.get("verdict") in {"validated", "conditional"}
@@ -622,6 +624,9 @@ def _round_summary(round_index: int, ratio_features: int, top_k: int, report: di
         "ml_metric_value": fact_sheet.get("ml_metric_value"),
         "ml_above_chance": fact_sheet.get("ml_above_chance"),
         "passing_candidates": passing[:10],
+        **({"screen": f"{fact_sheet['screen_measure']} adjusted for "
+                      f"{', '.join(fact_sheet.get('screen_adjusted_for') or []) or 'nothing'}"}
+           if fact_sheet.get("screen_measure") else {}),
         "warning_count": len(report.get("warnings", [])),
         "warnings": warnings,
     }
@@ -661,6 +666,11 @@ def run_discovery_round(tool_context: ToolContext, csv_path: str = "", target_co
         max_ratio_features=ratio_features,
         validation_resamples=_ROUND_RESAMPLES,
         covariate_imputations=int(tool_context.state.get("covariate_imputations") or 0),
+        # The screen ranks the way the holdout tests: adjusted for the confounders, and for a time to event
+        # with a Cox model on the follow-up time (on when the runner asks for it).
+        screen_adjust=bool(tool_context.state.get("adjusted_screen")),
+        survival_time_column=(str(tool_context.state.get("survival_time_column") or "").strip() or None
+                              if tool_context.state.get("adjusted_screen") else None),
     )
     # A bad target/role choice makes the engine raise rather than crash the loop; return a recoverable
     # error so the agent can revise the design and retry.

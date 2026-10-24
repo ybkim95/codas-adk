@@ -240,6 +240,41 @@ papers, novel by the counted evidence; distinct constructs; mechanism steps and 
 hypothesis; the memo's confirmed claims and the problems it noticed; the review's means; and, after the
 holdout, replication and the registered predictions met, by kind.
 
+## Where the discovery is decided, and effects a reader can weigh
+
+**The screen ranks as the holdout tests** (`codas/core/discovery.py`, opt-in, on in the AoU runner). The
+plain screen is an unadjusted Spearman correlation, so a feature that merely stands in for a declared
+confounder can lead it, and for an incident outcome the event flag ignores how long each person was
+followed. With `screen_adjust` each candidate's p-value, q-value and rank come from its partial Spearman
+correlation given the declared confounders (median-filled, with missing-value indicators); for a time to
+event, from a Cox model on the follow-up time adjusted the same way. The screen only ranks and gates entry
+to the validation battery, which is unchanged; each candidate keeps its plain correlation beside the
+screen's effect (`screen` in the round record). Off elsewhere, so the engine's results on other data are
+the same as before.
+
+**Effect sizes** (`codas/core/effects.py`, in every holdout row and the report's "Effect sizes on the
+holdout" table). At registration, each feature's discovery SD, quarter cut-points and natural unit (its
+interquartile range, rounded) are frozen, and prediction models are fitted on discovery: the confounders
+alone, with the feature, and with the hypothesis's incumbent alone and with the feature (missing covariates
+filled with discovery medians, never with the outcome, which would inflate discrimination). On the holdout:
+* a value outcome: the change in the outcome's own units per SD and per natural unit of the feature, the
+  standardised coefficient, the variance explained beyond the covariates (partial delta R^2), and the
+  adjusted difference between the top and bottom quarters;
+* a time to event: the hazard ratio per natural unit (per doubling when the feature is analysed on a log
+  scale), the hazard ratio of each quarter against the lowest with a test for trend, the crude cumulative
+  incidence by quarter (Kaplan-Meier) at three years or the discovery's 75th percentile of follow-up if
+  shorter, with the risk difference between the extreme quarters, and the E-value of the confidence bound;
+  a quarter with 1-20 events shows no cumulative incidence, which would reveal the count;
+* the gain in discrimination (C for a time to event or a binary outcome, R^2 for a value) from the frozen
+  models, beyond the incumbent and head to head against it. Bootstrap intervals (200 draws) are computed
+  for effects whose interval excludes the null; the gain is an effect size, not a gate.
+
+Every effect gets a size class: negligible, small, moderate or large, at |rho| and standardised
+coefficients of 0.1 / 0.2 / 0.3, hazard ratios per SD of 1.05 / 1.2 / 1.5 (either way), and C or R^2 gains
+of 0.005 / 0.01 / 0.02 (0.005 is about what HDL cholesterol or CRP add to established cardiovascular risk
+models). A replicated effect that is negligible is said to be so, in the reconciliation table and below
+the effect table.
+
 ## Quality rules: which days, nights, cases and participants count
 
 The example spec applies the rules the published All of Us wearable studies share (e.g. Master et al.,
@@ -402,7 +437,7 @@ Vertex AI answers `429 RESOURCE_EXHAUSTED` when shared capacity is short (previe
 Two time limits stop a run from hanging: a model request that sends nothing for
 `CODAS_MODEL_TIMEOUT_S` (default 600) is abandoned, retried `CODAS_MODEL_TIMEOUT_RETRIES` times
 (default 1) and then sent to the next model; an outcome whose agents run longer than
-`CODAS_OUTCOME_TIMEOUT_MIN` (default 180 in the AoU runner: five rounds, the per-candidate debate and the
+`CODAS_OUTCOME_TIMEOUT_MIN` (default 180 in the AoU runner: three rounds, the per-candidate debate and the
 report review take 1-2 hours on a cohort of about 11,000) is stopped and recorded as failed.
 
 ### Background job and progress log
@@ -698,7 +733,7 @@ and year, and how much of that title the entry contains).
 | statistical method pool chosen per round | partial correlation, subgroup stratified, Huber robust regression, propensity stratification, mutual information, mediation, survival screen (`codas/core/methods.py`); the paper's "mixed-effects proxy" is replaced by a real within-person mixed model |
 | ML method pool, nested CV | gradient boosting (sklearn histogram GBM), elastic net, random forest, lasso, ridge, Huber, logistic, each with nested CV, a bootstrap CI and a permutation null; XGBoost / LightGBM are not dependencies |
 | gap finder, constraints unioned | `gap_finder` + `record_gap_analysis` |
-| stop rules (pools exhausted, Jaccard > 0.9 twice, no new method/candidate) | `check_convergence` when the pools are active; up to 5 rounds on AoU |
+| stop rules (pools exhausted, Jaccard > 0.9 twice, no new method/candidate) | `check_convergence` when the pools are active; up to 3 rounds on AoU (the paper's 5; the hypothesis design now carries much of the search) |
 | per-candidate critic -> defender debate | `candidate_debate` with recorded verdicts; the defender has analysis tools (the paper's had none) |
 | event pruning between phases | `include_contents="none"` + memory placeholders |
 | novelty / mechanism with search | as before, now also reading the registered hypotheses and debates |

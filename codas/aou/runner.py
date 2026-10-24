@@ -19,10 +19,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-# The paper's loop runs up to five rounds (its stop rules usually end it sooner); set before the agent
-# graph is imported, which reads it. Main keeps its own default.
-os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "5")
-# Five rounds, the per-candidate debate and the report review take 1-2 h per outcome on a cohort of this size.
+# The paper's loop runs up to five rounds; here three, because the hypothesis design (codas.core.hypotheses)
+# now carries much of the search and the time goes to it. Set before the agent graph is imported, which reads
+# it. Main keeps its own default.
+os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "3")
+# The rounds, the per-candidate debate and the report review take 1-2 h per outcome on a cohort of this size.
 os.environ.setdefault("CODAS_OUTCOME_TIMEOUT_MIN", "180")
 
 from codas.aou import cohort  # noqa: E402
@@ -813,6 +814,7 @@ def run_spec(spec: CohortSpec, cdr: str | None = None, *, label: str | None = No
         state = run_agents(csv, goal, on_tool_call, context, recorder=recorder,
                            on_agent=on_agent,
                            state={"covariate_imputations": COVARIATE_IMPUTATIONS,
+                                  "adjusted_screen": True,  # rank as the holdout tests (codas.core.discovery)
                                   "availability_columns": cohort.availability_columns(spec),
                                   "survival_time_column": FOLLOWUP_COLUMN if is_survival(spec) else "",
                                   "prior_lessons": list(lessons or []),

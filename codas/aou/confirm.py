@@ -63,8 +63,9 @@ import numpy as np
 import pandas as pd
 
 from codas.aou import ledger as ledger_book
-from codas.aou.privacy import mask_identifiers, mask_small_counts
-from codas.core import preprocess
+from codas.aou.privacy import SMALL_CELL_MAX, mask_identifiers, mask_small_counts
+from codas.core import effects, preprocess
+from codas.core.eda import natural_unit
 from codas.core.analyses import rebuild_feature
 from codas.core.imputation import pooled_cox, pooled_partial_spearman_ci
 from codas.core.statistics import safe_spearman
@@ -87,6 +88,9 @@ _THRESHOLD_SHARE = 0.6  # a threshold: one step between adjacent quantiles carri
 _U_SHARE = 0.25  # a U shape: both end quantiles sit this share of the range beyond the middle ones
 _ATTENUATION_LIMIT = 0.5
 _SEED = 17
+# The absolute risk by quarter is read at this horizon, or at the discovery share's 75th percentile of
+# follow-up when that is shorter (beyond it few remain at risk).
+ABSOLUTE_RISK_YEARS = 3
 
 
 def _digest(record: dict[str, Any]) -> str:
@@ -108,6 +112,15 @@ def _discovery_cox(frame: pd.DataFrame, h: dict[str, Any], target: str, time_col
     except Exception:  # noqa: BLE001 - the direction then falls back to the screen's
         return {}
     return res if _finite(res) and res["sign"] != 0 else {}
+
+
+def _horizon(frame: pd.DataFrame | None, survival_time: str | None) -> int | None:
+    """Days at which the absolute risk by quarter is read: ABSOLUTE_RISK_YEARS, or the discovery share's 75th
+    percentile of follow-up when that is shorter."""
+    if frame is None or not survival_time or survival_time not in frame.columns:
+        return None
+    follow = pd.to_numeric(frame[survival_time], errors="coerce").dropna()
+    return int(min(ABSOLUTE_RISK_YEARS * 365, float(follow.quantile(0.75)))) if len(follow) else None
 
 
 def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_time: str | None = None,
@@ -159,12 +172,33 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
               if frame is not None and c in frame.columns and c != survival_time]
 
     def frozen(h: dict[str, Any]) -> dict[str, Any]:
-        """The feature's transform fitted on the discovery rows (empty when it cannot be built there)."""
+        """The feature's transform fitted on the discovery rows, and what its effect sizes are read in on the
+        holdout: the discovery SD, quarter cut-points and natural unit (the interquartile range, rounded) of
+        its raw values (empty when it cannot be built there)."""
         x = _feature(frame, h) if frame is not None else None
         if x is None or x.notna().sum() < _MIN_ROWS:
             return {}
         transform = preprocess.fit(x)
-        return {"transform": transform, "transform_text": preprocess.describe(transform)}
+        raw = pd.to_numeric(x, errors="coerce").dropna().to_numpy(dtype=float)
+        q1, q2, q3 = (float(v) for v in np.quantile(raw, [0.25, 0.5, 0.75]))
+        return {"transform": transform, "transform_text": preprocess.describe(transform),
+                "effect_scale": {"sd": float(np.std(raw, ddof=1)), "unit": natural_unit(q3 - q1),
+                                 "cutpoints": [q1, q2, q3]}}
+
+    def prediction(h: dict[str, Any]) -> dict[str, Any]:
+        """Prediction models fitted on the discovery rows and frozen (``codas.core.effects.fit_frozen``): the
+        confounders alone, with the feature, and with the hypothesis's incumbent alone and with the feature."""
+        x = _feature(frame, h) if frame is not None and target in frame.columns else None
+        if x is None or x.notna().sum() < _MIN_ROWS:
+            return {}
+        values = preprocess.apply(x, h["transform"]) if survival_time and h.get("transform") else x
+        incumbent = h.get("incumbent") if h.get("incumbent") in frame.columns else None
+        try:
+            model = effects.fit_frozen(frame.assign(**{h["feature"]: values}), target=target, time=survival_time,
+                                       covariates=adjust, feature=h["feature"], incumbent=incumbent)
+        except Exception:  # noqa: BLE001 - the holdout then reports no discrimination gain for it
+            return {}
+        return {"frozen_model": model} if model else {}
 
     def hazard(h: dict[str, Any]) -> dict[str, Any]:
         """The discovery Cox estimate for ``h`` (empty without a time to event or when it cannot be fitted)."""
@@ -182,6 +216,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                "declared_knownness": h.get("declared_knownness"),
                **{k: h[k] for k in _TEMPLATE_FIELDS if h.get(k)}}
         row.update(frozen(row))
+        row.update(prediction(row))
         row.update({k: v for k, v in hazard(row).items() if k != "sign"})
         hypotheses.append(row)
     registered = {h["feature"] for h in hypotheses}
@@ -190,6 +225,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
         row = {"feature": name, "definition": definition(name), "direction": 1 if c["rho"] > 0 else -1,
                **seen(name), "family": "exploratory"}
         row.update(frozen(row))
+        row.update(prediction(row))
         cox = hazard(row)
         if cox:
             sign = 1 if cox.pop("sign") > 0 else -1
@@ -212,6 +248,7 @@ def preregister(state: dict[str, Any], out_dir: Path, stem: str, *, survival_tim
                       "reference family at alpha; see codas.aou.ledger",
         "negative_controls": list(negative_controls), "positive_controls": list(positive_controls),
         "sensitivity_lag_days": int(sensitivity_lag_days),
+        "absolute_risk_horizon_days": _horizon(frame, survival_time),
         "availability": list(availability), "covariate_imputations": int(covariate_imputations),
         "discovery_rounds": len(rounds),
         "discovery_variants_evaluated": sum(int(r.get("evaluated_count") or 0) for r in rounds),
@@ -439,6 +476,11 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
                                          "incumbent": incumbent, "same_direction": bool(adj["sign"] == h["direction"]),
                                          "attenuation": _attenuation(without, adj), "already_adjusted": already,
                                          "effect_without_excludes_null": _excludes_null(without)}
+    row["magnitude"] = (effects.magnitude("hr_per_sd", res.get("hr_per_sd")) if time_col
+                        else effects.magnitude("rho", res.get("rho")))
+    sizes = _guarded(errors, "effect_sizes", _effect_sizes, frame, h, prereg, target, time_col, cov, raw, res, errors)
+    if sizes:
+        row["effect_sizes"] = sizes
     row["dose_response"] = _guarded(errors, "dose_response", _dose_response, frame, raw, target, time_col, cov,
                                     h["direction"])
     if time_col:
@@ -449,6 +491,39 @@ def _test_hypothesis(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, A
     if errors:
         row["errors"] = errors
     return row
+
+
+def _effect_sizes(frame: pd.DataFrame, h: dict[str, Any], prereg: dict[str, Any], target: str, time_col: str | None,
+                  cov: pd.DataFrame | None, raw: pd.Series, res: dict[str, Any], errors: dict[str, str]) -> dict[str, Any]:
+    """The holdout effect in units a reader can weigh (``codas.core.effects``), on the discovery share's frozen
+    SD, natural unit and quarter cut-points, with the frozen prediction models' gain in discrimination. Bootstrap
+    intervals only for an effect whose interval excludes the null (they take most of the time)."""
+    scale = h.get("effect_scale") or {}
+    transform = h.get("transform") if time_col else None
+    draws = effects.BOOTSTRAP if _excludes_null(res) else 0
+    if time_col:
+        if transform and transform.get("log"):  # the hazard ratio is per SD of the log: read it per doubling
+            unit, sd, label = float(np.log(2)), transform["scale"], "a doubling"
+        elif transform:
+            unit, sd, label = scale.get("unit"), transform["scale"], None
+        else:  # scaled by the holdout's own SD (no discovery rows were available at registration)
+            unit, sd, label = scale.get("unit"), float(raw.std(ddof=0)), None
+        out = effects.survival_effects(_num(frame, time_col), _num(frame, target), raw, cov,
+                                       hr_per_sd=res["hr_per_sd"], ci95=res["ci95"], sd=sd, unit=unit,
+                                       unit_label=label, cutpoints=scale.get("cutpoints"),
+                                       horizon=prereg.get("absolute_risk_horizon_days") or ABSOLUTE_RISK_YEARS * 365,
+                                       draws=draws, min_events=SMALL_CELL_MAX)
+    else:
+        out = effects.value_effects(_num(frame, target), raw, cov, sd=scale.get("sd") or float(raw.std(ddof=1)),
+                                    unit=scale.get("unit"), cutpoints=scale.get("cutpoints"))
+    model = h.get("frozen_model")
+    if model:
+        values = preprocess.apply(raw, transform) if transform else raw
+        gain = _guarded(errors, "prediction_gain", effects.evaluate_frozen, model,
+                        frame.assign(**{h["feature"]: values}), target=target, time=time_col, draws=draws)
+        if gain:
+            out["prediction"] = gain
+    return out
 
 
 def _attenuation(main: dict[str, Any], adjusted: dict[str, Any]) -> float | None:
@@ -809,8 +884,8 @@ def reconciliation_markdown(result: dict[str, Any], engine_verdicts: dict[str, s
              "The agents' narrative below was written before the holdout was opened. Where it disagrees "
              "with this table (a candidate it calls failed that replicated, or the reverse), this table holds; "
              "the full holdout section follows the narrative.", "",
-             "| feature | family | discovery engine | debate | holdout | p (one-sided, level) | robust |",
-             "|---|---|---|---|---|---|---|"]
+             "| feature | family | discovery engine | debate | holdout | size | p (one-sided, level) | robust |",
+             "|---|---|---|---|---|---|---|---|"]
     for r in result.get("hypotheses") or []:
         family = r.get("family", "exploratory")
         engine = engine_verdicts.get(r["feature"]) or ("registered a priori" if family == "a_priori"
@@ -823,8 +898,56 @@ def reconciliation_markdown(result: dict[str, Any], engine_verdicts: dict[str, s
             holdout += f" ({effect}, {ci})"
         robust = "yes" if r.get("robust") else ("no" if "robust" in r else "")
         lines.append(f"| {r['feature']} | {family.replace('_', '-')} | {engine} | {r.get('debate') or '-'} | "
-                     f"{holdout} | {_test_text(r)} | {robust} |")
+                     f"{holdout} | {_size_text(r)} | {_test_text(r)} | {robust} |")
     return "\n".join(lines) + "\n"
+
+
+def _size_text(r: dict[str, Any]) -> str:
+    """The effect's magnitude class, and "significant but negligible" when it replicated anyway."""
+    size = r.get("magnitude") or ""
+    if size == "negligible" and (r.get("replicated") or r.get("reproduced")):
+        return "negligible, though significant"
+    return size
+
+
+def _ci(values: Any, digits: str = ".3g") -> str:
+    return f"{values[0]:{digits}} to {values[1]:{digits}}" if values and None not in values else ""
+
+
+def _effect_row(r: dict[str, Any]) -> str:
+    """One row of the effect-size table."""
+    e = r["effect_sizes"]
+    if r.get("test") == "cox":
+        unit = (f"HR {e['hr_per_unit']:.3g} per {e['unit'] if isinstance(e['unit'], str) else format(e['unit'], 'g')} "
+                f"({_ci(e['hr_per_unit_ci95'])})" if e.get("hr_per_unit") else "")
+        top = (e.get("quarter_hr") or [None] * 4)[3]
+        quarters = f"HR {top:.3g} ({_ci(e['quarter_hr_ci95'][3])})" if top is not None else ""
+        if e.get("p_trend") is not None:
+            quarters += f"; trend p {e['p_trend']:.2g}"
+        risk = ""
+        ci = e.get("cumulative_incidence")
+        if ci:
+            years = (e.get("horizon_days") or 0) / 365.25
+            shown = ["masked" if v is None else f"{100 * v:.1f}%" for v in ci]
+            risk = f"{years:.1f} y: {' / '.join(shown)} (lowest to highest quarter)"
+            if e.get("risk_difference") is not None:
+                risk += f"; difference {100 * e['risk_difference']:+.1f} points"
+                if e.get("risk_difference_ci95"):
+                    risk += f" ({100 * e['risk_difference_ci95'][0]:.1f} to {100 * e['risk_difference_ci95'][1]:.1f})"
+    else:
+        unit = (f"{e['per_unit']:+.3g} per {e['unit']:g} ({_ci(e['per_unit_ci95'])})" if e.get("per_unit") is not None
+                else f"{e.get('per_sd', float('nan')):+.3g} per SD")
+        quarters = (f"{e['top_vs_bottom_quarter']:+.3g} ({_ci(e['top_vs_bottom_quarter_ci95'])})"
+                    if e.get("top_vs_bottom_quarter") is not None else "")
+        risk = f"partial delta R^2 {e.get('partial_delta_r2', float('nan')):.3g}"
+    gain = ""
+    p = e.get("prediction")
+    if p:
+        gain = f"{p['metric']} {p['gain']:+.3f}" + (f" ({_ci(p['gain_ci95'], '.3f')})" if p.get("gain_ci95") else "")
+        if p.get("gain_beyond_incumbent") is not None:
+            named = (r.get("incumbent_adjusted") or {}).get("incumbent") or "the incumbent"
+            gain += f"; beyond {named} {p['gain_beyond_incumbent']:+.3f}"
+    return f"| {r['feature']} | {_size_text(r) or '-'} | {unit or '-'} | {quarters or '-'} | {risk or '-'} | {gain or '-'} |"
 
 
 def confirmation_markdown(result: dict[str, Any]) -> str:
@@ -875,6 +998,18 @@ def confirmation_markdown(result: dict[str, Any]) -> str:
                          f"{effect} | {ci} | {_test_text(r)} | {ev} | {status} | {dose_text} | "
                          f"{', '.join(r.get('falsification_failed') or []) or '-'} |")
         lines.append("")
+    sized = [r for r in result["hypotheses"] if r.get("effect_sizes") and "same_direction" in r]
+    if sized:
+        lines += ["**Effect sizes on the holdout**, in units a reader can weigh (the SD, natural unit and quarter "
+                  "cut-points are the discovery share's, frozen at registration; the gain in discrimination is that of "
+                  "prediction models fitted on discovery and frozen; magnitude classes as in docs/AOU.md):", "",
+                  "| feature | size | per natural unit | top vs bottom quarter | absolute risk / variance explained | "
+                  "discrimination gain (95% CI) |", "|---|---|---|---|---|---|",
+                  *[_effect_row(r) for r in sized], ""]
+        negligible = [r["feature"] for r in sized if _size_text(r) == "negligible, though significant"]
+        if negligible:
+            lines += ["Significant but negligible in size (the test found it, but it is too small to matter on its "
+                      "own): " + ", ".join(negligible) + ".", ""]
     cards = [r for r in result["hypotheses"] if r.get("scorecard")]
     if cards:
         total = result.get("predictions") or {}

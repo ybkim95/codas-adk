@@ -68,10 +68,15 @@ class Candidate:
     components: list[str] = field(default_factory=list)
     tests: list[ValidationTestResult] = field(default_factory=list)
     evidence: str = ""
+    # What an opt-in adjusted screen measured (its effect, p and what it adjusted for); None for the plain
+    # Spearman screen, and then left out of the record.
+    screen: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = _jsonable(asdict(self))
         data["tests"] = [test.to_dict() for test in self.tests]
+        if data.get("screen") is None:
+            data.pop("screen", None)
         return data
 
 

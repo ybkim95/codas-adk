@@ -24,13 +24,13 @@ counts only, never a row.
 from __future__ import annotations
 
 import math
-from bisect import bisect_left, insort
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .effects import concordance  # noqa: F401 - Harrell's C, exact and fast; re-exported here
 from .imputation import completed_covariates, nelson_aalen, pool, pooled_cox, pooled_partial_spearman_ci
 from .statistics import benjamini_hochberg, safe_spearman
 from .survival import cox_ph
@@ -242,33 +242,6 @@ def _pooled_fit(kind: str, exposures: np.ndarray, cov: np.ndarray | None, y: np.
 
 
 # --- prediction metrics ---------------------------------------------------------------------------
-
-def concordance(time, event, risk) -> float:
-    """Harrell's C: among pairs where the earlier time is an event, the share in which the earlier one
-    has the higher risk (ties in risk count half). O(n log n)."""
-    t, e, r = (np.asarray(v, dtype=float) for v in (time, event, risk))
-    ok = np.isfinite(t) & np.isfinite(e) & np.isfinite(r)
-    t, e, r = t[ok], e[ok], r[ok]
-    order = np.argsort(-t, kind="mergesort")
-    seen: list[float] = []  # risks of everyone with a later time, kept sorted
-    concordant = comparable = 0.0
-    i = 0
-    while i < len(order):
-        j = i
-        while j < len(order) and t[order[j]] == t[order[i]]:
-            j += 1
-        group = order[i:j]  # equal times are not comparable with each other
-        for k in group:
-            if e[k] and seen:
-                below = bisect_left(seen, r[k])
-                equal = bisect_left(seen, np.nextafter(r[k], np.inf)) - below
-                concordant += below + 0.5 * equal
-                comparable += len(seen)
-        for k in group:
-            insort(seen, r[k])
-        i = j
-    return concordant / comparable if comparable else math.nan
-
 
 def _metric(kind: str, y: np.ndarray, pred: np.ndarray, t: np.ndarray | None) -> float:
     if kind == "cox":

@@ -410,6 +410,7 @@ code("""for run in result["runs"]:
                          ("Per-candidate debate", views.debates_table(result, stem)),
                          ("Lessons recorded for later outcomes", views.lessons_table(result, stem)),
                          ("Sealed holdout: pre-registered hypotheses", views.confirmation_table(result, stem)),
+                         ("Sealed holdout: effect sizes in units a reader can weigh", views.effect_sizes_table(result, stem)),
                          ("Sealed holdout: each registered prediction scored", views.scorecard_table(result, stem)),
                          ("Agent execution: calls, tokens, tools, time and estimated cost per agent",
                           views.execution_table(result, stem)),

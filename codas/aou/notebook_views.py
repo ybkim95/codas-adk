@@ -508,6 +508,29 @@ def hypothesis_quality_table(result: dict[str, Any], stem: str) -> pd.DataFrame 
     return pd.DataFrame(rows) if rows else None
 
 
+def effect_sizes_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
+    """Each holdout effect in units a reader can weigh (``codas.core.effects``): its size class, per natural
+    unit, top against bottom quarter, absolute risk by quarter or variance explained, and the gain in
+    discrimination of the frozen prediction models."""
+    conf = _read(_out_dir(result) / f"{stem}_state.json").get("confirmation") or {}
+    rows = []
+    for h in conf.get("hypotheses") or []:
+        e = h.get("effect_sizes")
+        if not e or "same_direction" not in h:
+            continue
+        p = e.get("prediction") or {}
+        rows.append({"feature": h["feature"], "size": h.get("magnitude"),
+                     "per natural unit": e.get("hr_per_unit", e.get("per_unit")), "unit": e.get("unit"),
+                     "top vs bottom quarter": (e.get("quarter_hr") or [None] * 4)[3] if h.get("test") == "cox"
+                     else e.get("top_vs_bottom_quarter"),
+                     "absolute risk by quarter": ", ".join("masked" if v is None else f"{100 * v:.1f}%"
+                                                           for v in e.get("cumulative_incidence") or []) or None,
+                     "risk difference": e.get("risk_difference"),
+                     "gain": f"{p['metric']} {p['gain']:+.3f}" if p.get("gain") is not None else None,
+                     "gain 95% CI": p.get("gain_ci95"), "beyond incumbent": p.get("gain_beyond_incumbent")})
+    return pd.DataFrame(rows) if rows else None
+
+
 def scorecard_table(result: dict[str, Any], stem: str) -> pd.DataFrame | None:
     """Each registered prediction scored on the sealed holdout: magnitude, shape and every falsification test."""
     conf = _read(_out_dir(result) / f"{stem}_state.json").get("confirmation") or {}
