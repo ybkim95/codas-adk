@@ -292,8 +292,10 @@ def test_unit_summary_comes_from_the_discovery_share_and_an_allowlist_keeps_one_
         # Synthetic steps are a trait of the person; fairly active minutes are day-to-day noise.
         assert reliability["act_steps_mean"]["reliability"] > 0.9
         assert abs(reliability["act_fairly_active_minutes_mean"]["reliability"]) < 0.4
-        for table in (path, cohort.holdout_path(path)):         # no internal column reaches a table
-            assert not [c for c in pd.read_csv(table).columns if c.startswith("_")]
+        # No internal column reaches a table; the sealed table alone carries the enrolment era (the holdout's
+        # consistency check reads it).
+        for table, sealed_only in ((path, []), (cohort.holdout_path(path), [cohort.ERA_COLUMN])):
+            assert [c for c in pd.read_csv(table).columns if c.startswith("_")] == sealed_only
     finally:
         shutil.rmtree(out_dir, ignore_errors=True)
     every = duckdb_query(con)(None, *build_cohort_sql(replace(spec, holdout_fraction=0.0), SYNTHETIC_CDR))

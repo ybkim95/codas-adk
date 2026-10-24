@@ -470,8 +470,9 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
      by default).
    * For each outcome's three strongest hits the literature is counted (Europe PMC, as for the agents'
      evidence matrix): whether the hit's construct is established for that outcome.
-   * The full grid, the rule and the strongest hits go to `phenome_scan.json` and `explore_summary.md`;
-     the notebook shows a map of the hits and their table. Searching the discovery share spends no
+   * The full grid, the rule and the strongest hits go to `phenome_scan.json` and `explore_summary.md`
+     with counts of 1-20 masked (the unmasked copy the ranking uses stays in the sealed folder); the
+     notebook shows a map of the hits and their table. Searching the discovery share spends no
      holdout: only registered hypotheses are tested on the sealed share. No agent sees the scan.
 3. **Selection.** Outcomes with at least one hit, ranked by hits the literature has not established,
    then by hits, then by the strongest adjusted statistic; `--top-k` (default 3) for each outcome kind,

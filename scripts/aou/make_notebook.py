@@ -328,10 +328,11 @@ if doubtful is not None:
     display(views.fit(doubtful))"""),
 md("""## 3. Choosing the outcomes: a phenome-wide scan
 
-The background job below starts by screening every verified catalog outcome (about 100 diagnoses and 30 lab
-values) against every wearable feature and phenotype, on the discovery half only: one BigQuery pass for the
-participants' features and one for all their diagnoses and lab values, then a test of every pair adjusted
-for age and sex, again after all covariates and wear time, and in two fixed halves. An outcome is selected
+The background job below starts by screening every verified catalog outcome (the diagnoses and lab values
+in `scripts/aou/outcomes_catalog.json`) against every wearable feature and phenotype, on the discovery half
+only: one BigQuery pass each for the participants' features, their diagnoses and their lab values, then a
+test of every pair adjusted for age and sex, again after all covariates and wear time, and in two fixed
+halves. An outcome is selected
 when it has a hit (significant across the whole matrix, not negligible in size, the same sign in both halves
 and after adjustment), best first by hits the literature has not established. Nothing is tested on the
 sealed half here. Its table and map are shown below once the job ends (counts of 1-20 masked)."""),
