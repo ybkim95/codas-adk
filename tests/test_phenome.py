@@ -263,6 +263,10 @@ def test_explore_selects_outcomes_by_the_scan(synthetic, monkeypatch):
 
     assert views.phenome_hits_table(result) is not None
     assert views.phenome_figure(result)._repr_png_().startswith(b"\x89PNG")
+    # The data atlas runs beside the scan, in the summary and the notebook.
+    assert "## Data atlas" in summary and Path(result["data_atlas"]).exists()
+    assert views.data_atlas_figure(result)._repr_png_().startswith(b"\x89PNG")
+    assert "Who has which data (standardised mean differences, with against without)" in views.data_atlas_tables(result)
     by_size = runner.explore(CATALOG, base, synthetic["cdr"], client=object(), top_k=1, min_measurement_n=30,
                              min_cases=10, out_dir=out, screen_only=True, log=lambda *_: None, selection="size")
     assert by_size["selection"] == "size" and by_size["scan"] is None

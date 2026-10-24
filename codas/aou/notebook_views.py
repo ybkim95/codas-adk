@@ -210,6 +210,51 @@ def _scan(result: dict[str, Any]) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
+def _atlas(result: dict[str, Any]) -> dict[str, Any]:
+    return _read(Path(result.get("data_atlas") or "")) if result.get("data_atlas") else {}
+
+
+def data_atlas_figure(result: dict[str, Any]):
+    """Discovery participants with data in each calendar month, one line per daily source (months with 1-20
+    participants left blank)."""
+    atlas = _atlas(result)
+    months = [m for m in atlas.get("coverage") or [] if isinstance(m.get("participants"), int)]
+    if not months:
+        return None
+    fig = _figure(8, 2.8)
+    ax = fig.subplots()
+    colours = [BLUE, ORANGE, AQUA, GRAY, INK_2]
+    for k, source in enumerate(dict.fromkeys(m["source"] for m in months)):
+        rows = [m for m in months if m["source"] == source]
+        ax.plot(pd.to_datetime([m["month"] for m in rows]), [m["participants"] for m in rows],
+                color=colours[k % len(colours)], lw=1.4, label=source)
+    ax.set_ylabel("participants", fontsize=8)
+    ax.legend(fontsize=7, frameon=False, ncol=4)
+    ax.set_title("Coverage over calendar time (discovery share)", loc="left", fontsize=9, color=INK)
+    _style(ax)
+    return Chart(fig)
+
+
+def data_atlas_tables(result: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    """The atlas's tables: who has which data, repeated laboratory values during wear, survey questions."""
+    atlas = _atlas(result)
+    out: dict[str, pd.DataFrame] = {}
+    if atlas.get("selection"):
+        out["Who has which data (standardised mean differences, with against without)"] = pd.DataFrame(
+            [{"source": r["source"], "with": r.get("n_with") if r.get("n_with") is not None else MASK,
+              "without": r.get("n_without") if r.get("n_without") is not None else MASK,
+              **{k: v for k, v in (r.get("traits") or {}).items()}} for r in atlas["selection"]])
+    repeats = [r for r in atlas.get("repeat_labs") or [] if r.get("participants")]
+    if repeats:
+        out["Repeated laboratory values during wear (two or more)"] = pd.DataFrame(
+            [{"lab": r["label"], "participants": r["participants"], "median values": r.get("median_values")}
+             for r in repeats])
+    if atlas.get("survey"):
+        out["Survey questions most answered"] = pd.DataFrame(
+            [{"question": q["name"], "participants": q["participants"]} for q in atlas["survey"][:25]])
+    return out
+
+
 def rehearsal_table(result: dict[str, Any]) -> pd.DataFrame | None:
     """The dress rehearsal's checks (the real models on synthetic data before any query): passed, or failed and
     whether that would have stopped the run."""

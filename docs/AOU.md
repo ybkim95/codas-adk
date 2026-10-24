@@ -499,7 +499,15 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
      with counts of 1-20 masked (the unmasked copy the ranking uses stays in the sealed folder); the
      notebook shows a map of the hits and their table. Searching the discovery share spends no
      holdout: only registered hypotheses are tested on the sealed share. No agent sees the scan.
-3. **Selection.** Outcomes with at least one hit, ranked by hits the literature has not established,
+3. **Data atlas** (`codas/aou/data_atlas.py`, discovery share only, aggregates with counts of 1-20 masked;
+   `CODAS_DATA_ATLAS=0` turns it off). Before any hypothesis, what the data hold: each daily source's
+   participants by calendar month; for each wearable and intraday source, who has it against who does not
+   (age, sex and every covariate by standardised mean difference, |SMD| >= 0.1 flagged; a group of 1-20 hides
+   both sizes, since the total would give it away); days of wear against visits in the record, when the spec
+   has a `visits` covariate; for each catalog lab, the participants with two or more in-range values between
+   their first and last wear day; and the survey questions most answered. Three BigQuery reads, cached; the
+   rest comes from the scan's person table. No outcome association is read, so no holdout is spent.
+4. **Selection.** Outcomes with at least one hit, ranked by hits the literature has not established,
    then by hits, then by the strongest adjusted statistic; `--top-k` (default 3) for each outcome kind,
    so one run covers lab measurements and diagnoses. An outcome without a hit is not selected (name it to
    run it anyway). `--selection size` (and any window design) ranks by sample size instead: measurements
@@ -510,7 +518,7 @@ python scripts/aou/run_codas_aou.py explore                  # CoDaS on the top 
    tested itself and finished with the current code is reused, not skipped. `MAX_OUTCOMES` in the
    notebook caps how many run in all, and `TEST_ON_HOLDOUT = False` runs the agents without registering or
    testing anything on the sealed half (a run that measures the agents and keeps the outcome fresh).
-4. **Runs.** Each selected outcome gets a spec built from the base spec's wearables and covariates,
+5. **Runs.** Each selected outcome gets a spec built from the base spec's wearables and covariates,
    is extracted, and goes through the full agent graph. `explore_summary.md` collects the masked
    screen table and, for each run, the validated candidates, the confounders adjusted for and the
    features excluded as leakage.

@@ -383,6 +383,14 @@ if result.get("scan"):
     if atlas is not None:
         display(Markdown("### Replication atlas: established associations re-tested on the discovery share"))
         display(views.fit(atlas))
+if result.get("data_atlas"):
+    display(Markdown("### Data atlas: what the data hold, before any hypothesis (discovery share)"))
+    coverage = views.data_atlas_figure(result)
+    if coverage is not None:
+        display(coverage)
+    for title, frame in views.data_atlas_tables(result).items():
+        display(Markdown(f"**{title}**"))
+        display(views.fit(frame))
 display(views.feasibility_figure(result["rows"], result["chosen"]))
 display(Markdown("### Runs"))
 display(views.fit(views.runs_table(result)))

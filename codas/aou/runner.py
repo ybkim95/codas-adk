@@ -33,7 +33,7 @@ from codas.aou import cohort  # noqa: E402
 from codas.aou import daystore  # noqa: E402
 from codas.aou import feasibility as feas
 from codas.aou import ledger as ledger_book
-from codas.aou import phenome
+from codas.aou import data_atlas, phenome
 from codas.aou.cohort import (DEFAULT_OUT_DIR, FOLLOWUP_COLUMN, CohortSpec, extract_cohort, holdout_path,
                               is_survival, resolve_cdr)
 from codas.aou.phenotypes import describe as describe_phenotypes
@@ -1002,13 +1002,16 @@ def explore(
 
     out = Path(out_dir).expanduser().resolve()
     selection = (selection or os.getenv("CODAS_OUTCOME_SELECTION", "scan")).strip().lower()
-    scan = None
+    scan = atlas = None
     if selection == "scan" and base.design == "incident":
         share = 1.0 - base.holdout_fraction
         out.mkdir(parents=True, exist_ok=True)
         scan = phenome.scan(verified, base, cdr, client, out, min_events=max(1, math.ceil(min_cases * share)),
                             min_n=max(1, math.ceil(min_measurement_n * share)), log=log)
         rows = phenome.feasibility_rows(scan)
+        if os.getenv("CODAS_DATA_ATLAS", "1") != "0":  # what the data hold, before any hypothesis
+            atlas = data_atlas.build(base, [o for o in verified if o.kind == "measurement"], cdr, client, out,
+                                     phenome.person_table(base, resolve_cdr(cdr), client, out), log=log)
     else:
         rows = feas.feasibility(verified, base, cdr, client)
     keys = [holdout_key(base, cdr)] if base.holdout_fraction > 0 else []
@@ -1037,7 +1040,8 @@ def explore(
         chosen = chosen[:max_outcomes]
     if scan is not None:
         table = (phenome.scan_table(scan, problems, chosen, opened) + "\n\n### Strongest hits\n\n"
-                 + phenome.hits_table(scan) + "\n\n### Replication atlas\n\n" + phenome.atlas_table(scan))
+                 + phenome.hits_table(scan) + "\n\n### Replication atlas\n\n" + phenome.atlas_table(scan)
+                 + ("\n\n" + data_atlas.markdown(atlas) if atlas else ""))
         log(phenome.scan_table(scan, problems, chosen, opened, limit=25) + "\n\n" + phenome.hits_table(scan, limit=10))
     else:
         table = feas.feasibility_table(rows, problems, chosen, opened)
@@ -1086,4 +1090,5 @@ def explore(
             "rows": mask_small_counts(rows), "selection": "scan" if scan is not None else "size",
             "scan": None if scan is None else {"path": str(out / phenome.SCAN_FILE), "pairs": scan["tested_pairs"],
                                                "hits": sum(1 for p in scan["pairs"] if p["hit"]),
-                                               "features": scan["features"], "literature": scan.get("literature")}}
+                                               "features": scan["features"], "literature": scan.get("literature")},
+            "data_atlas": None if atlas is None else str(out / data_atlas.FILE)}
