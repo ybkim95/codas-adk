@@ -26,6 +26,22 @@ def test_inventory_lists_tables_with_masked_coverage(monkeypatch):
                                          "value": "heart_rate_value"}]
 
 
+def test_coverage_counts_are_computed_once_per_cdr(monkeypatch, tmp_path):
+    con = duckdb.connect()
+    build_synthetic_cdr(con)
+    run = duckdb_query(con)
+    calls = []
+    monkeypatch.setattr(cohort, "_query", lambda client, sql, params: calls.append(sql) or run(client, sql, params))
+    first = inventory.inventory(SYNTHETIC_CDR, None, cache_dir=tmp_path)
+    scans = sum("COUNT(DISTINCT" in sql for sql in calls)
+    second = inventory.inventory(SYNTHETIC_CDR, None, cache_dir=tmp_path)
+    assert scans == 1 and sum("COUNT(DISTINCT" in sql for sql in calls) == 1     # the second read the cache
+    pd.testing.assert_frame_equal(first["tables"], second["tables"])
+    con.execute("CREATE TABLE extra AS SELECT person_id FROM person")              # a new table: counted again
+    inventory.inventory(SYNTHETIC_CDR, None, cache_dir=tmp_path)
+    assert sum("COUNT(DISTINCT" in sql for sql in calls) == 2
+
+
 def test_minute_heart_rate_tables_are_found_by_shape_not_name():
     cols = pd.DataFrame([("hr_feed", "person_id", "INT64"), ("hr_feed", "ts", "DATETIME"), ("hr_feed", "bpm", "FLOAT64"),
                          ("heart_rate_summary", "person_id", "INT64"), ("heart_rate_summary", "date", "DATE"),

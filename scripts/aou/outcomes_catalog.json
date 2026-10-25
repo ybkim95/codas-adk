@@ -419,7 +419,7 @@
       "codes": [
         "SNOMED:266257000"
       ],
-      "expect_name": "transient ischemic"
+      "expect_name": "transient"
     },
     {
       "name": "cardiomyopathy",
@@ -689,7 +689,7 @@
       "codes": [
         "SNOMED:235919008"
       ],
-      "expect_name": "cholelithiasis"
+      "expect_name": "gallstone"
     },
     {
       "name": "pancreatitis",
@@ -763,13 +763,13 @@
     },
     {
       "name": "acute_kidney_injury",
-      "label": "Acute renal failure",
+      "label": "Acute kidney injury",
       "kind": "condition",
       "concept_ids": [],
       "codes": [
         "SNOMED:14669001"
       ],
-      "expect_name": "renal failure"
+      "expect_name": "kidney injury"
     },
     {
       "name": "esrd",

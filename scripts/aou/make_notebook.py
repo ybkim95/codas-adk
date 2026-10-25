@@ -311,7 +311,7 @@ minute-level heart rate are found by their columns, not their name. Table sizes 
 table metadata."""),
 code("""from codas.aou import inventory
 
-inv = inventory.inventory(CDR, client)
+inv = inventory.inventory(CDR, client, cache_dir=cohort.DEFAULT_OUT_DIR / "inventory")  # counted once per CDR
 display(views.fit(inv["tables"]))
 print("minute heart-rate tables found by shape:", inv["minute_heart_rate"] or "none")
 try:
