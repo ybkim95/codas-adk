@@ -58,7 +58,7 @@ def build_monthstore_sql(spec: "cohort.CohortSpec", cdr: str) -> tuple[str, list
         primary_filter = f"\n    AND LOWER(CAST(s.{primary.filter_column} AS STRING)) = LOWER(CAST(@w0_filter AS STRING))"
     block = "CAST(FLOOR(DATE_DIFF(DATE(s.{c}), ie.index_date, DAY) / @block_days) AS INT64)"  # also before index
     ctes = [cohort._first_wear_cte(primary, t, valid),
-            "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
+            "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear_date, INTERVAL @window_days DAY) AS index_date\n"
             "  FROM first_wear\n)",
             "blocks AS (\n"
             f"  SELECT ie.person_id, {block.format(c=primary.date_column)} AS block,\n"

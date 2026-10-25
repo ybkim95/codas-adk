@@ -106,7 +106,7 @@ def _people(spec: CohortSpec, t: Any, params: list[QueryParam], everyone: bool =
                    ("split_salt", "INT64", int(spec.split_salt))]
         where = f"\n  WHERE {cohort.discovery_condition(spec)}"
     return [_first_wear_cte(spec.wearables[0], t, valid),
-            "people AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
+            "people AS (\n  SELECT person_id, DATE_ADD(first_wear_date, INTERVAL @window_days DAY) AS index_date\n"
             f"  FROM first_wear{where}\n)"]
 
 

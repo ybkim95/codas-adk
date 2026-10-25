@@ -641,7 +641,7 @@ def covariates_without(covariates: list[CovariateSpec], outcome: OutcomeSpec) ->
 
 
 _LAST_SEEN = ("last_seen AS (\n"
-              "  SELECT person_id, MAX(visit_start_date) AS last_seen FROM {visits}\n"
+              "  SELECT person_id, MAX(visit_start_date) AS last_visit_date FROM {visits}\n"
               "  GROUP BY person_id\n"
               ")")
 
@@ -662,7 +662,7 @@ def _valid_rule(spec: CohortSpec, params: list[QueryParam]) -> str:
 
 def _first_wear_cte(primary: WearableSource, t: Any, valid: str) -> str:
     return ("first_wear AS (\n"
-            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear\n"
+            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear_date\n"
             f"  FROM {t(primary.table)} w\n"
             f"  WHERE TRUE{valid.format(a='w')}\n"
             "  GROUP BY w.person_id\n"
@@ -728,7 +728,7 @@ def build_phenotype_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryPara
     if primary.filter_column is not None:
         params.append(("w0_filter", _scalar_type(primary.filter_value), primary.filter_value))
     ctes = [_first_wear_cte(primary, t, valid),
-            "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
+            "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear_date, INTERVAL @window_days DAY) AS index_date\n"
             "  FROM first_wear\n)"]
     extra, aliases = _phenotype_parts(spec, t, valid, params)
     select = ["ie.person_id"] + [item for alias, ph in aliases for item in select_columns(alias, ph)]
@@ -791,7 +791,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc:
 
     if person_level:  # everyone with a baseline; each outcome's rules are applied by the caller
         ctes += [_first_wear_cte(primary, t, valid),
-                 "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
+                 "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear_date, INTERVAL @window_days DAY) AS index_date\n"
                  "  FROM first_wear\n)", _LAST_SEEN.format(visits=t("visit_occurrence"))]
     elif spec.design == "incident":
         # One index rule for everyone: the end of a baseline window that starts at the first valid
@@ -802,36 +802,36 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc:
             horizon = ""
             if spec.horizon_days is not None:
                 params.append(("outcome_until", "INT64", int(spec.window_days + spec.lag_days + spec.horizon_days)))
-                horizon = "\n    AND m.measurement_date < DATE_ADD(f.first_wear, INTERVAL @outcome_until DAY)"
+                horizon = "\n    AND m.measurement_date < DATE_ADD(f.first_wear_date, INTERVAL @outcome_until DAY)"
             ctes.append(
                 "outcome_events AS (\n"
-                f"  SELECT m.person_id, f.first_wear, m.value_as_number AS outcome_value{unit},\n"
+                f"  SELECT m.person_id, f.first_wear_date, m.value_as_number AS outcome_value{unit},\n"
                 "    ROW_NUMBER() OVER (PARTITION BY m.person_id ORDER BY m.measurement_date, m.measurement_id) AS rn\n"
                 f"  FROM {t('measurement')} m\n"
                 "  JOIN outcome_concepts oc ON m.measurement_concept_id = oc.concept_id\n"
                 "  JOIN first_wear f ON f.person_id = m.person_id\n"
                 f"  WHERE m.value_as_number IS NOT NULL{bounds}\n"
-                f"    AND m.measurement_date >= DATE_ADD(f.first_wear, INTERVAL @outcome_from DAY){horizon}\n"
+                f"    AND m.measurement_date >= DATE_ADD(f.first_wear_date, INTERVAL @outcome_from DAY){horizon}\n"
                 ")"
             )
-            ctes.append("index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date,"
+            ctes.append("index_events AS (\n  SELECT person_id, DATE_ADD(first_wear_date, INTERVAL @window_days DAY) AS index_date,"
                         f" outcome_value{unit_out}\n  FROM outcome_events WHERE rn = 1\n)")
             if spec.negative_controls:
                 ctes.append(_LAST_SEEN.format(visits=t("visit_occurrence")))
         else:
             ctes.append(_cases_cte(spec.outcome, t, params))
             ctes.append(_LAST_SEEN.format(visits=t("visit_occurrence")))
-            start_fu = "DATE_ADD(f.first_wear, INTERVAL @outcome_from DAY)"
+            start_fu = "DATE_ADD(f.first_wear_date, INTERVAL @outcome_from DAY)"
             ctes.append(
                 "index_events AS (\n"
-                "  SELECT f.person_id, DATE_ADD(f.first_wear, INTERVAL @window_days DAY) AS index_date,\n"
+                "  SELECT f.person_id, DATE_ADD(f.first_wear_date, INTERVAL @window_days DAY) AS index_date,\n"
                 "    IF(c.dx_date IS NULL, 0, 1) AS outcome_value,\n"
-                f"    DATE_DIFF(COALESCE(c.dx_date, l.last_seen), {start_fu}, DAY) AS {FOLLOWUP_COLUMN}\n"
+                f"    DATE_DIFF(COALESCE(c.dx_date, l.last_visit_date), {start_fu}, DAY) AS {FOLLOWUP_COLUMN}\n"
                 "  FROM first_wear f\n"
                 "  JOIN last_seen l ON l.person_id = f.person_id\n"
                 "  LEFT JOIN cases c ON c.person_id = f.person_id\n"
                 f"  WHERE (c.dx_date IS NULL OR (c.dx_date >= {start_fu}{_enough('c', spec.outcome)}))\n"
-                f"    AND COALESCE(c.dx_date, l.last_seen) > {start_fu}\n"
+                f"    AND COALESCE(c.dx_date, l.last_visit_date) > {start_fu}\n"
                 ")"
             )
     elif spec.outcome.kind == "measurement":
@@ -980,7 +980,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc:
         ctes += extra
 
     if person_level:
-        select = ["ie.person_id", "DATE_DIFF(ls.last_seen, ie.index_date, DAY) AS last_seen_day"]
+        select = ["ie.person_id", "DATE_DIFF(ls.last_visit_date, ie.index_date, DAY) AS last_seen_day"]
         joins = ["LEFT JOIN last_seen ls ON ls.person_id = ie.person_id"]
     else:
         select = [f"ie.outcome_value AS {spec.outcome.name}"]
@@ -1047,7 +1047,7 @@ def build_cohort_sql(spec: CohortSpec, cdr: str, *, phenotypes: bool = True, qc:
                 params.append((f"n{i}_min_occurrences", "INT64", int(control.min_occurrences)))
                 excluded += f" OR n{i}.dx_dates < @n{i}_min_occurrences"
             select += [f"CASE WHEN {excluded} THEN NULL WHEN n{i}.dx_date IS NULL THEN 0 ELSE 1 END AS {col}",
-                       f"CASE WHEN {excluded} THEN NULL ELSE DATE_DIFF(COALESCE(n{i}.dx_date, ls.last_seen), {start}, DAY)"
+                       f"CASE WHEN {excluded} THEN NULL ELSE DATE_DIFF(COALESCE(n{i}.dx_date, ls.last_visit_date), {start}, DAY)"
                        f" END AS {col}_days"]
             joins.append(f"LEFT JOIN n{i} ON n{i}.person_id = ie.person_id")
     if spec.ehr_lookback_days:
@@ -1170,19 +1170,19 @@ def build_panel_sql(spec: CohortSpec, cdr: str) -> tuple[str, list[QueryParam]]:
         params.append(("outcome_units", "ARRAY<INT64>", list(spec.outcome.unit_concept_ids)))
     ctes = [f"outcome_concepts AS (\n  {concepts}\n)",
             "first_wear AS (\n"
-            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear\n"
+            f"  SELECT w.person_id, MIN(DATE(w.{primary.date_column})) AS first_wear_date\n"
             f"  FROM {t(primary.table)} w\n  WHERE TRUE{valid.format(a='w')}\n  GROUP BY w.person_id\n)",
             "occasions AS (\n"
             "  SELECT m.person_id, m.measurement_date AS occasion, AVG(m.value_as_number) AS outcome_value,\n"
-            "    MIN(f.first_wear) AS first_wear\n"
+            "    MIN(f.first_wear_date) AS first_wear_date\n"
             f"  FROM {t('measurement')} m\n"
             "  JOIN outcome_concepts oc ON m.measurement_concept_id = oc.concept_id\n"
             "  JOIN first_wear f ON f.person_id = m.person_id\n"
             f"  WHERE m.value_as_number IS NOT NULL{bounds}\n"
-            "    AND m.measurement_date >= DATE_ADD(f.first_wear, INTERVAL @period_days DAY)\n"
+            "    AND m.measurement_date >= DATE_ADD(f.first_wear_date, INTERVAL @period_days DAY)\n"
             "  GROUP BY m.person_id, m.measurement_date\n)"]
     select = ["DENSE_RANK() OVER (ORDER BY o.person_id) AS person_index", f"o.outcome_value AS {spec.outcome.name}",
-              "DATE_DIFF(o.occasion, o.first_wear, DAY) AS days_from_start"]
+              "DATE_DIFF(o.occasion, o.first_wear_date, DAY) AS days_from_start"]
     joins = []
     for i, source in enumerate(spec.wearables):
         aggregates = [f"COUNT(DISTINCT DATE(s.{source.date_column})) AS {source.prefix}_days"]

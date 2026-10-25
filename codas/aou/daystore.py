@@ -84,7 +84,7 @@ def build_daystore_sql(spec: "cohort.CohortSpec", cdr: str) -> tuple[str, list[c
     if primary.filter_column is not None:
         params.append(("w0_filter", cohort._scalar_type(primary.filter_value), primary.filter_value))
     ctes = [cohort._first_wear_cte(primary, t, valid),
-            "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear, INTERVAL @window_days DAY) AS index_date\n"
+            "index_events AS (\n  SELECT person_id, DATE_ADD(first_wear_date, INTERVAL @window_days DAY) AS index_date\n"
             "  FROM first_wear\n)",
             "day_rows AS (\n"
             f"  SELECT DISTINCT ie.person_id, ie.index_date, DATE(s.{primary.date_column}) AS d\n"

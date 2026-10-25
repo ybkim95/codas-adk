@@ -230,11 +230,34 @@ def inline_params(sql: str, params: list[tuple[str, str, Any]]) -> str:
     return sql
 
 
+def bigquery_name_clashes(sql: str) -> list[str]:
+    """Names BigQuery reads differently from DuckDB: a CTE or subquery that outputs a column with its own
+    name. BigQuery resolves that bare name to the whole row (a STRUCT), DuckDB to the column, so such a
+    query passes here and fails on the real CDR."""
+    import sqlglot
+    from sqlglot import exp
+
+    clashes = []
+    for tree in sqlglot.parse(sql, read="bigquery"):
+        for node in tree.find_all(exp.CTE, exp.Subquery):
+            name = (node.alias or "").lower()
+            body = node.this
+            outputs = {str(c).lower() for c in getattr(body, "named_selects", [])}
+            if name and name in outputs:
+                clashes.append(name)
+    return sorted(set(clashes))
+
+
 def duckdb_query(con: Any) -> Callable[[Any, str, list], pd.DataFrame]:
-    """A drop-in for ``codas.aou.cohort._query`` that runs against the synthetic DuckDB CDR."""
+    """A drop-in for ``codas.aou.cohort._query`` that runs against the synthetic DuckDB CDR. A query that
+    BigQuery would read differently (``bigquery_name_clashes``) is refused here rather than on the CDR."""
     import sqlglot
 
     def run(_client: Any, sql: str, params: list[tuple[str, str, Any]]) -> pd.DataFrame:
+        clashes = bigquery_name_clashes(sql)
+        if clashes:
+            raise ValueError(f"CTE or subquery named like one of its own columns ({', '.join(clashes)}): "
+                             "BigQuery reads the bare name as the whole row; rename the column")
         sql = inline_params(sql, params)
         sql = re.sub(r"`[^`]+\.INFORMATION_SCHEMA\.COLUMNS`", "__info_columns", sql)
         duck = sqlglot.transpile(sql, read="bigquery", write="duckdb")[0]
