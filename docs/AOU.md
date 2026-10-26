@@ -696,7 +696,9 @@ its own: a numerical failure is recorded on that hypothesis and listed under the
 whose main estimate fails counts as tested and not replicated ("test failed").
 
 The notebook stamps its own version into the first cell and stops when the page shows an older copy
-than the checkout holds (the browser does not refresh a notebook that changed on disk). Each step
+than the checkout holds (the browser does not refresh a notebook that changed on disk). Before
+stopping it puts the current notebook back on disk, because Jupyter's autosave writes the old page over
+the file and a reload would load it again; the page is then closed without saving and reopened. Each step
 shows tables and figures (`codas/aou/notebook_views.py`): the environment and model probe, the
 schema and concept checks, a feasibility chart, the runs table and time per phase, per-outcome
 cohort characteristics, candidates and holdout results, a forest plot across outcomes, and the job's

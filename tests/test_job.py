@@ -110,8 +110,11 @@ def test_the_notebook_stops_when_the_page_is_an_older_copy(tmp_path):
     ns["REPO"] = repo
     ns["check_this_page_is_current"]()          # the page matches the checkout: carries on
     ns["NOTEBOOK_VERSION"] = "0123456789ab"     # an older page
+    saved = repo / "notebooks/aou_codas_quickstart.ipynb"
+    saved.write_text("an old page autosaved over the file")   # Jupyter's autosave of the stale page
     with pytest.raises(SystemExit, match="older copy of the notebook"):
         ns["check_this_page_is_current"]()
+    assert json.loads(saved.read_text())["cells"][0]["source"] == setup   # the current notebook is back on disk
 
 
 def test_the_job_hides_the_known_harmless_library_notices():

@@ -84,8 +84,12 @@ def check_this_page_is_current():
     cells = json.loads(shown.stdout).get("cells", [])
     found = re.search(r'NOTEBOOK_VERSION = "([0-9a-f]+)"', "".join("".join(c.get("source", "")) for c in cells))
     if found and found.group(1) != NOTEBOOK_VERSION:
-        raise SystemExit("This page shows an older copy of the notebook. File > Reload Notebook from Disk "
-                         "(choose Revert/Discard if asked; do not save this page), then Run > Run All Cells.")
+        # Jupyter's autosave writes this old page back over the file, so reloading would load it again:
+        # put the current notebook back on disk first, and close the page without saving it.
+        git("checkout", "--", "notebooks")
+        raise SystemExit("This page shows an older copy of the notebook; the current one is now on disk. "
+                         "Close this tab without saving (File > Close Tab, then Discard / Don't Save), open "
+                         "notebooks/aou_codas_quickstart.ipynb again from the file browser, then Run > Run All Cells.")
 
 update_checkout()
 check_this_page_is_current()
