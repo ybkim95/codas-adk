@@ -14,6 +14,7 @@ verdicts shape how candidates are interpreted and reported, never the engine's v
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, AsyncGenerator
 
@@ -33,7 +34,9 @@ class MethodRunner(BaseAgent):
     async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
         state = dict(ctx.session.state)
         try:
-            delta = run_method_batch(state, per_pool=METHODS_PER_ROUND)
+            # Off the event loop: the methods take minutes, and a blocked loop holds back the outcome's
+            # time limit and every other coroutine until they finish.
+            delta = await asyncio.to_thread(run_method_batch, state, METHODS_PER_ROUND)
             text = "Methods run this round:\n" + "\n".join(
                 line for line in delta["analyses_digest"].splitlines()
                 if f"round {max(len(state.get('rounds') or []) - 1, 0)} " in line) if delta["rounds"] else "No round yet."

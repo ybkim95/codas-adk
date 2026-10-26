@@ -1222,8 +1222,9 @@ def _execute_method(frame: pd.DataFrame, design: dict[str, Any], request: dict[s
     try:
         data = _with_features(frame, design, features)
         options = {k: _covariate(frame, design, request[k]) for k in ("by", "mediator") if request.get(k)}
-        result = methods.run(name, data, features, design["target"], design["confounders"], design["time"],
-                             design["imputations"], **options)
+        result = methods.run_bounded(name, data, features, design["target"], design["confounders"], design["time"],
+                                     design["imputations"], budget_s=float(os.getenv("CODAS_METHOD_BUDGET_S", "0")),
+                                     **options)
     except _Refused as exc:
         result = {"method": name, "error": str(exc)}
     return {"tool": f"method:{name}", "round": round_index,

@@ -173,3 +173,11 @@ def test_effect_statements_are_quoted_as_written():
     assert found[0] == "Higher sleep regularity was associated with lower mortality (HR 0.70, 95% CI 0.62-0.79)."
     assert all(s in abstract for s in found) and not any("No interval" in s for s in found)
     assert literature.effect_statements("", ["x"]) == []
+    # A sentence that names neither the exposure nor the outcome is another finding of that paper, not quoted;
+    # one naming both comes before one naming either.
+    trial = ("Heart rate reduction with ivabradine lowered events (HR 0.82, 95% CI 0.75-0.90). Insomnia was a "
+             "risk factor (OR 1.17, 95% CI 1.11-1.23). Resting heart rate predicted diabetes (HR 1.20, 95% CI "
+             "1.05-1.37).")
+    picked = literature.effect_statements(trial, [], groups=[["resting heart rate"], ["diabetes"]])
+    assert picked == ["Resting heart rate predicted diabetes (HR 1.20, 95% CI 1.05-1.37)."]
+    assert literature.effect_statements(trial, ["bradycardia"]) == []

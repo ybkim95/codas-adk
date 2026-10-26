@@ -107,3 +107,29 @@ def test_debate_candidates_carry_the_evidence_and_verdicts_are_validated(tmp_pat
     assert ok["recorded"]["verdict"] == "caveat" and ctx.state["debate_verdict"]["feature"] == "x"
     assert "error" in tools.record_debate("x", "maybe", "", "", ctx)
     assert "error" in tools.record_debate("z", "keep", "r", "e", ctx)  # not the candidate under debate
+
+
+def test_the_method_runner_does_not_block_the_event_loop(monkeypatch):
+    """A batch of slow methods runs off the event loop, so the outcome's time limit can still fire on time."""
+    import asyncio
+    import time
+
+    from codas.agents import runners
+
+    monkeypatch.setattr(runners, "run_method_batch", lambda state, per_pool: time.sleep(2) or {"rounds": []})
+    agent = runners.MethodRunner(name="method_runner")
+    ctx = SimpleNamespace(session=SimpleNamespace(state={}), invocation_id="i", branch=None)
+
+    async def drain():
+        return [event async for event in agent._run_async_impl(ctx)]
+
+    async def limited():
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(drain(), timeout=0.2)
+        except (asyncio.TimeoutError, TimeoutError):
+            return time.monotonic() - started
+        return None
+
+    waited = asyncio.run(limited())   # (asyncio.run then waits for the worker thread to finish on its own)
+    assert waited is not None and waited < 1.0

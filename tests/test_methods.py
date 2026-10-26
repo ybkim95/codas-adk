@@ -122,3 +122,16 @@ def test_penalised_logistic_models_need_no_deprecated_penalty_argument(monkeypat
     monkeypatch.setattr(sklearn, "__version__", "1.9.1")   # newer releases: no penalty argument at all
     newer = methods._logistic(1.0, solver="liblinear").get_params()
     assert newer["l1_ratio"] == 1.0 and newer["penalty"] in ("deprecated", "l2")
+
+
+def test_a_method_over_its_time_budget_is_stopped_and_reported():
+    import time
+
+    f, rng = _frame(n=4000)
+    f["y"] = (rng.random(len(f)) < 0.05 + 0.04 * (f.x > 0)).astype(float)
+    started = time.monotonic()
+    stopped = methods.run_bounded("random_forest", f, ["x", "noise"], "y", ["age", "female"], budget_s=1)
+    assert stopped["timed_out"] and "time budget" in stopped["error"] and time.monotonic() - started < 20
+    inside = methods.run("partial_correlation", f, ["x"], "y", ["age"])
+    bounded = methods.run_bounded("partial_correlation", f, ["x"], "y", ["age"], budget_s=120)
+    assert bounded == inside                               # within the budget: the same result as in place

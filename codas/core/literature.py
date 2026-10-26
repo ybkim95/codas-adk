@@ -370,23 +370,29 @@ _EFFECT_WORDS = re.compile(r"\b(?:a?HRs?|hazard ratios?|a?ORs?|odds ratios?|RRs?
 _INTERVAL = re.compile(r"95\s*%\s*(?:CI|confidence interval)|\d\.\d+\s*(?:-|\u2013|to)\s*\d\.\d+", re.IGNORECASE)
 
 
-def effect_statements(abstract: str, terms: list[str], limit: int = 2) -> list[str]:
-    """Sentences of ``abstract`` that state an effect with its interval, those naming one of ``terms`` first,
-    quoted as written (at most ``limit``)."""
+def effect_statements(abstract: str, terms: list[str], limit: int = 2,
+                      groups: list[list[str]] | None = None) -> list[str]:
+    """Sentences of ``abstract`` that state an effect with its interval and name one of ``terms``, quoted as
+    written (at most ``limit``). With ``groups`` (e.g. the exposure's terms and the outcome's), a sentence must
+    name a term of at least one group, and those naming more groups come first. A sentence naming none is
+    never quoted: an abstract's other effects (a drug trial, another risk factor) are not this pair's."""
     sentences = [x.strip() for x in re.split(r"(?<=[.;])\s+(?=[A-Z(])", abstract or "") if x.strip()]
     found = [x for x in sentences if len(x) <= 500 and _EFFECT_WORDS.search(x) and _INTERVAL.search(x)]
-    named = [x for x in found if any(t.lower() in x.lower() for t in terms if t)]
-    return list(dict.fromkeys(named + found))[:limit]
+    groups = [g for g in (groups or [terms]) if any(g)]
+    named = lambda x, g: any(t and t.lower() in x.lower() for t in g)  # noqa: E731
+    scored = [(sum(named(x, g) for g in groups), i, x) for i, x in enumerate(found)]
+    return list(dict.fromkeys(x for k, _, x in sorted(scored, key=lambda r: (-r[0], r[1])) if k))[:limit]
 
 
 def published_effects(query: str, terms: list[str], *, papers: int = 3, cache: Cache | None = None,
-                      opener: Any = None) -> list[dict[str, Any]]:
-    """What the most cited papers matching ``query`` state as effects, quoted from their abstracts: each with
-    the paper's key, title, journal and year. Only the query leaves the machine."""
+                      opener: Any = None, groups: list[list[str]] | None = None) -> list[dict[str, Any]]:
+    """What the most cited papers matching ``query`` state as effects, quoted from their abstracts (sentences
+    naming ``terms``, or the ``groups`` as in ``effect_statements``): each with the paper's key, title,
+    journal and year. Only the query leaves the machine."""
     _, top = europe_pmc(query, page_size=papers, sort="CITED desc", abstracts=True, cache=cache, opener=opener,
                         abstract_chars=None)
     return [{"key": p.key, "title": p.title, "journal": p.journal, "year": p.year, "statement": sentence}
-            for p in top if p.key for sentence in effect_statements(p.abstract or "", terms)]
+            for p in top if p.key for sentence in effect_statements(p.abstract or "", terms, groups=groups)]
 
 
 def tokens(text: str) -> list[str]:

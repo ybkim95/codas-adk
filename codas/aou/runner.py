@@ -26,6 +26,7 @@ from typing import Any
 os.environ.setdefault("CODAS_MAX_DISCOVERY_ROUNDS", "3")
 # The rounds, the per-candidate debate and the report review take 1-2 h per outcome on a cohort of this size.
 os.environ.setdefault("CODAS_OUTCOME_TIMEOUT_MIN", "180")
+os.environ.setdefault("CODAS_METHOD_BUDGET_S", "600")  # one method of the pools: at most 10 minutes
 
 import pandas as pd  # noqa: E402
 
@@ -93,6 +94,7 @@ IMPUTATION_NOTE = (
 # Missing confounder values: imputed this many times in the adjusted tests (0 = drop incomplete rows).
 COVARIATE_IMPUTATIONS = int(os.getenv("CODAS_COVARIATE_IMPUTATIONS", "5"))
 CONFIRM_IMPUTATIONS = int(os.getenv("CODAS_CONFIRM_IMPUTATIONS", "10"))  # the one-shot holdout test affords more
+ATLAS_SHOWN = 30  # replication-atlas rows in the summary (the rest stay in phenome_scan.json)
 
 
 PANEL_NOTE = (" A repeated-measures panel is also available for a within-person analysis: every later measurement "
@@ -534,7 +536,7 @@ def _full_cohort_scan(verified: list[Any], base: CohortSpec, cdr: str, client: A
     text = ("## Full-cohort scan (every participant; pre-registered in "
             f"{phenome.FULL_PREREG}; every screened outcome is now opened on both halves)\n\n"
             + phenome.scan_table(result) + "\n\n### Strongest hits\n\n" + phenome.hits_table(result)
-            + "\n\n### Replication atlas\n\n" + phenome.atlas_table(result) + "\n")
+            + "\n\n### Replication atlas\n\n" + phenome.atlas_table(result, limit=ATLAS_SHOWN) + "\n")
     path = out / "full_cohort_scan.md"
     path.write_text(text, encoding="utf-8")
     log(f"full-cohort scan: {result['tested_pairs']:,} pairs, {sum(p['hit'] for p in result['pairs'])} hits; "
@@ -1105,7 +1107,7 @@ def explore(
         chosen = chosen[:max_outcomes]
     if scan is not None:
         table = (phenome.scan_table(scan, problems, chosen, opened) + "\n\n### Strongest hits\n\n"
-                 + phenome.hits_table(scan) + "\n\n### Replication atlas\n\n" + phenome.atlas_table(scan)
+                 + phenome.hits_table(scan) + "\n\n### Replication atlas\n\n" + phenome.atlas_table(scan, limit=ATLAS_SHOWN)
                  + ("\n\n" + data_atlas.markdown(atlas) if atlas else ""))
         log(phenome.scan_table(scan, problems, chosen, opened, limit=25) + "\n\n" + phenome.hits_table(scan, limit=10))
     else:

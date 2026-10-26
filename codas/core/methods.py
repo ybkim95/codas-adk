@@ -323,7 +323,7 @@ def _model(name: str, binary: bool, seed: int):
         "lasso": ((_logistic(1.0, solver="liblinear", max_iter=2000),
                    {"C": [0.01, 0.1, 1, 10]}) if binary else
                   (linear_model.Lasso(max_iter=5000), {"alpha": [0.001, 0.01, 0.1]})),
-        "elastic_net": ((_logistic(0.5, solver="saga", max_iter=3000),
+        "elastic_net": ((_logistic(0.5, solver="saga", max_iter=3000, tol=1e-3),
                          {"C": [0.1, 1], "l1_ratio": [0.2, 0.5, 0.8]}) if binary else
                         (linear_model.ElasticNet(max_iter=5000), {"alpha": [0.001, 0.01, 0.1], "l1_ratio": [0.2, 0.5, 0.8]})),
         # Each tree sees a quarter of the rows: at cohort scale a full forest per inner fold costs minutes.
@@ -452,3 +452,44 @@ def record_headline(record: dict[str, Any]) -> str:
     """One line for any recorded analysis: a pool method (``method:<name>``) or an agent analysis tool."""
     tool, result = str(record.get("tool", "")), record.get("result") or {}
     return headline(result) if tool.startswith("method:") else analyses.headline(tool, result)
+
+
+def _bounded_worker(conn: Any, args: tuple, options: dict[str, Any]) -> None:
+    try:
+        conn.send(run(*args, **options))
+    finally:
+        conn.close()
+
+
+def run_bounded(name: str, frame: pd.DataFrame, features: list[str], target: str,
+                confounders: list[str] | tuple[str, ...] = (), time: str | None = None, imputations: int = 0,
+                seed: int = 17, budget_s: float = 0, **options: Any) -> dict[str, Any]:
+    """``run`` with a wall-clock budget: with ``budget_s`` > 0 the method runs in its own process, which is
+    stopped when the budget is spent, so one slow fit (a solver that converges slowly on a rare outcome) can
+    never hold up the analysis; the record then says the method was stopped. ``budget_s`` <= 0 runs in place."""
+    args = (name, frame, list(features), target, list(confounders), time, imputations, seed)
+    if not budget_s or budget_s <= 0:
+        return run(*args, **options)
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")   # no fork: the parent holds threads and network clients
+    receive, send = context.Pipe(duplex=False)
+    worker = context.Process(target=_bounded_worker, args=(send, args, options), daemon=True)
+    worker.start()
+    send.close()
+    try:
+        if receive.poll(budget_s):
+            try:
+                return receive.recv()
+            except EOFError:
+                pass
+        stopped = worker.is_alive()
+        head = {"method": name, "pool": pool_of(name), "features": list(features)}
+        if stopped:
+            return {**head, "error": f"stopped after {budget_s:.0f} s (the method's time budget)", "timed_out": True}
+        return {**head, "error": f"the method's process ended without a result (exit code {worker.exitcode})"}
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+        worker.join(5)
+        receive.close()

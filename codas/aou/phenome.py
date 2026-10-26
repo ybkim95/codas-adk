@@ -499,7 +499,7 @@ def replication_atlas(result: dict[str, Any], people: pd.DataFrame, features: li
             pair = by_pair.get((outcome["name"], representative[construct])) or {}
             try:
                 quoted = literature.published_effects(evidence["query"], [construct, *synonyms, *outcome_terms],
-                                                      cache=cache)
+                                                      cache=cache, groups=[[construct, *synonyms], outcome_terms])
             except literature.Unreachable:
                 quoted = []
             rows.append({"outcome": outcome["name"], "label": outcome["label"], "construct": construct,
