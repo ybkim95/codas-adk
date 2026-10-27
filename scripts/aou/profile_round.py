@@ -7,6 +7,10 @@ and line numbers only); at the end, or after ``--minutes``, it prints how the sa
 and the stack seen most often. Usage, in the Workbench::
 
     python scripts/aou/profile_round.py .codas_runs/aou/explore_acute_kidney_injury.csv --minutes 15
+
+With ``--trace <the outcome's _trace.jsonl>`` the round is the one the agents asked for: their design calls
+(``set_target``, ``declare_confounders``, ``exclude_features``, ``propose_feature``) are replayed from the trace in
+order, then the discovery round runs through the same tool. Only counts of the design are printed.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("csv")
     parser.add_argument("--minutes", type=float, default=15.0)
     parser.add_argument("--every", type=float, default=10.0)
+    parser.add_argument("--trace", default="")
     args = parser.parse_args(argv)
 
     import pandas as pd
@@ -53,10 +58,39 @@ def main(argv: list[str] | None = None) -> int:
           f"{runner.COVARIATE_IMPUTATIONS}, resamples {tools._ROUND_RESAMPLES}", flush=True)
 
     done: dict[str, object] = {}
+    run = lambda: run_discovery_from_csv(args.csv, request)  # noqa: E731
+    if args.trace:
+        import json
+        from types import SimpleNamespace
+
+        context = [c.name for c in spec.covariates] + cohort.availability_columns(spec) + (
+            [cohort.FOLLOWUP_COLUMN] if survival else [])
+        ctx = SimpleNamespace(state={"csv_path": str(Path(args.csv).resolve()), "context_columns": context,
+                                     "covariate_imputations": runner.COVARIATE_IMPUTATIONS, "adjusted_screen": True,
+                                     "availability_columns": cohort.availability_columns(spec),
+                                     "survival_time_column": cohort.FOLLOWUP_COLUMN if survival else ""},
+                              actions=SimpleNamespace(escalate=False))
+        replayed = collections.Counter()
+        for line in Path(args.trace).read_text(encoding="utf-8").splitlines():
+            event = json.loads(line)
+            if event.get("kind") != "tool_call":
+                continue
+            if event["name"] == "run_discovery_round":
+                break
+            if event["name"] in ("set_target", "declare_confounders", "exclude_features", "propose_feature"):
+                try:
+                    getattr(tools, event["name"])(**(event.get("args") or {}), tool_context=ctx)
+                    replayed[event["name"]] += 1
+                except Exception as exc:  # noqa: BLE001 - reported; the replay continues
+                    replayed[f"{event['name']} failed ({type(exc).__name__})"] += 1
+        st = ctx.state
+        print(f"replayed {dict(replayed)}; confounders {len(st.get('confounder_columns') or [])}, excluded "
+              f"{len(st.get('excluded_columns') or [])}, proposed {len(st.get('proposed_features') or [])}", flush=True)
+        run = lambda: tools.run_discovery_round(ctx)  # noqa: E731
 
     def work() -> None:
         try:
-            run_discovery_from_csv(args.csv, request)
+            run()
             done["ok"] = True
         except Exception as exc:  # noqa: BLE001 - reported, the profile still prints
             done["error"] = f"{type(exc).__name__}: {exc}"[:200]
