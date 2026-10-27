@@ -61,7 +61,8 @@ def completed_covariates(covariates: np.ndarray, auxiliary: np.ndarray, m: int, 
     binary = [j for j in range(k) if set(np.unique(cov[~gaps[:, j], j])) <= {0.0, 1.0}]
     out = []
     for i in range(m):
-        imputer = IterativeImputer(sample_posterior=True, max_iter=10, random_state=seed + i)
+        # Complete columns need no model of their own (skip_complete); the draws for the missing cells are the same.
+        imputer = IterativeImputer(sample_posterior=True, max_iter=10, random_state=seed + i, skip_complete=True)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # convergence notices for near-constant columns
             filled = imputer.fit_transform(np.column_stack([cov, aux]))[:, :k]

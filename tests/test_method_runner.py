@@ -133,3 +133,18 @@ def test_the_method_runner_does_not_block_the_event_loop(monkeypatch):
 
     waited = asyncio.run(limited())   # (asyncio.run then waits for the worker thread to finish on its own)
     assert waited is not None and waited < 1.0
+
+
+def test_the_discovery_round_tool_computes_off_the_event_loop():
+    """ADK runs a synchronous tool on the event loop; the round's tool is an async twin with the same name,
+    parameters and description, which computes in a worker thread."""
+    import inspect
+
+    from google.adk.tools.function_tool import FunctionTool
+
+    from codas.agents import agent
+
+    (tool,) = agent.search_agent.tools
+    assert inspect.iscoroutinefunction(tool)
+    assert (FunctionTool(tool)._get_declaration().model_dump(exclude_none=True)
+            == FunctionTool(tools.run_discovery_round)._get_declaration().model_dump(exclude_none=True))

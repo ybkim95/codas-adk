@@ -45,34 +45,34 @@ class CoxResult:
 def _efron(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np.ndarray):
     """Log partial likelihood, gradient and Hessian (Efron ties). Rows are sorted by descending time.
 
-    Risk-set sums are cumulative sums over the sorted rows, read at the end of each block of equal
-    times, so only the distinct event times are looped over. A coefficient so large that a risk set's
-    weights all underflow gives a log-likelihood of -inf, so the caller's step-halving rejects it."""
+    The risk set at an event time is a prefix of the sorted rows; its sums are taken only at the end of each
+    block of equal times that holds an event, segment by segment (``_prefix_sums``), so the cost is linear in the
+    rows and no (rows, k, k) array is built. A coefficient so large that a risk set's weights all underflow gives
+    a log-likelihood of -inf, so the caller's step-halving rejects it."""
     k = x.shape[1]
     eta = x @ beta
     eta -= eta.max()  # the likelihood is invariant to a shift; this keeps exp() finite
     w = np.exp(eta)
     wx = w[:, None] * x
-    risk0 = np.cumsum(w)
-    risk1 = np.cumsum(wx, axis=0)
-    risk2 = np.cumsum(wx[:, :, None] * x[:, None, :], axis=0)
     ends = np.flatnonzero(np.r_[time[1:] != time[:-1], True])  # last row of each block of equal times
     starts = np.r_[0, ends[:-1] + 1]
+    blocks = [(a, b) for a, b in zip(starts, ends) if event[a:b + 1].any()]
     loglik, grad, hess = 0.0, np.zeros(k), np.zeros((k, k))
-    for start, end in zip(starts, ends):
+    if not blocks:
+        return loglik, grad, hess
+    risk0, risk1, risk2 = _prefix_sums(w, x, np.asarray([b + 1 for _, b in blocks]))
+    for j, (start, end) in enumerate(blocks):
         ev = np.flatnonzero(event[start:end + 1]) + start
         d = len(ev)
-        if not d:
-            continue
         tie0, tie1 = w[ev].sum(), wx[ev].sum(axis=0)
         tie2 = (wx[ev][:, :, None] * x[ev][:, None, :]).sum(axis=0)
         loglik += eta[ev].sum()
         grad += x[ev].sum(axis=0)
         for m in range(d):
             frac = m / d
-            s0 = risk0[end] - frac * tie0
-            s1 = risk1[end] - frac * tie1
-            s2 = risk2[end] - frac * tie2
+            s0 = risk0[j] - frac * tie0
+            s1 = risk1[j] - frac * tie1
+            s2 = risk2[j] - frac * tie2
             if not s0 > 0:  # exp() underflowed over this risk set: a step far past the optimum
                 return -math.inf, grad, hess
             loglik -= math.log(s0)
@@ -142,16 +142,25 @@ def _efron_counting(beta: np.ndarray, time: np.ndarray, event: np.ndarray, x: np
     return loglik, grad, hess
 
 
-def _independent_columns(x: np.ndarray) -> list[int]:
+def _independent_columns(x: np.ndarray, tol: float = 1e-9) -> list[int]:
     """Columns that are neither constant nor a linear combination of earlier columns, in order: a
     covariate repeated under two names (two sources counting the same days) makes the information
-    matrix singular, and the model is identified only without it."""
+    matrix singular, and the model is identified only without it. One Gram-Schmidt pass over the
+    standardised columns (orthogonalised twice): a column is kept when what the earlier kept columns
+    leave of it exceeds ``tol`` of its length."""
     sd = x.std(axis=0)
-    z = np.where(sd > 0, (x - x.mean(axis=0)) / np.where(sd > 0, sd, 1.0), 0.0)
+    basis = np.zeros((x.shape[0], 0))
     kept: list[int] = []
     for j in range(x.shape[1]):
-        if sd[j] > 0 and np.linalg.matrix_rank(z[:, kept + [j]]) == len(kept) + 1:
+        if not sd[j] > 0:
+            continue
+        z = (x[:, j] - x[:, j].mean()) / sd[j]
+        r = z - basis @ (basis.T @ z)
+        r = r - basis @ (basis.T @ r)
+        norm = float(np.linalg.norm(r))
+        if norm > tol * float(np.linalg.norm(z)):
             kept.append(j)
+            basis = np.column_stack([basis, r / norm])
     return kept
 
 

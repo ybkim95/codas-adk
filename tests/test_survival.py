@@ -43,3 +43,21 @@ def test_a_duplicated_or_constant_covariate_is_dropped_not_fatal():
     assert dup.dropped == [3, 4, 5] and clean.dropped == []
     assert abs(dup.coef[0] - clean.coef[0]) < 1e-6 and np.isfinite(dup.se[0])
     assert np.isnan(dup.coef[3]) and np.isnan(dup.se[4])
+
+
+def test_a_large_cohort_fit_needs_memory_linear_in_the_rows():
+    """The risk-set sums are taken at the event times only: no (rows, k, k) array (128 MB for 10,000 people
+    and 40 covariates, rebuilt at every Newton step) is built, and collinearity is found in one pass."""
+    import tracemalloc
+
+    rng = np.random.default_rng(3)
+    n, k = 10_000, 40
+    x = rng.normal(size=(n, k))
+    x[:, 7] = x[:, 2] - x[:, 5]                                    # an exact combination: dropped
+    t = rng.integers(1, 1500, n).astype(float)
+    e = (rng.random(n) < 0.012).astype(float)
+    tracemalloc.start()
+    fit = cox_ph(t, e, x)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert fit.converged and fit.dropped == [7] and peak < 40e6

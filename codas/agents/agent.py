@@ -39,6 +39,7 @@ Prompts live in ``prompts.py``; guardrails/logging in ``callbacks.py``; session 
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 from typing import Any, AsyncGenerator
@@ -328,11 +329,23 @@ data_understanding = SequentialAgent(
 
 # --- Phase B&C: Parallel Agentic Search + Adversarial Validation (iterative loop) ---------------
 
+def _off_the_loop(fn):
+    """An async twin of a long synchronous tool, with the same name, parameters and description: ADK runs a
+    synchronous tool on the event loop, which then stops for as long as it computes (a discovery round takes
+    minutes on a large cohort), holding back the outcome's time limit and every other coroutine. The twin
+    computes in a worker thread instead."""
+    @functools.wraps(fn)
+    async def run(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    return run
+
+
 search_agent = _agent(
     "search_agent",
     "Runs the next deterministic discovery round, deepening the search and recording it in memory.",
     prompts.SEARCH,
-    tools=[run_discovery_round],
+    tools=[_off_the_loop(run_discovery_round)],
 )
 statistical_interpreter = _agent(
     "statistical_interpreter",
