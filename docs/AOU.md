@@ -339,7 +339,9 @@ spec's `genetics`, on in the example; it needs the Controlled Tier's genomic fil
 without them). At extraction, the array genotype files and the ancestry predictions are looked for by name under
 the CDR's storage folder (`CDR_STORAGE_PATH`); each catalog construct's instruments come from the GWAS Catalog by
 the traits `scripts/aou/literature_terms.json` names for it (`gwas_traits`; genome-wide significant variants with a
-per-allele effect, only the trait name leaves the Workbench), or from a table of instruments the spec names. They
+per-allele effect, read through the Catalog's REST interface v2 by trait name or, failing that, by the ontology
+terms the name resolves to, most significant first; only the trait name leaves the Workbench; the answers are
+cached in the sealed folder), or from a table of instruments the spec names. They
 are aligned to the genotype file's counted allele (strand-ambiguous and mismatched variants left out, with the
 reason) and pruned to one per 500 kb. Only those variants are read, by byte range from the PLINK file, for the
 sealed share's participants; their dosages, the allele score of each construct and the genetic principal

@@ -235,14 +235,15 @@ class Cache:
                 fh.write(json.dumps({"url": url, "body": body}) + "\n")
 
 
-def _get_json(url: str, cache: Cache | None = None, opener: Any = None, retries: int = 2) -> Any:
+def _get_json(url: str, cache: Cache | None = None, opener: Any = None, retries: int = 2,
+              timeout: float | None = None) -> Any:
     """A counted GET of a JSON body, from the cache when it holds the URL; retries on 429 and 5xx."""
     cached = cache.get(url) if cache else None
     if cached is not None:
         return cached
     for attempt in range(retries + 1):
         try:
-            status, body = get(url, opener=opener)
+            status, body = get(url, opener=opener, timeout=timeout or TIMEOUT_S)
         except EgressLimit as exc:
             raise Unreachable(str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - network errors: the service is unreachable from here

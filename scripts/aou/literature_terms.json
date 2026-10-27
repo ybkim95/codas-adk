@@ -29,7 +29,7 @@
         ]
       },
       "gwas_traits": [
-        "resting heart rate"
+        "heart rate"
       ]
     },
     "daytime heart rate": {

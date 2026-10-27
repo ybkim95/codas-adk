@@ -65,22 +65,28 @@ def test_ancestry_components_and_locating_the_files(tmp_path):
 
 
 def test_instruments_are_parsed_aligned_and_pruned():
-    payload = {"_embedded": {"associations": [
-        {"pvalueMantissa": 3, "pvalueExponent": -20, "betaNum": 0.4, "betaDirection": "increase",
-         "loci": [{"strongestRiskAlleles": [{"riskAlleleName": "rs1-A"}]}],
-         "study": {"publicationInfo": {"pubmedId": "111"}}},
-        {"pvalueMantissa": 2, "pvalueExponent": -9, "betaNum": 0.2, "betaDirection": "decrease",
-         "loci": [{"strongestRiskAlleles": [{"riskAlleleName": "rs2-C"}]}]},
-        {"pvalueMantissa": 1, "pvalueExponent": -6, "betaNum": 0.9,                       # not genome-wide
-         "loci": [{"strongestRiskAlleles": [{"riskAlleleName": "rs3-A"}]}]},
-        {"pvalueMantissa": 1, "pvalueExponent": -30, "orPerCopyNum": 1.5,
-         "loci": [{"strongestRiskAlleles": [{"riskAlleleName": "rs4-T"}]}]},
-        {"pvalueMantissa": 1, "pvalueExponent": -30, "betaNum": 0.3,
-         "loci": [{"strongestRiskAlleles": [{"riskAlleleName": "rs5-?"}]}]}]}}             # no allele
+    payload = {"_embedded": {"associations": [   # the GWAS Catalog REST interface v2's records
+        {"p_value": 3e-20, "beta": "0.4 unit increase", "snp_allele": [{"rs_id": "rs1", "effect_allele": "A"}],
+         "pubmed_id": "111"},
+        {"pvalue_mantissa": 2, "pvalue_exponent": -9, "beta": "0.2 unit decrease",
+         "snp_allele": [{"rs_id": "rs2", "effect_allele": "C"}]},
+        {"p_value": 1e-6, "beta": "0.9 unit increase",                                   # not genome-wide
+         "snp_allele": [{"rs_id": "rs3", "effect_allele": "A"}]},
+        {"p_value": 1e-30, "beta": "-", "or_per_copy_number": 1.5,
+         "snp_allele": [{"rs_id": "rs4", "effect_allele": "T"}]},
+        {"p_value": 1e-30, "beta": "0.3 unit increase",
+         "snp_allele": [{"rs_id": "rs5", "effect_allele": "?"}]},                         # no allele
+        {"p_value": 1e-30, "beta": "-", "snp_allele": [{"rs_id": "rs7", "effect_allele": "G"}]},   # no effect
+        {"p_value": 1e-30, "beta": "0.1 unit increase",                                  # a haplotype
+         "snp_allele": [{"rs_id": "rs8", "effect_allele": "G"}, {"rs_id": "rs9", "effect_allele": "A"}]}]}}
     found = inst.parse_associations("c", payload)
     by = {i.variant: i for i in found}
     assert set(by) == {"rs1", "rs2", "rs4"} and by["rs2"].beta == -0.2 and abs(by["rs4"].beta - np.log(1.5)) < 1e-12
     assert by["rs1"].source == "PMID:111" and abs(by["rs1"].p - 3e-20) < 1e-30
+    legacy = {"_embedded": {"associations": [{"pvalueMantissa": 3, "pvalueExponent": -20, "betaNum": 0.4,
+                                              "betaDirection": "decrease",
+                                              "loci": [{"strongestRiskAlleles": [{"riskAlleleName": "rs1-A"}]}]}]}}
+    assert [(i.variant, i.beta) for i in inst.parse_associations("c", legacy)] == [("rs1", -0.4)]
     bim = pd.DataFrame({"chrom": ["1", "1", "2", "3"], "id": ["rs1", "rs2", "rs4", "rs6"], "cm": 0,
                         "pos": [100_000, 300_000, 5_000, 1], "a1": ["G", "C", "A", "A"], "a2": ["A", "T", "T", "G"]})
     aligned, dropped = inst.align(found + [inst.Instrument("c", "rs6", "C", "T", 0.1)], bim)
@@ -89,6 +95,41 @@ def test_instruments_are_parsed_aligned_and_pruned():
     assert dropped == {"rs4": "strand-ambiguous allele pair", "rs6": "alleles do not match the genotype file"}
     assert [a["variant"] for a in inst.prune(aligned, window_kb=500)] == ["rs1"]   # rs2 is 200 kb away, weaker
     assert len(inst.prune(aligned, window_kb=100)) == 2
+
+
+def test_the_gwas_catalog_is_read_page_by_page_through_its_v2_interface():
+    """By trait name first, else by the ontology terms the name resolves to; most significant first, paging
+    until the associations stop being genome-wide significant."""
+    import urllib.parse
+
+    def record(rs, p):
+        return {"p_value": p, "beta": "0.1 unit increase", "snp_allele": [{"rs_id": rs, "effect_allele": "A"}]}
+
+    asked = []
+
+    def opener(url, timeout):
+        asked.append(url)
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        assert "/rest/api/v2/" in url and timeout >= 60
+        if url.split("?")[0].endswith("/efo-traits"):
+            body = {"_embedded": {"efo_traits": [{"efo_id": "OBA_1"}]}}
+        elif query.get("efo_trait"):
+            body = {"page": {"totalElements": 0}}
+        elif query.get("page") == "1":
+            body = {"_embedded": {"associations": [record("rs3", 1e-9), record("rs4", 1e-6)]},
+                    "page": {"totalElements": 4}, "_links": {"next": {"href": url.replace("page=1", "page=2")}}}
+        else:
+            assert query["efo_id"] == "OBA_1" and query["sort"] == "p_value" and query["direction"] == "asc"
+            body = {"_embedded": {"associations": [record("rs1", 1e-30), record("rs2", 1e-12)]},
+                    "page": {"totalElements": 4}, "_links": {"next": {"href": url + "&page=1"}}}
+        return 200, json.dumps(body).encode()
+
+    got, status = inst.gwas_catalog("c", "some trait", opener=opener)
+    assert sorted(i.variant for i in got) == ["rs1", "rs2", "rs3"] and status.startswith("3 genome-wide")
+    assert not any("page=2" in u for u in asked)          # the page ending above 5e-8 was the last read
+
+    gone = lambda url, timeout: (410, b"This legacy GWAS Catalog REST API is no longer available.")  # noqa: E731
+    assert inst.gwas_catalog("c", "x", opener=gone) == ([], "GWAS Catalog not reachable (HTTP 410)")
 
 
 def _genetic_cohort(seed=1, n=12000, k=10, causal=0.3):
