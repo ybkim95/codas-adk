@@ -319,8 +319,14 @@ def _record_signal_map(state: Any, path: Path) -> None:
     """Every candidate's adjusted association with the outcome, once registration has closed."""
     try:
         frame = read_csv_dataset(path)
-        _availability, covariates = _adjustment_columns(state, frame)
+        availability, covariates = _adjustment_columns(state, frame)
         base = [c for c in state.get("base_confounders") or [] if c in frame.columns]
+        # T2 adjusts for every covariate: those kept for adjustment only and those the agents declared
+        # confounders (a declared confounder leaves the adjustment-only list, never the adjustment).
+        survival = str(state.get("survival_time_column") or "")
+        declared = [c for c in state.get("confounder_columns") or []
+                    if c in frame.columns and c not in availability and c != survival]
+        covariates = list(dict.fromkeys(covariates + declared))
         signal = eda.signal_map(frame, target=str(state.get("target_column")),
                                 features=_candidate_columns(frame, state),
                                 survival_time=str(state.get("survival_time_column") or "") or None,

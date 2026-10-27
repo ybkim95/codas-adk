@@ -475,7 +475,13 @@ def _association(frame: pd.DataFrame, feature: str, target: str, survival_time: 
     x = pd.to_numeric(frame[feature], errors="coerce").to_numpy(dtype=float)
     y = pd.to_numeric(frame[target], errors="coerce").to_numpy(dtype=float)
     if not survival_time:
-        rho, p, n = partial_spearman(x, y, covariates)
+        if covariates.shape[1]:
+            rho, p, n = partial_spearman(x, y, covariates)
+        else:  # nothing to adjust for (no base covariate): the plain rank correlation
+            ok = np.isfinite(x) & np.isfinite(y)
+            n = int(ok.sum())
+            rho, p = stats.spearmanr(x[ok], y[ok]) if n > 2 else (math.nan, math.nan)
+            rho, p = float(rho), float(p)
         return {"effect": _round(rho, 3), "p": p, "n": n, "measure": "partial rank correlation"}
     t = pd.to_numeric(frame[survival_time], errors="coerce").to_numpy(dtype=float)
     ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(t) & np.all(np.isfinite(covariates), axis=1)

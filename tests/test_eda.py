@@ -117,3 +117,20 @@ def test_frozen_transforms_put_both_shares_on_the_discovery_scale():
     narrow = preprocess.fit(pd.Series(np.random.default_rng(5).normal(0, 1, 4000)))
     assert preprocess.apply(wider, narrow, clip=False).std() == pytest.approx(2, abs=0.1)
     assert "discovery SD" in preprocess.describe(narrow)
+
+
+def test_the_signal_map_adjusts_for_covariates_the_agents_declared_confounders(tmp_path):
+    """A covariate the agents declared a confounder leaves the adjustment-only list, not the adjustment: the
+    signal map's T2 still adjusts for it (an outcome where every covariate was declared showed T2 = T0)."""
+    from codas.agents import tools
+
+    frame = _frame()
+    frame["confounded"] = frame["cov"] + np.random.default_rng(2).normal(0, 1, len(frame))
+    frame["lab"] = frame["lab"] + 0.5 * (frame["cov"] - 27)
+    path = tmp_path / "d.csv"
+    frame[["lab", "active", "confounded", "cov"]].to_csv(path, index=False)
+    state = {"csv_path": str(path), "target_column": "lab", "context_columns": [], "confounder_columns": ["cov"],
+             "excluded_columns": []}
+    tools._record_signal_map(state, path)
+    rows = {r["feature"]: r for r in state["signal_map"]["features"]}
+    assert state["signal_map"]["covariates"] == ["cov"] and rows["confounded"]["attenuation"] > 0.8

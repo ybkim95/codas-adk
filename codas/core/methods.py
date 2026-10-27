@@ -474,7 +474,8 @@ def run_bounded(name: str, frame: pd.DataFrame, features: list[str], target: str
 
     context = multiprocessing.get_context("spawn")   # no fork: the parent holds threads and network clients
     receive, send = context.Pipe(duplex=False)
-    worker = context.Process(target=_bounded_worker, args=(send, args, options), daemon=True)
+    # Not a daemon: a daemonic process may not start its own workers, and the tree models use every core.
+    worker = context.Process(target=_bounded_worker, args=(send, args, options), daemon=False)
     worker.start()
     send.close()
     try:
